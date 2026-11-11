@@ -5,7 +5,14 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-import type { ConnectionState, CoreEnvironment, CoreMethod, CoreMethods, EventEnvelope } from "../types/protocol";
+import type {
+  ConnectionState,
+  CoreEnvironment,
+  CoreMethod,
+  CoreMethods,
+  EventEnvelope,
+  LiveOutput,
+} from "../types/protocol";
 
 export class CoreRequestError extends Error {
   readonly code: string;
@@ -51,3 +58,6 @@ export const onConnection = (handler: (state: ConnectionState) => void): Promise
 
 export const onCoreEvent = (handler: (event: EventEnvelope) => void): Promise<UnlistenFn> =>
   listen<EventEnvelope>("core://event", (e) => handler(e.payload));
+
+export const onLive = (handler: (output: LiveOutput) => void): Promise<UnlistenFn> =>
+  listen<LiveOutput>("core://live", (e) => handler(e.payload));

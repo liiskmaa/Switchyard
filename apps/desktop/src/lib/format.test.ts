@@ -58,3 +58,18 @@ describe("toCoreError", () => {
     expect(toCoreError("boom").code).toBe("client_error");
   });
 });
+
+describe("agent events", () => {
+  it("summarises tools and file changes", async () => {
+    const { toolSummary } = await import("./format");
+    expect(toolSummary("Bash", { command: "cargo test" })).toBe("cargo test");
+    expect(toolSummary("Write", { file_path: "/r/a.txt", content: "x" })).toBe("/r/a.txt");
+    expect(toolSummary("Unknown", { x: 1 })).toBe("");
+    expect(
+      describeEvent(event(1, "files.changed", { changes: [{ path: "a", kind: "created" }, { path: "b", kind: "deleted" }] })),
+    ).toBe("Files: created a, deleted b");
+    expect(describeEvent(event(2, "agent.tool_failed", { tool_name: "Write", rejected: true, output: "no" }))).toBe(
+      "Write not run: no",
+    );
+  });
+});

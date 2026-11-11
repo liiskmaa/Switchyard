@@ -2,6 +2,8 @@ import type { ReactNode } from "react";
 
 import { BrandMark, Icon, type IconName } from "../components/Icon";
 import { StatusIndicator } from "../components/StatusIndicator";
+import { pendingApprovals } from "../features/agents/api";
+import { useCoreQuery } from "../stores/useCoreQuery";
 
 export type Section = "dashboard" | "projects" | "agents" | "activity" | "approvals" | "settings";
 
@@ -13,16 +15,35 @@ const primary: { id: Section; label: string; icon: IconName }[] = [
   { id: "approvals", label: "Approvals", icon: "approvals" },
 ];
 
-function NavItem({ id, label, icon, active, onSelect }: { id: Section; label: string; icon: IconName; active: boolean; onSelect: (s: Section) => void }) {
+function NavItem({
+  id,
+  label,
+  icon,
+  active,
+  onSelect,
+  count,
+}: {
+  id: Section;
+  label: string;
+  icon: IconName;
+  active: boolean;
+  onSelect: (s: Section) => void;
+  count?: number | undefined;
+}) {
   return (
     <button type="button" className={`nav-item${active ? " active" : ""}`} aria-current={active ? "page" : undefined} onClick={() => onSelect(id)}>
       <Icon name={icon} />
       <span>{label}</span>
+      {count ? <span className="nav-count" aria-label={`${count} pending`}>{count}</span> : null}
     </button>
   );
 }
 
 export function AppShell({ section, onSelect, children }: { section: Section; onSelect: (s: Section) => void; children: ReactNode }) {
+  const pending = useCoreQuery("nav-pending-approvals", () => pendingApprovals(), {
+    refreshOn: (e) => e.event_type.startsWith("agent.permission_"),
+    intervalMs: 30_000,
+  });
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -32,7 +53,13 @@ export function AppShell({ section, onSelect, children }: { section: Section; on
         </div>
         <nav className="nav" aria-label="Main">
           {primary.map((item) => (
-            <NavItem key={item.id} {...item} active={section === item.id} onSelect={onSelect} />
+            <NavItem
+              key={item.id}
+              {...item}
+              active={section === item.id}
+              onSelect={onSelect}
+              count={item.id === "approvals" ? pending.data?.length : undefined}
+            />
           ))}
         </nav>
         <div className="sidebar-foot">

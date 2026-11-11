@@ -105,3 +105,14 @@ async fn missing_git_binary_is_reported() {
     });
     assert!(matches!(git.status(&root).await, Err(GitError::Unavailable { .. })));
 }
+
+#[tokio::test]
+async fn reports_ignored_paths() {
+    let (_dir, root) = repo_with_commit();
+    std::fs::write(root.join(".gitignore"), "target/\n*.log\n").unwrap();
+    let git = Git::default();
+    let paths = vec!["target/debug/x".to_owned(), "src/main.rs".to_owned(), "a.log".to_owned()];
+    let ignored = git.ignored(&root, &paths).await.unwrap();
+    assert_eq!(ignored, ["target/debug/x".to_owned(), "a.log".to_owned()].into_iter().collect());
+    assert!(git.ignored(&root, &["src/main.rs".to_owned()]).await.unwrap().is_empty());
+}

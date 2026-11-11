@@ -113,6 +113,32 @@ impl EventBus {
         }))
     }
 
+    /// Like [`Self::publish_with`] for a transaction that stores any number
+    /// of events (possibly none). They are delivered in the order returned,
+    /// which must be ascending `seq`.
+    pub async fn publish_batch_with<R, E, F>(
+        &self,
+        work: F,
+    ) -> Result<Result<(R, Vec<Arc<EventEnvelope>>), E>, PublishError>
+    where
+        F: FnOnce() -> Result<(R, Vec<EventEnvelope>), E> + Send + 'static,
+        R: Send + 'static,
+        E: Send + 'static,
+    {
+        let _ordering = self.publish_lock.lock().await;
+        let outcome =
+            tokio::task::spawn_blocking(work).await.map_err(|e| PublishError::Task(e.to_string()))?;
+        Ok(outcome.map(|(value, stored)| {
+            let stored: Vec<_> = stored.into_iter().map(Arc::new).collect();
+            for event in &stored {
+                if self.sender.send(Arc::clone(event)).is_err() {
+                    tracing::trace!(seq = event.seq, "event stored; no live subscribers");
+                }
+            }
+            (value, stored)
+        }))
+    }
+
     /// Reads stored events from the journal.
     pub async fn read(&self, filter: EventFilter) -> Result<Vec<EventEnvelope>, RecvError> {
         let journal = Arc::clone(&self.journal);

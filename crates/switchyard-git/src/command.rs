@@ -51,12 +51,22 @@ impl Git {
     /// Runs `git -C <dir> <args>` without a terminal, with optional locks
     /// disabled so inspection never contends with a concurrent writer.
     pub(crate) async fn run(&self, dir: &Path, args: &[&str]) -> Result<Output, GitError> {
+        self.run_with_input(dir, args, None).await
+    }
+
+    /// Like [`Self::run`], writing `input` to the child's stdin.
+    pub(crate) async fn run_with_input(
+        &self,
+        dir: &Path,
+        args: &[&str],
+        input: Option<Vec<u8>>,
+    ) -> Result<Output, GitError> {
         let mut cmd = Command::new(&self.config.binary);
         cmd.arg("--no-optional-locks")
             .arg("-C")
             .arg(dir)
             .args(args)
-            .stdin(Stdio::null())
+            .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .env("GIT_TERMINAL_PROMPT", "0")
@@ -67,9 +77,19 @@ impl Git {
             cmd.env_remove(var);
         }
         let joined = args.join(" ");
-        let child = cmd
+        let mut child = cmd
             .spawn()
             .map_err(|source| GitError::Unavailable { binary: self.config.binary.clone(), source })?;
+        if let (Some(bytes), Some(mut stdin)) = (input, child.stdin.take()) {
+            use tokio::io::AsyncWriteExt;
+            // Written concurrently with reading output, so large inputs
+            // cannot deadlock on full pipes.
+            tokio::spawn(async move {
+                if let Err(err) = stdin.write_all(&bytes).await {
+                    tracing::debug!(%err, "writing git stdin failed");
+                }
+            });
+        }
         let output = tokio::time::timeout(self.config.timeout, child.wait_with_output())
             .await
             .map_err(|_| GitError::Timeout {

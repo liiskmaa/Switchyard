@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":"Write a 400-word story about a train dispatcher."},"parent_tool_use_id":null,"session_id":"05ba17ff-428d-4b9f-b269-798db9b5dfa1"}
+{"type":"user","message":{"role":"user","content":"After that, reply with just QUEUED-OK."},"parent_tool_use_id":null,"session_id":"05ba17ff-428d-4b9f-b269-798db9b5dfa1"}

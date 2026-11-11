@@ -33,6 +33,15 @@ pub enum ErrorCode {
     GitUnavailable,
     /// A `git` invocation failed or timed out.
     GitFailed,
+    /// The agent CLI is missing, unusable or unsupported.
+    AgentUnavailable,
+    /// The operation is not valid in the session's current state (e.g.
+    /// sending to a running session without `queue_if_busy`).
+    InvalidState,
+    /// The agent does not support the operation (see its capabilities).
+    Unsupported,
+    /// The agent process failed to start or to accept the command.
+    AgentFailed,
     /// Core is shutting down and will not accept new work.
     ShuttingDown,
     /// Core is temporarily unable to accept work.

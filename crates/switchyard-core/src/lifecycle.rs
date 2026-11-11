@@ -62,7 +62,8 @@ impl RunningCore {
 
 /// Starts Core. Returns once the socket is accepting connections.
 pub async fn start(config: CoreConfig) -> Result<RunningCore, CoreError> {
-    let paths = &config.paths;
+    let paths = config.paths.clone();
+    let paths = &paths;
     create_private_dir(&paths.data_dir)?;
     let lock = acquire_lock(&paths.lock_file)?;
 
@@ -89,6 +90,16 @@ pub async fn start(config: CoreConfig) -> Result<RunningCore, CoreError> {
     )
     .await?;
 
+    let git = Git::new(config.git.clone());
+    let config = Arc::new(config);
+    let agents =
+        crate::agents::AgentService::new(storage.clone(), bus.clone(), git.clone(), Arc::clone(&config));
+    match agents.reconcile_on_startup().await {
+        Ok(_) => {}
+        Err(err) => tracing::error!(?err, "cannot reconcile agent sessions from a previous run"),
+    }
+
+    let paths = &config.paths;
     let listener = bind_socket(&paths.socket)?;
     let owner_uid = std::fs::metadata(&paths.socket)
         .map(|m| std::os::unix::fs::MetadataExt::uid(&m))
@@ -98,8 +109,9 @@ pub async fn start(config: CoreConfig) -> Result<RunningCore, CoreError> {
     let state = CoreState {
         info: Arc::new(info.clone()),
         started: Instant::now(),
-        git: Git::new(config.git.clone()),
-        config: Arc::new(config),
+        git,
+        agents,
+        config,
         storage,
         bus,
         connected_clients: Arc::new(AtomicU64::new(0)),

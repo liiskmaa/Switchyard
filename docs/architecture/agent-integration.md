@@ -1,124 +1,189 @@
-# Agent integration notes: Claude Code and OpenAI Codex
+# Agent integration: Claude Code (implemented) and OpenAI Codex (research)
 
-Status: **research only.** No adapter is implemented in milestone 1.
+**Status:** Claude Code has been integrated since milestone 2. Codex is still at the research stage;
+section 2 is unchanged from milestone 1.
 
-Researched 2026-11-11. Sources:
+**Evidence labels**
 
-- Claude Code: the official docs at `code.claude.com/docs/en/{headless,cli-reference,hooks,permissions,settings,sessions,agent-sdk/*}`.
-- Codex: the official docs at `developers.openai.com/codex/*` (now redirecting to `learn.chatgpt.com/docs/*`) and `github.com/openai/codex/codex-rs/app-server/README.md`.
-- Local verification against the installed CLIs: **Claude Code 2.1.322** (`claude --help`) and
-  **codex-cli 0.166.0** (`codex app-server --help`, plus `codex app-server generate-json-schema`, which
-  produced 106 client methods, 85 notifications and 10 server requests).
+- **[verified]**: observed by running the installed CLI. The transcripts are committed in
+  `crates/switchyard-agents/tests/fixtures/claude-2.1.322/`, and the opt-in test
+  `crates/switchyard-core/tests/real_claude.rs` replays the behaviour through Core.
+- **[documented]**: stated in the official docs, but not exercised by Switchyard.
+- **[undocumented]**: used by the official Agent SDK but not described in the CLI docs. Switchyard
+  relies on this only where it is verified, and guards against drift.
+- **[assumption]**: not verified. Call it out wherever it matters.
 
-Labels used below:
-
-- **[stable]**: documented with no maturity caveat.
-- **[experimental]**: the vendor labels it experimental, beta, alpha or under development.
-- **[undocumented]**: observed but not found in official docs. Do not depend on it without a guard.
-
-Facts change quickly with these tools. Re-verify against the installed version (the CLI's own `--help`
-and generated schemas) at adapter start-up, and record the detected version in `agents.cli_version`.
+Sources: <https://code.claude.com/docs/en/cli-reference>, `/headless`, `/hooks`, `/permissions`,
+`/sandboxing`, `/sessions`, `/agent-sdk/permissions`, `/agent-sdk/user-input`, and
+`/agent-sdk/streaming-vs-single-mode`. The research was done on 2026-11-11.
 
 ---
 
-## 1. Claude Code
+## 1. Claude Code (CLI 2.1.322, tested 2026-11-11)
 
-### Execution model
+### 1.1 Launch command (exactly what Core runs)
 
-- **Headless mode [stable]:** `claude -p/--print` runs non-interactively. Exit code is 0 on success
-  and non-zero on failure. In-run failures (such as missing auth) are printed as the result on stdout;
-  invalid flags go to stderr before the run starts.
-- **Structured output [stable]:** `--output-format text|json|stream-json`. `stream-json` emits
-  newline-delimited JSON. Every documented example also passes `--verbose`; the docs do not say
-  whether it is required. Test this at integration time.
-- **Structured input [stable flag, partially documented]:** `--input-format stream-json` keeps
-  stdin open for multiple user messages and control requests. The full stdin wire schema is **not
-  documented** in the CLI docs. It is described only indirectly through the Agent SDK
-  (`control_request {type, request_id, request}`; responses echo `request_id`).
-- `--include-partial-messages` (stream-json only) adds `stream_event` lines carrying text deltas
-  (`event.delta.type == "text_delta"`).
-- `--replay-user-messages`, `--include-hook-events` and `--prompt-suggestions` are stream-json
-  extras.
-- `--max-turns` and `--max-budget-usd` are print-mode limits. The budget is a client-side estimate
-  and can be exceeded.
-- `--json-schema` produces structured final output in `result.structured_output`.
+```text
+claude -p --input-format stream-json --output-format stream-json --verbose \
+       --include-partial-messages \
+       --permission-mode default --permission-prompt-tool stdio \
+       --restricted --strict-mcp-config \
+       --tools Read,Write,Edit,Glob,Grep,Bash,NotebookEdit \
+       --settings '{"permissions":{"ask":["Bash"],"defaultMode":"default"}}' \
+       --session-id <uuid>            # new session; or: --resume <native id>
+       [--model <alias>]
+```
 
-### stream-json message types
+- **Launch:** the process is started with `execve`. No shell is involved, and every argument is a
+  separate argv entry (`crates/switchyard-agents/src/claude/launch.rs`).
+- **Working directory:** the project's registered root. The process runs in its own process group,
+  and stdin, stdout and stderr are all piped.
+- **Environment:** the child environment is built from scratch (`ENV_POLICY`):
+  - Passed through: `HOME`, `USER`, `PATH` (with the CLI's directory prepended), locale, proxy and
+    CA settings, `SSH_AUTH_SOCK`, and provider variables (`ANTHROPIC_*`, `AWS_*`, `CLAUDE_CODE_USE_*`,
+    `CLAUDE_CONFIG_DIR`, `GOOGLE_APPLICATION_CREDENTIALS`).
+  - Removed: everything else, including the variables an enclosing Claude Code session sets
+    (`CLAUDECODE`, `CLAUDE_CODE_SESSION*`, and so on).
+  - Authentication is the user's own (keychain via `HOME`, or provider variables). Switchyard never
+    stores credentials and never logs the environment.
+- **Detection** (`detect.rs`):
+  - Locates the CLI from the explicit configuration, then `SWITCHYARD_CLAUDE_BIN`, then `PATH`, then
+    `~/.local/bin`, `~/.claude/local`, `/opt/homebrew/bin` and `/usr/local/bin`.
+  - Runs `--version` and checks that every required flag is mentioned in `--help`. In 2.1.322
+    `--permission-prompt-tool` is not listed as an option, only referenced in the description of
+    `--permission-prompts`.
+  - Runs `auth status --json` and reads only `loggedIn`, `authMethod` and `apiProvider`. The email
+    and organisation fields in that output are ignored.
 
-| `type` | Notes |
-|--------|-------|
-| `system` / `init` | model, tools, MCP server status, `mcp_server_errors`, plugins, `capabilities` (e.g. `interrupt_receipt_v1`, `interrupt_cancel_queued_v1`). The full field list is not documented. |
-| `system` / `api_retry` | attempt, max_retries, retry_delay_ms, error category |
-| `system` / hook events, `permission_denied`, … | Hook events only with `--include-hook-events` |
-| `assistant`, `user` | `parent_tool_use_id` is null on the main thread and set inside subagents |
-| `stream_event` | Partial deltas (with `--include-partial-messages`) |
-| `result` | Always the last line. `subtype: success \| error_max_turns \| error_during_execution \| error_max_budget_usd \| error_max_structured_output_retries`, plus `is_error`, `result`, `session_id`, `num_turns`, `duration_ms`, `total_cost_usd` (an estimate), `usage`, `modelUsage`, `permission_denials` |
+### 1.2 Process and stream behaviour
 
-### Sessions [stable]
+| Question | Answer | Evidence |
+|----------|--------|----------|
+| Multiple messages in one process | Yes. Each stdin user message starts a turn, and each turn ends with exactly one `result`. | [verified] `write_allow` |
+| Output before the first input | None. `system/init` is emitted when the first message arrives, and **again at the start of every turn**. | [verified] |
+| Switchyard chooses the session ID | Yes, with `--session-id <uuid>` (a valid UUID is required). | [verified] |
+| Resume | `--resume <id>` continues the conversation **under the same `session_id`**, with earlier context remembered. | [verified] `resume`, `real_claude.rs` |
+| Message sent while a turn runs | Queued. It becomes the next turn and does **not** change the running turn. | [verified] `queued_message`; [documented] streaming mode |
+| Steering a running turn | **Not supported** by this interface. `capabilities.steer_running_turn = false`. | [verified] by the queue behaviour |
+| Interrupt | `{"type":"control_request","request_id":…,"request":{"subtype":"interrupt"}}` is answered with `control_response {still_queued: []}`, a `user` message `[Request interrupted by user]`, and a `result` with `subtype:"error_during_execution"` and `terminal_reason:"aborted_streaming"`. **The process stays alive.** | [verified] `interrupt`; [undocumented] wire format (SDK `interrupt()`) |
+| Interrupt during a pending permission | The CLI sends `control_cancel_request {request_id}`, then a rejected `tool_result`, then `terminal_reason:"aborted_tools"`. | [verified] `interrupt_pending_permission` |
+| stdin closed | Exits after the current turn. The exit code is **1 if the last `result` was an error**, otherwise 0. | [verified] |
+| SIGTERM | Exit code 143; the turn is left unfinished. | [documented] headless |
+| stderr | Diagnostics only. Not structured. | [verified] |
 
-- `--session-id <uuid>` lets **Switchyard choose the ID**. This is the preferred approach, because
-  the ID is known before the process starts.
-- `--resume <id>`, `--continue` (`-p --continue` is needed for print-mode sessions), and
-  `--fork-session` (a new ID when resuming). `--no-session-persistence` disables saving.
-- Transcripts are stored at `~/.claude/projects/<cwd with non-alphanumerics → '-'>/<session-id>.jsonl`
-  (or under `CLAUDE_CONFIG_DIR`) and retained for 30 days by default. **The JSONL format is internal
-  and may change.** Do not parse it; rely on the stream instead.
-- Resuming does **not** restore `--mcp-config`, `--settings`, `--add-dir` or `--plugin-dir`. The
-  adapter must pass them again.
-- 2.1.322 also has `--bg/--background` with `claude agents|attach|logs|stop`. This is Claude's own
-  background-session manager. Switchyard must **not** use it, because Core is the process owner.
+### 1.3 stdout message types used
 
-### Permissions
+Examples are abbreviated, verbatim shapes from the fixtures.
 
-- `--permission-mode default(manual)|acceptEdits|plan|auto|dontAsk|bypassPermissions` [stable]. Since
-  v2.1.302, `-p` starts in Manual mode, where calls needing approval are **denied** unless a
-  PermissionRequest hook or `--permission-prompt-tool` approves them.
-- `--allowedTools` / `--disallowedTools` rules use the form `Tool` or `Tool(specifier)`
-  (`Bash(git diff *)`, `Read(//abs/**)`, `WebFetch(domain:x)`, `mcp__server__tool`). Evaluation order
-  is deny, then ask, then allow; the first match wins. Prefix rules are **not a security boundary**
-  (per the docs).
-- `--permission-prompt-tool mcp__<server>__<tool>` [stable] delegates each approval decision to an
-  MCP tool. **This is the natural hook for Switchyard approvals:** Core exposes an MCP server, Claude
-  asks it, and Core turns each request into an `approvals` row that the operator answers. The exact
-  required return format is documented on the errors page, which was **not fetched**. Confirm it
-  before implementing.
-- `--permission-prompts host|none` (v2.1.259+).
-- Settings precedence: managed > `--settings`/CLI > project local > project shared > user. Lists
-  merge. Project `permissions.allow` applies only to trusted folders.
+```json
+{"type":"system","subtype":"init","cwd":"/workspace/demo","session_id":"79affdf0-…","tools":["Bash","Edit",…],
+ "mcp_servers":[],"model":"claude-haiku-5-5","permissionMode":"default","claude_code_version":"2.1.322",
+ "capabilities":["interrupt_receipt_v1","interrupt_cancel_queued_v1",…]}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"DONE"}},
+ "session_id":"…","parent_tool_use_id":null}
+{"type":"assistant","message":{"id":"msg_…","content":[{"type":"tool_use","id":"toolu_01…","name":"Write",
+ "input":{"file_path":"/workspace/demo/notes.txt","content":"switchyard"}}]},"session_id":"…"}
+{"type":"control_request","request_id":"894d46da-…","request":{"subtype":"can_use_tool","tool_name":"Write",
+ "display_name":"Write","input":{…},"description":"notes.txt","tool_use_id":"toolu_01…",
+ "permission_suggestions":[{"type":"setMode","mode":"acceptEdits","destination":"session"}]}}
+{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_01…","type":"tool_result",
+ "content":"File created successfully at: …"}]}}
+{"type":"result","subtype":"success","is_error":false,"result":"DONE","session_id":"…","num_turns":2,
+ "duration_ms":4736,"total_cost_usd":0.004,"stop_reason":"end_turn","terminal_reason":"completed",
+ "permission_denials":[]}
+```
 
-### Hooks [stable, except agent-type hooks which are experimental]
+- `assistant` lines carry **one content block each** (thinking, text or tool_use). The text is
+  complete, so Switchyard journals it once as `agent.message` and does not journal each delta.
+- Other message types seen and ignored: `system/status`, `system/thinking_tokens` and
+  `rate_limit_event`. `stream_event` covers `message_start`, `content_block_start`,
+  `content_block_delta` (`text_delta`, `thinking_delta` and `input_json_delta`),
+  `content_block_stop`, `message_delta` and `message_stop`.
+- Parsing is lenient: unknown types and fields are ignored, malformed lines become `agent.warning`,
+  and oversized lines (over 16 MiB) are discarded without losing alignment with the stream.
 
-- Events include SessionStart, UserPromptSubmit, PreToolUse, PermissionRequest, PermissionDenied,
-  PostToolUse, PostToolUseFailure, Notification, SubagentStart/Stop, Stop, StopFailure, PreCompact,
-  PostCompact, FileChanged, WorktreeCreate/Remove, SessionEnd and more. The full list is in the docs
-  table.
-- Handler types are command, http, mcp_tool and prompt; `agent` is experimental. Input is JSON on
-  stdin with `session_id`, `cwd`, `hook_event_name`, `permission_mode`, `tool_name`, `tool_input`,
-  `tool_use_id`, and so on. Exit code `2` blocks. JSON output can return `permissionDecision`
-  (allow/deny/ask/defer) or `decision: "block"`.
-- `-p` without `--bare` runs the project's `.claude/settings.json` hooks and `.mcp.json` servers
-  **without a trust dialog**. That is a security consideration for repositories Switchyard opens.
-- `--bare` skips hooks, CLAUDE.md, plugins and keychain, and requires `ANTHROPIC_API_KEY`. The docs
-  say it will become the default for `-p` in a future release. The adapter must pin its behaviour
-  explicitly rather than rely on the default.
+### 1.4 Permission mechanism (why stdio, not an MCP prompt tool)
 
-### Interruption
+`--permission-prompt-tool stdio` makes the CLI send each permission decision to the host as a
+`can_use_tool` control request on stdout. The host answers on stdin:
 
-- **SIGINT** ends the current turn cleanly [stable].
-- **SIGTERM** makes the process exit with code 143: the turn is left unfinished, the Bash process tree
-  is killed, and SessionEnd hooks run [stable].
-- An in-band `interrupt` control request exists via stream-json input. The protocol is documented
-  only through the SDK (`Query.interrupt()`, gated by the `interrupt_receipt_v1` capability).
+```json
+{"type":"control_response","response":{"subtype":"success","request_id":"<id>",
+  "response":{"behavior":"allow","updatedInput":{…original input…}}}}
+{"type":"control_response","response":{"subtype":"success","request_id":"<id>",
+  "response":{"behavior":"deny","message":"<shown to Claude as the tool_result>"}}}
+```
 
-### Agent SDK
+Both forms were [verified]. On deny, Claude receives a `tool_result` with `is_error: true`, the
+message text, and an entry in `permission_denials`. Neither stdio delegation nor this response shape
+is described in the CLI docs [undocumented]. It is the transport that the official Agent SDK uses for
+`canUseTool`, whose allow/deny shapes are [documented].
 
-`@anthropic-ai/claude-agent-sdk` (TypeScript) and a Python SDK **wrap the same CLI binary** as a
-subprocess. Anthropic's terms do not allow third-party products to offer claude.ai login through the
-SDK. Products should use API-key auth. **Implication:** Switchyard drives the user's own installed
-`claude` CLI as the user (local-first, the user's own credentials). This needs a product and legal
-check before distribution.
+The documented alternative, `--permission-prompt-tool mcp__server__tool`, was not chosen:
 
----
+- Its return format lives on a docs page that could not be retrieved.
+- It requires Switchyard to run an MCP server process for every session.
+- The CLI waits up to `MCP_TIMEOUT` (30 s) for that server before the first turn.
+
+Mitigation for relying on undocumented behaviour: the tested version is recorded with each session,
+and the fixtures and fake agent pin the shapes. An incompatible CLI fails visibly (start-up failure
+with stderr, or `agent.warning`) instead of silently allowing anything.
+
+**Which requests reach Switchyard** ([documented], `/agent-sdk/permissions`). The CLI evaluates, in
+order: hooks, then deny rules, then ask rules, then the permission mode, then allow rules, then the
+host (`can_use_tool`). Only calls that no earlier step resolves reach Switchyard. Core makes sure
+nothing earlier can *allow* a call:
+
+- `--restricted` ignores user, project and local settings files, so their allow rules and their
+  hooks do not apply. Managed (enterprise) settings still apply; that is a known limitation.
+- `--permission-mode default` is used. `acceptEdits`, `bypassPermissions` and
+  `--dangerously-skip-permissions` are never used.
+- Built-in read-only tools (Read, Glob, Grep) inside the working directory are allowed by Claude
+  without asking [documented]. Everything else asks.
+- `--settings` adds an `ask` rule for `Bash`, so **every** shell command reaches Switchyard,
+  including the built-in "read-only" commands such as `ls` and `cat`, which would otherwise be
+  auto-allowed. [verified] `bash_ask`: `ls` and `cat /etc/hosts` both produced `can_use_tool`.
+- `--strict-mcp-config` loads no MCP servers. Without it, account-level claude.ai connectors were
+  loaded [verified].
+
+**Not intercepted** (all native behaviour): reads with Read, Glob or Grep inside the working
+directory. Writes and edits outside it are refused by `--restricted` itself.
+
+**Hooks were evaluated and not used for interception.** PreToolUse, PermissionRequest and similar
+hooks are shell commands that Claude runs. Using them would mean Switchyard writing executable
+configuration into repositories or `--settings`. With `--restricted`, project hooks are ignored
+anyway. Lifecycle observation comes from the stream itself (`init`, `tool_use`, `tool_result`,
+`result`), which carries the same information without an extra process per event. Hooks remain an
+option for future needs such as `PostToolUse` diffs.
+
+**Timeouts and unavailability.** The CLI has no documented timeout for `can_use_tool`; it waits
+indefinitely [verified: the requests stayed pending]. Switchyard therefore enforces its own timeout
+(15 min by default, `SWITCHYARD_APPROVAL_TIMEOUT_SECS`), after which it **denies** the request. If
+Core cannot record a request, it denies it immediately. If Core dies, the CLI's stdin closes and the
+process exits without running the tool.
+
+### 1.5 Filesystem scope
+
+- `--restricted` confines the file tools to the working directory (and `--add-dir`, which is never
+  passed) [documented]. Reads inside the project are allowed without asking.
+- **Bash is not sandboxed by Claude by default** [documented: "the sandbox is off by default"].
+  Switchyard compensates by requiring an operator decision for every Bash command (see above). It
+  does *not* claim OS-level isolation. A command the operator approves runs with the user's
+  privileges.
+- Registering the Switchyard repository itself as a project grants nothing special. It gets the same
+  confinement and approvals as any other project.
+
+### 1.6 Known unsupported or limited behaviour
+
+- **Steering a running turn:** not possible. Messages can only be queued (they start the next turn),
+  or the turn can be interrupted.
+- **`updatedInput` (approve with modifications):** supported by the CLI. Switchyard always passes the
+  original input and does not offer editing.
+- **Sub-agent (`Task`) output:** excluded from the tool list until Switchyard supervises nested
+  agents.
+- **Live output after a disconnect:** not replayed. Completed messages are in the journal, and the
+  in-progress message is available as a snapshot (`sessions.get.live_text`).
+- **Recovering a running process after a Core crash:** not possible. See section 3.
 
 ## 2. OpenAI Codex
 
@@ -190,25 +255,13 @@ channel, so only the sandbox and approval policy decide.
 
 ---
 
-## 3. Implications for Switchyard
+## 3. Process ownership and recovery (implemented policy)
 
-1. **Process ownership:** Core spawns both CLIs as children (never `claude --bg` or the Codex daemon),
-   with `cwd` set to the agent's workspace. It records `pid` and the vendor session or thread ID in
-   `sessions`, and supervises them (exit codes, signals).
-2. **Claude adapter:** `claude -p --input-format stream-json --output-format stream-json --verbose
-   --session-id <uuid> --permission-mode default --permission-prompt-tool mcp__switchyard__approve
-   --mcp-config <core-provided> --strict-mcp-config`. Core serves a small MCP server (stdio or UDS) for
-   approvals and, later, inter-agent messaging.
-3. **Codex adapter:** `codex app-server` over stdio, using JSON-RPC types generated from the pinned
-   schema, with server-initiated approvals mapped to Switchyard approvals and `turn/steer` and
-   `turn/interrupt` exposed as operator controls. Because it is experimental, version-pin it and
-   feature-detect methods.
-4. **Event volume:** delta notifications (token streams, command output) are high-frequency.
-   Journaling every delta with `synchronous=FULL` is unnecessary. A likely design: journal item
-   start and completion, approvals and lifecycle events; stream deltas through an ephemeral channel.
-   This is an open decision (see `decisions.md`).
-5. **Security:** both tools execute repository-provided configuration (Claude hooks and MCP; Codex
-   `.codex` config). Workspaces opened by Switchyard should start with restrictive defaults, and the
-   operator should see which project-level agent configuration exists.
-6. **Version drift:** detect versions at start-up (`claude --version`, `codex --version`) and refuse
-   untested major versions, or run them in a degraded mode.
+| Situation | Behaviour | Evidence |
+|-----------|-----------|----------|
+| Desktop closes or disconnects | Agents keep running. On reconnect the UI lists the same session (same pid) and its pending approvals. No new process is created. | `tests/agents.rs::reconnecting_client_…` |
+| Duplicate start | At most one attached session per project; resuming an attached session fails with `conflict`. | `one_live_session_per_project…`, `stop_then_resume…` |
+| Graceful Core shutdown (SIGTERM, SIGINT or `system.shutdown`) | Pending approvals are cancelled (`core_shutdown`) and the agent is told to deny. A running turn is interrupted. stdin is closed, followed by SIGTERM and then SIGKILL after grace periods (5 s + 5 s). The session ends `stopped` with failure `core_shutdown`. | `core_shutdown_stops_sessions…`, `process.rs` |
+| Core crash (SIGKILL) | The agent's stdin pipe closes, so the CLI exits by itself; no orphan remains. On restart, sessions left live are marked `failed` (`core_restarted`) and their pending approvals `cancelled` (`core_restart`). **The running process is not recovered.** | `process.rs::core_crash_leaves_no_orphan…` |
+| Recovery | Explicit only: `sessions.resume` starts a new process with `--resume <native id>`. It is never automatic, and is refused while a process is attached. | same |
+| Agent crash | The session becomes `failed`, with the exit code or signal and the last 1 KB of stderr. Pending approvals are cancelled (`agent_exited`). | `crash_is_reported…` |

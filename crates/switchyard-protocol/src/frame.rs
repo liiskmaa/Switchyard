@@ -38,6 +38,9 @@ pub enum ServerFrame {
     /// Core ended a subscription on its own (e.g. a journal read failed).
     /// The client may resubscribe with `after_seq` set to the last seen seq.
     SubscriptionClosed { subscription_id: Uuid, error: ProtocolError },
+    /// Ephemeral agent output on a `live.subscribe` subscription. Not
+    /// journaled; may be dropped for slow clients (signalled by a `gap`).
+    Live { subscription_id: Uuid, output: crate::model::LiveOutput },
     /// Core is shutting down; the connection will close after this frame.
     Shutdown { reason: String },
 }

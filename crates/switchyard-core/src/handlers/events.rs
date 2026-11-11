@@ -37,7 +37,11 @@ pub(crate) async fn list(
         ));
     }
     // Without `after_seq` the caller wants the most recent page.
-    if params.after_seq.is_none() && params.project_id.is_none() && params.event_types.is_empty() {
+    if params.after_seq.is_none()
+        && params.project_id.is_none()
+        && params.session_id.is_none()
+        && params.event_types.is_empty()
+    {
         let events = state
             .storage
             .call(move |c| switchyard_storage::events::read_latest(c, limit))
@@ -48,6 +52,7 @@ pub(crate) async fn list(
     let filter = EventFilter {
         after_seq: params.after_seq,
         project_id: params.project_id,
+        session_id: params.session_id,
         event_types: params.event_types,
         limit,
     };
@@ -153,4 +158,68 @@ pub(crate) async fn unsubscribe(
             format!("subscription {} not found", params.subscription_id),
         )),
     }
+}
+
+/// Ephemeral live output. Lossy by design: if this client falls behind, the
+/// broadcast ring overwrites chunks and the client receives a `gap` marker;
+/// the agent is never slowed down by a client.
+pub(crate) async fn live_subscribe(
+    conn: &Connection,
+    params: switchyard_protocol::methods::LiveSubscribeParams,
+) -> Result<Reply, ProtocolError> {
+    use switchyard_protocol::model::{LiveKind, LiveOutput};
+    use tokio::sync::broadcast::error::RecvError as LiveRecvError;
+
+    let max = conn.state.config.max_subscriptions_per_client;
+    let subscription_id = switchyard_events::new_id();
+    let start = Arc::new(Notify::new());
+    let mut rx = conn.state.agents.live().subscribe();
+    let filter = params.session_id;
+    let task_conn = conn.clone();
+    let task_start = Arc::clone(&start);
+    let mut closing = conn.state.closing.subscribe();
+    let task = async move {
+        task_start.notified().await;
+        loop {
+            let output = tokio::select! {
+                output = rx.recv() => output,
+                () = wait_closing(&mut closing) => break,
+            };
+            let frame_output = match output {
+                Ok(o) if filter.is_none_or(|s| s == o.session_id) => (*o).clone(),
+                Ok(_) => continue,
+                Err(LiveRecvError::Lagged(missed)) => LiveOutput {
+                    session_id: filter.unwrap_or_default(),
+                    seq: 0,
+                    kind: LiveKind::Gap,
+                    text: String::new(),
+                    missed: Some(missed),
+                },
+                Err(LiveRecvError::Closed) => break,
+            };
+            if !task_conn.send(ServerFrame::Live { subscription_id, output: frame_output }).await {
+                break;
+            }
+        }
+        if let Ok(mut subs) = task_conn.subscriptions.lock() {
+            subs.remove(&subscription_id);
+        }
+    };
+    {
+        let mut subs = conn
+            .subscriptions
+            .lock()
+            .map_err(|_| errors::internal("subscription registry", "mutex poisoned"))?;
+        if subs.len() >= max {
+            return Err(ProtocolError::new(
+                ErrorCode::Overloaded,
+                format!("at most {max} subscriptions per connection"),
+            ));
+        }
+        let handle = tokio::spawn(task);
+        subs.insert(subscription_id, handle.abort_handle());
+    }
+    let mut reply = Reply::encode(EventsSubscribeResult { subscription_id })?;
+    reply.after_send = Some(start);
+    Ok(reply)
 }

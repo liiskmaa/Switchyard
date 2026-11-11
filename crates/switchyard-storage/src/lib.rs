@@ -7,21 +7,28 @@
 //! write ordering trivial; WAL mode keeps external readers (e.g. `sqlite3`
 //! during debugging) from blocking Core.
 
+pub mod agents;
+pub mod approvals;
 mod error;
 pub mod events;
 mod migrations;
 pub mod projects;
+pub mod sessions;
 pub mod stats;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::OpenFlags;
 
+pub use approvals::ApprovalRecord;
 pub use error::StorageError;
 pub use migrations::{LATEST_SCHEMA_VERSION, MIGRATIONS};
 pub use projects::ProjectRecord;
+/// Re-exported so callers composing transactions need no direct `rusqlite` dependency.
+pub use rusqlite::{Connection, Transaction};
+pub use sessions::{SessionChanges, SessionRecord};
 pub use stats::DatabaseStats;
 
 #[derive(Clone)]
@@ -105,6 +112,10 @@ pub(crate) fn parse_uuid(value: &str, column: &'static str) -> Result<uuid::Uuid
         .map_err(|e| StorageError::Corrupt(format!("invalid UUID in {column}: {value:?} ({e})")))
 }
 
+pub(crate) fn parse_enum<T: std::str::FromStr>(value: &str, column: &'static str) -> Result<T, StorageError> {
+    value.parse().map_err(|_| StorageError::Corrupt(format!("invalid value in {column}: {value:?}")))
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
@@ -113,5 +124,19 @@ pub(crate) mod test_support {
         let dir = tempfile::tempdir().unwrap();
         let storage = Storage::open(&dir.path().join("test.db")).unwrap();
         (dir, storage)
+    }
+
+    pub fn insert_project(storage: &Storage, path: &str) -> uuid::Uuid {
+        let id = switchyard_events::new_id();
+        storage
+            .with_conn(|c| {
+                c.execute(
+                    "INSERT INTO projects (id, name, root_path, created_at, updated_at) VALUES (?1, 'p', ?2, 1, 1)",
+                    [id.to_string(), path.to_owned()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        id
     }
 }

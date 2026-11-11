@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use switchyard_client::{ClientError, ClientOptions, CoreClient, Notification};
-use switchyard_protocol::methods::{EventsSubscribe, EventsSubscribeParams};
+use switchyard_protocol::methods::{
+    EventsSubscribe, EventsSubscribeParams, LiveSubscribe, LiveSubscribeParams,
+};
 use switchyard_protocol::model::CoreInfo;
 use switchyard_protocol::paths::CorePaths;
 use tauri::{AppHandle, Emitter};
@@ -21,6 +23,7 @@ use crate::launcher::Launcher;
 
 pub const EVENT_CONNECTION: &str = "core://connection";
 pub const EVENT_CORE_EVENT: &str = "core://event";
+pub const EVENT_LIVE: &str = "core://live";
 
 const BACKOFF_MIN: Duration = Duration::from_millis(250);
 const BACKOFF_MAX: Duration = Duration::from_secs(5);
@@ -151,6 +154,12 @@ async fn serve_connection(
         Ok(sub) => sub.subscription_id,
         Err(err) => return err,
     };
+    // Ephemeral agent output; anything streamed while disconnected is not
+    // replayed (durable history comes from the journal).
+    let live = match client.call::<LiveSubscribe>(LiveSubscribeParams::default()).await {
+        Ok(sub) => sub.subscription_id,
+        Err(err) => return err,
+    };
     *bridge.client.write().await = Some(client.clone());
     tracing::info!(core = %info.core.version, instance = %info.core.instance_id, "connected to Switchyard Core");
     bridge.set_state(
@@ -168,6 +177,12 @@ async fn serve_connection(
                 }
             }
             Notification::Event { .. } => {}
+            Notification::Live { subscription_id, output } if subscription_id == live => {
+                if let Err(err) = app.emit(EVENT_LIVE, &output) {
+                    tracing::debug!(%err, "cannot forward live output");
+                }
+            }
+            Notification::Live { .. } => {}
             Notification::SubscriptionClosed { error, .. } => {
                 tracing::warn!(?error, "Core closed the event subscription; reconnecting");
                 client.close().await;

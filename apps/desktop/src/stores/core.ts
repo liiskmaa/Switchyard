@@ -3,9 +3,9 @@
 
 import { useEffect } from "react";
 
-import { coreRequest, getConnection, onConnection, onCoreEvent, runtimeAvailable, toCoreError } from "../lib/core";
+import { coreRequest, getConnection, onConnection, onCoreEvent, onLive, runtimeAvailable, toCoreError } from "../lib/core";
 import { mergeEvents } from "../lib/format";
-import type { ConnectionState, EventEnvelope } from "../types/protocol";
+import type { ConnectionState, EventEnvelope, LiveOutput } from "../types/protocol";
 import { createStore, useStore } from "./store";
 
 const EVENT_BUFFER = 500;
@@ -21,6 +21,44 @@ export interface EventFeed {
 }
 
 export const eventFeedStore = createStore<EventFeed>({ events: [], loaded: false, error: null });
+
+/** Ephemeral in-progress assistant text per session (never journaled). */
+export interface LiveState {
+  text: string;
+  thinking: boolean;
+  seq: number;
+  /** Some output was dropped (slow client or reconnect). */
+  gap: boolean;
+}
+
+export const liveStore = createStore<Record<string, LiveState>>({});
+
+export function applyLive(state: Record<string, LiveState>, o: LiveOutput): Record<string, LiveState> {
+  if (o.kind === "gap") {
+    // A gap without a session (all-session subscription) marks every buffer.
+    const next: Record<string, LiveState> = {};
+    for (const [id, s] of Object.entries(state)) next[id] = { ...s, gap: true };
+    return next;
+  }
+  const current = state[o.session_id] ?? { text: "", thinking: false, seq: 0, gap: false };
+  if (o.seq <= current.seq) return state;
+  let next: LiveState;
+  switch (o.kind) {
+    case "message_start":
+      next = { text: "", thinking: false, seq: o.seq, gap: false };
+      break;
+    case "text":
+      next = { ...current, text: current.text + o.text, thinking: false, seq: o.seq };
+      break;
+    case "thinking":
+      next = { ...current, thinking: true, seq: o.seq };
+      break;
+    case "message_stop":
+      next = { ...current, thinking: false, seq: o.seq };
+      break;
+  }
+  return { ...state, [o.session_id]: next };
+}
 
 type EventListener = (event: EventEnvelope) => void;
 const eventListeners = new Set<EventListener>();
@@ -55,7 +93,11 @@ async function loadHistory(): Promise<void> {
 function applyConnection(state: ConnectionState): void {
   const wasConnected = connectionStore.get().state === "connected";
   connectionStore.set(state);
-  if (state.state === "connected" && !wasConnected) void loadHistory();
+  if (state.state === "connected" && !wasConnected) {
+    // Live output streamed while disconnected is not replayed.
+    liveStore.set((live) => Object.fromEntries(Object.entries(live).map(([id, l]) => [id, { ...l, gap: true }])));
+    void loadHistory();
+  }
 }
 
 let started = false;
@@ -74,6 +116,7 @@ export async function startCoreSync(): Promise<void> {
     eventFeedStore.set((feed) => ({ ...feed, events: mergeEvents(feed.events, [event], EVENT_BUFFER) }));
     for (const listener of eventListeners) listener(event);
   });
+  await onLive((output) => liveStore.set((state) => applyLive(state, output)));
   await onConnection(applyConnection);
   // The bridge may have connected before the listener was registered.
   applyConnection(await getConnection());

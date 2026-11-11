@@ -9,7 +9,10 @@ use rusqlite::Connection;
 use crate::error::StorageError;
 
 /// `(version, sql)` in ascending order. Versions are contiguous from 1.
-pub const MIGRATIONS: &[(u32, &str)] = &[(1, include_str!("../../../migrations/0001_initial.sql"))];
+pub const MIGRATIONS: &[(u32, &str)] = &[
+    (1, include_str!("../../../migrations/0001_initial.sql")),
+    (2, include_str!("../../../migrations/0002_agent_sessions.sql")),
+];
 
 pub const LATEST_SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
 

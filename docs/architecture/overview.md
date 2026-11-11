@@ -42,7 +42,8 @@ later milestones build on.
 | `switchyard-storage` | SQLite connection (WAL, foreign keys, `synchronous=FULL`), embedded migrations, project repository, event journal implementation, health stats. | events |
 | `switchyard-git` | Read-only Git inspection through the `git` CLI: repository-root validation and `status --porcelain=v2` parsing. | — |
 | `switchyard-client` | Async protocol client: handshake, request correlation, notifications, disconnect detection. Used by the desktop and the tests. | protocol |
-| `switchyard-core` | The executable: config, lifecycle (lock, socket, signals), connection server, request handlers. | all of the above |
+| `switchyard-agents` | Vendor-neutral agent model; process supervision (no shell, controlled environment, bounded lines, SIGTERM/SIGKILL escalation); Claude Code adapter. | — |
+| `switchyard-core` | The executable: config, lifecycle (lock, socket, signals), connection server, request handlers, agent sessions (`src/agents`), and the `switchyard-fake-claude` test binary. | all of the above |
 | `apps/desktop/src-tauri` | Desktop shell: Core bridge (connect, reconnect, replay, forward events), launcher, Tauri commands. | client, protocol |
 
 Dependency rule: **transport, persistence and domain stay separate.** `events` does not know about
@@ -134,9 +135,35 @@ recent events), Projects (register, inspect Git status, remove), Activity (journ
 Approvals, which are explicit not-yet-available states with no simulated data. Settings shows real
 runtime paths and versions.
 
+## Agent sessions (milestone 2)
+
+```text
+UI ──invoke──► bridge ──IPC──► handlers/agents.rs ──► AgentService (core/src/agents)
+                                                        │  commit(): state + events + approvals, one SQLite tx
+                                                        ├─ supervisor task per session ◄── SessionUpdate (bounded 256)
+                                                        │      └─ LiveHub (lossy broadcast) ──► live frames
+                                                        ├─ approvals: request → pending → operator/timeout/cancel
+                                                        └─ WatcherHub (notify/FSEvents, debounced) ──► files.changed
+switchyard-agents::claude::spawn_session ── driver task owns child stdin/stdout ── `claude -p` (stream-json)
+```
+
+- `switchyard-agents` is vendor-neutral (states, capabilities, adapter output) plus the Claude
+  adapter: detection, argv and environment construction, the wire normalizer, and the session
+  driver. The fake CLI used by tests is `switchyard-core/src/bin/fake_claude.rs`.
+- **Durable vs. ephemeral.** Complete messages, tool calls and results, approvals, state changes and
+  file changes go to the journal. Token deltas go only to the live channel, with a per-session
+  in-progress snapshot ([ADR 0009](../decisions/0009-durable-vs-live-output.md)).
+- **Approvals** are rows in `approvals`, settled exactly once by a SQL guard. A decision is committed
+  before it is delivered; expiry and every non-operator path deny.
+- **Process ownership and recovery** follow [ADR 0010](../decisions/0010-agent-process-ownership.md):
+  agents survive UI disconnects, are stopped on Core shutdown, and are not re-adopted after a Core
+  crash (they are marked `failed` and resumed explicitly).
+- **Workspace boundary:** [ADR 0011](../decisions/0011-agent-workspace-boundary.md).
+- **Files.** Actual changes come from the filesystem watcher (a fact), tool calls from the agent
+  stream (intent), and repository state from `projects.git_status`. The UI shows all three
+  separately.
+
 ## What is intentionally absent
 
-There are no agent adapters, workspaces or worktrees, permissions enforcement, filesystem watching,
-or automated Git writes yet. The schema reserves their tables; the code does not implement them.
-See [agent-integration.md](agent-integration.md) and
-[agent-adapter-contract.md](../protocols/agent-adapter-contract.md) for the next steps.
+There are no Codex adapter, Git worktrees or multi-agent workspaces, rule-based permission policy
+(the `permissions` table), task, message or finding workflows, or automated Git writes yet.

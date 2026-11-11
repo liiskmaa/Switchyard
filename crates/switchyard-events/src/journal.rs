@@ -8,6 +8,7 @@ pub struct EventFilter {
     /// Only events with `seq > after_seq`.
     pub after_seq: Option<i64>,
     pub project_id: Option<Uuid>,
+    pub session_id: Option<Uuid>,
     /// Exact event type names. Empty means all types.
     pub event_types: Vec<String>,
     /// Maximum number of events to return (ascending by `seq`).
@@ -19,6 +20,7 @@ impl EventFilter {
     pub fn matches(&self, event: &EventEnvelope) -> bool {
         self.after_seq.is_none_or(|after| event.seq > after)
             && self.project_id.is_none_or(|p| event.context.project_id == Some(p))
+            && self.session_id.is_none_or(|s| event.context.session_id == Some(s))
             && (self.event_types.is_empty() || self.event_types.contains(&event.event_type))
     }
 }

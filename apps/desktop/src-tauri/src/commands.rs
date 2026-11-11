@@ -9,14 +9,17 @@ use serde_json::Value;
 use switchyard_client::ClientError;
 use switchyard_protocol::Method;
 use switchyard_protocol::methods::{
-    EventsList, ProjectsAdd, ProjectsGet, ProjectsGitStatus, ProjectsList, ProjectsRemove, SystemHealth,
+    AgentsList, ApprovalsDecide, ApprovalsList, EventsList, ProjectsAdd, ProjectsGet, ProjectsGitStatus,
+    ProjectsList, ProjectsRemove, SessionsGet, SessionsInterrupt, SessionsList, SessionsResume, SessionsSend,
+    SessionsStart, SessionsStop, SystemHealth,
 };
 use tauri::State;
 
 use crate::bridge::{Bridge, ConnectionState};
 
 /// Core methods the UI may call. Connection-level methods (`initialize`,
-/// `events.subscribe`, `system.shutdown`) are reserved for the bridge.
+/// `events.subscribe`, `live.subscribe`, `system.shutdown`) are reserved for
+/// the bridge.
 const ALLOWED_METHODS: &[&str] = &[
     SystemHealth::NAME,
     ProjectsList::NAME,
@@ -25,6 +28,16 @@ const ALLOWED_METHODS: &[&str] = &[
     ProjectsRemove::NAME,
     ProjectsGitStatus::NAME,
     EventsList::NAME,
+    AgentsList::NAME,
+    SessionsStart::NAME,
+    SessionsList::NAME,
+    SessionsGet::NAME,
+    SessionsSend::NAME,
+    SessionsInterrupt::NAME,
+    SessionsStop::NAME,
+    SessionsResume::NAME,
+    ApprovalsList::NAME,
+    ApprovalsDecide::NAME,
 ];
 
 #[derive(Debug, Serialize)]

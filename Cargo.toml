@@ -6,6 +6,7 @@ members = [
     "crates/switchyard-storage",
     "crates/switchyard-git",
     "crates/switchyard-client",
+    "crates/switchyard-agents",
     "crates/switchyard-core",
     "apps/desktop/src-tauri",
 ]
@@ -23,6 +24,7 @@ switchyard-events = { path = "crates/switchyard-events" }
 switchyard-storage = { path = "crates/switchyard-storage" }
 switchyard-git = { path = "crates/switchyard-git" }
 switchyard-client = { path = "crates/switchyard-client" }
+switchyard-agents = { path = "crates/switchyard-agents" }
 
 tokio = { version = "1.54", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -33,6 +35,8 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json", "fm
 uuid = { version = "1.29", features = ["v7", "serde"] }
 rusqlite = { version = "0.41", features = ["bundled"] }
 tempfile = "3.27"
+nix = { version = "0.31", default-features = false, features = ["signal"] }
+notify = { version = "8.2", default-features = false, features = ["macos_fsevent"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -132,3 +132,97 @@ fn version_and_usage_errors() {
     let out = Command::new(BIN).args(["--data-dir", "relative"]).output().unwrap();
     assert_eq!(out.status.code(), Some(2));
 }
+
+fn pid_alive(pid: u32) -> bool {
+    Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+#[tokio::test]
+async fn core_crash_leaves_no_orphan_agent_and_restart_reports_lost_session() {
+    use switchyard_protocol::methods::{
+        SessionIdParams, SessionsGet, SessionsResume, SessionsResumeParams, SessionsStart,
+        SessionsStartParams,
+    };
+    use switchyard_protocol::model::SessionState;
+
+    let dir = data_dir();
+    let data = dir.path().join("data");
+    let socket = data.join("core.sock");
+    let spawn = || {
+        Command::new(BIN)
+            .arg("--data-dir")
+            .arg(&data)
+            .env("SWITCHYARD_LOG", "warn")
+            .env("SWITCHYARD_CLAUDE_BIN", common::FAKE_CLAUDE)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    };
+    let mut core = spawn();
+    wait_for_socket(&socket).await;
+    let (client, _rx) = connect(&socket).await;
+    let repo = git_repo(dir.path(), "crash-repo");
+    let project = client
+        .call::<ProjectsAdd>(ProjectsAddParams { path: repo.display().to_string() })
+        .await
+        .unwrap()
+        .project;
+    let session = client
+        .call::<SessionsStart>(SessionsStartParams {
+            project_id: project.id,
+            provider: None,
+            prompt: None,
+            model: None,
+        })
+        .await
+        .unwrap()
+        .session;
+    let agent_pid = session.pid.unwrap();
+    assert!(pid_alive(agent_pid));
+
+    core.kill().unwrap(); // SIGKILL: no shutdown logic runs.
+    wait_exit(&mut core);
+    drop(client);
+    // The agent's stdin pipe closed with Core, so it exits on its own.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while pid_alive(agent_pid) {
+        assert!(Instant::now() < deadline, "agent process {agent_pid} outlived Core");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let mut core = spawn();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let client = loop {
+        let mut options = switchyard_client::ClientOptions::new("t", "0");
+        options.request_timeout = Duration::from_secs(10);
+        if let Ok((c, _)) = switchyard_client::CoreClient::connect(&socket, options).await {
+            break c;
+        }
+        assert!(Instant::now() < deadline, "restarted Core never became reachable");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let after = client.call::<SessionsGet>(SessionIdParams { session_id: session.id }).await.unwrap().session;
+    assert_eq!(after.state, SessionState::Failed);
+    assert!(after.failure.as_deref().unwrap_or_default().starts_with("core_restarted"));
+    assert!(!after.attached);
+    // Recovery is explicit: resume starts a new process for the same native session.
+    let resumed = client
+        .call::<SessionsResume>(SessionsResumeParams { session_id: session.id, prompt: None })
+        .await
+        .unwrap()
+        .session;
+    assert_eq!(resumed.native_session_id, session.native_session_id);
+    assert!(resumed.attached && resumed.pid != Some(agent_pid));
+
+    client.call::<SystemShutdown>(ShutdownParams::default()).await.unwrap();
+    assert!(wait_exit(&mut core).success());
+    let resumed_pid = resumed.pid.unwrap();
+    assert!(!pid_alive(resumed_pid), "graceful shutdown stops agents");
+}

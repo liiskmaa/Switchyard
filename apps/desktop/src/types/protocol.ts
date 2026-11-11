@@ -87,6 +87,100 @@ export interface CoreEnvironment {
   desktop_version: string;
 }
 
+export interface Capabilities {
+  multi_turn: boolean;
+  streaming_text: boolean;
+  interrupt_turn: boolean;
+  queue_message_during_turn: boolean;
+  steer_running_turn: boolean;
+  resume_session: boolean;
+  permission_requests: boolean;
+  caller_assigned_session_id: boolean;
+}
+
+export interface AgentAvailability {
+  provider: string;
+  display_name: string;
+  installed: boolean;
+  executable: string | null;
+  version: string | null;
+  tested_version: string;
+  error: string | null;
+  auth: { logged_in: boolean; method: string | null; provider: string | null } | null;
+  capabilities: Capabilities;
+  checked_at_ms: number;
+}
+
+export type SessionState =
+  | "starting"
+  | "initializing"
+  | "idle"
+  | "running"
+  | "waiting_for_approval"
+  | "interrupted"
+  | "completed"
+  | "failed"
+  | "stopped";
+
+export const TERMINAL_STATES: readonly SessionState[] = ["completed", "failed", "stopped"];
+
+export interface Session {
+  id: Uuid;
+  project_id: Uuid;
+  workspace_id: Uuid | null;
+  agent_id: Uuid;
+  provider: string;
+  native_session_id: string | null;
+  cwd: string;
+  state: SessionState;
+  pid: number | null;
+  cli_version: string | null;
+  model: string | null;
+  started_at_ms: number;
+  ended_at_ms: number | null;
+  last_activity_at_ms: number;
+  exit_code: number | null;
+  exit_signal: number | null;
+  failure: string | null;
+  resume_count: number;
+  attached: boolean;
+  pending_approvals: number;
+  capabilities: Capabilities;
+}
+
+export type ApprovalStatus = "pending" | "approved" | "denied" | "expired" | "cancelled";
+
+export interface Approval {
+  id: Uuid;
+  project_id: Uuid;
+  session_id: Uuid;
+  agent_id: Uuid | null;
+  tool_name: string;
+  tool_use_id: string | null;
+  input: unknown;
+  description: string | null;
+  details: unknown;
+  status: ApprovalStatus;
+  requested_at_ms: number;
+  expires_at_ms: number;
+  decided_at_ms: number | null;
+  decision_source: string | null;
+  decided_by: string | null;
+  decision_note: string | null;
+}
+
+export type LiveKind = "text" | "thinking" | "message_start" | "message_stop" | "gap";
+
+export interface LiveOutput {
+  session_id: Uuid;
+  seq: number;
+  kind: LiveKind;
+  text: string;
+  missed?: number;
+}
+
+export type Delivery = "started_turn" | "queued_for_next_turn";
+
 type NoParams = Record<string, never>;
 
 /** Methods the desktop bridge allows the UI to call. */
@@ -98,8 +192,33 @@ export interface CoreMethods {
   "projects.remove": { params: { project_id: Uuid }; result: { project_id: Uuid } };
   "projects.git_status": { params: { project_id: Uuid }; result: GitStatusReport };
   "events.list": {
-    params: { after_seq?: number; project_id?: Uuid; event_types?: string[]; limit?: number };
+    params: { after_seq?: number; project_id?: Uuid; session_id?: Uuid; event_types?: string[]; limit?: number };
     result: { events: EventEnvelope[] };
+  };
+  "agents.list": { params: { refresh?: boolean }; result: { agents: AgentAvailability[] } };
+  "sessions.start": {
+    params: { project_id: Uuid; prompt?: string; model?: string };
+    result: { session: Session };
+  };
+  "sessions.list": {
+    params: { project_id?: Uuid; live_only?: boolean; limit?: number };
+    result: { sessions: Session[] };
+  };
+  "sessions.get": { params: { session_id: Uuid }; result: { session: Session; live_text: string; live_seq: number } };
+  "sessions.send": {
+    params: { session_id: Uuid; text: string; queue_if_busy?: boolean };
+    result: { delivery: Delivery };
+  };
+  "sessions.interrupt": { params: { session_id: Uuid }; result: { session: Session } };
+  "sessions.stop": { params: { session_id: Uuid }; result: { session: Session } };
+  "sessions.resume": { params: { session_id: Uuid; prompt?: string }; result: { session: Session } };
+  "approvals.list": {
+    params: { status?: ApprovalStatus; session_id?: Uuid; project_id?: Uuid; limit?: number };
+    result: { approvals: Approval[] };
+  };
+  "approvals.decide": {
+    params: { approval_id: Uuid; decision: "approve" | "deny"; note?: string };
+    result: { approval: Approval };
   };
 }
 

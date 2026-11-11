@@ -13,6 +13,8 @@
 | Vite | 8.3, `@vitejs/plugin-react` 6.3 | Vite 8 requires Node ^20.19 or ≥ 22.12. |
 | TypeScript | 5.9.3 | TS 6 and 7 (native port) are available. 5.9 was chosen for ecosystem compatibility; upgrading is a mechanical follow-up. |
 | Vitest | 5.1 | Unit tests for pure frontend logic. |
+| nix | 0.31 (`signal` only) | Milestone 2: safe `kill(2)` wrapper for SIGTERM/SIGINT to agent processes (the workspace forbids `unsafe`). |
+| notify | 8.2 (`macos_fsevent`) | Milestone 2: native filesystem events (FSEvents) for `files.changed`. 9.x is still a release candidate. |
 | npm | ≥ 11 | npm 10.8 crashes resolving Vitest 5's optional peer set (`Cannot read properties of null (reading 'edgesOut')`). |
 
 Not used: an HTTP server, a router or state-management library, an icon library, ORMs, CLI parsing

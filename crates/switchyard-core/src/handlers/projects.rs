@@ -95,6 +95,12 @@ pub(crate) async fn remove(
     params: ProjectIdParams,
 ) -> Result<ProjectsRemoveResult, ProtocolError> {
     let id = params.project_id;
+    if let Some(session) = state.agents.has_attached_for_project(id) {
+        return Err(ProtocolError::new(
+            ErrorCode::Conflict,
+            format!("project has a running agent session ({session}); stop it before removing the project"),
+        ));
+    }
     let storage = state.storage.clone();
     let (record, _event) = state
         .bus

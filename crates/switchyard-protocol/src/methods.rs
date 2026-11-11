@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 use switchyard_events::EventEnvelope;
 use uuid::Uuid;
 
-use crate::model::{ClientInfo, CoreInfo, GitStatusReport, HealthReport, Project};
+use crate::model::{
+    AgentAvailability, Approval, ApprovalStatus, ClientInfo, CoreInfo, GitStatusReport, HealthReport,
+    Project, Session,
+};
 
 pub trait Method {
     const NAME: &'static str;
@@ -118,6 +121,8 @@ pub struct EventsListParams {
     #[serde(default)]
     pub project_id: Option<Uuid>,
     #[serde(default)]
+    pub session_id: Option<Uuid>,
+    #[serde(default)]
     pub event_types: Vec<String>,
     /// Defaults to 100, capped at [`MAX_EVENTS_PAGE`].
     #[serde(default)]
@@ -158,3 +163,178 @@ pub struct EventsUnsubscribeParams {
 }
 
 method!(EventsUnsubscribe, "events.unsubscribe", EventsUnsubscribeParams, Empty);
+
+// --- agents -----------------------------------------------------------------
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentsListParams {
+    /// Re-run detection instead of returning the cached result.
+    #[serde(default)]
+    pub refresh: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentsListResult {
+    pub agents: Vec<AgentAvailability>,
+}
+
+method!(AgentsList, "agents.list", AgentsListParams, AgentsListResult);
+
+// --- sessions ---------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionsStartParams {
+    pub project_id: Uuid,
+    /// Only `claude_code` is supported in this version.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// First task; sent once the agent is ready.
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionResult {
+    pub session: Session,
+}
+
+method!(SessionsStart, "sessions.start", SessionsStartParams, SessionResult);
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionsListParams {
+    #[serde(default)]
+    pub project_id: Option<Uuid>,
+    #[serde(default)]
+    pub live_only: bool,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionsListResult {
+    pub sessions: Vec<Session>,
+}
+
+method!(SessionsList, "sessions.list", SessionsListParams, SessionsListResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionIdParams {
+    pub session_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionDetail {
+    pub session: Session,
+    /// Assistant text of the message currently being streamed (ephemeral;
+    /// empty when nothing is streaming). Lets a reconnecting client catch up
+    /// on in-progress output without the journal storing tokens.
+    pub live_text: String,
+    /// Live sequence number the snapshot corresponds to.
+    pub live_seq: u64,
+}
+
+method!(SessionsGet, "sessions.get", SessionIdParams, SessionDetail);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionsSendParams {
+    pub session_id: Uuid,
+    pub text: String,
+    /// When a turn is running: `true` queues the message as the next turn
+    /// (if the agent supports it); `false` fails with `invalid_state`.
+    #[serde(default)]
+    pub queue_if_busy: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Delivery {
+    /// The message started a new turn.
+    StartedTurn,
+    /// A turn was running; the agent will process the message next.
+    QueuedForNextTurn,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionsSendResult {
+    pub delivery: Delivery,
+}
+
+method!(SessionsSend, "sessions.send", SessionsSendParams, SessionsSendResult);
+method!(SessionsInterrupt, "sessions.interrupt", SessionIdParams, SessionResult);
+method!(SessionsStop, "sessions.stop", SessionIdParams, SessionResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionsResumeParams {
+    pub session_id: Uuid,
+    #[serde(default)]
+    pub prompt: Option<String>,
+}
+
+method!(SessionsResume, "sessions.resume", SessionsResumeParams, SessionResult);
+
+// --- approvals --------------------------------------------------------------
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalsListParams {
+    #[serde(default)]
+    pub status: Option<ApprovalStatus>,
+    #[serde(default)]
+    pub session_id: Option<Uuid>,
+    #[serde(default)]
+    pub project_id: Option<Uuid>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ApprovalsListResult {
+    pub approvals: Vec<Approval>,
+}
+
+method!(ApprovalsList, "approvals.list", ApprovalsListParams, ApprovalsListResult);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalDecision {
+    Approve,
+    Deny,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalsDecideParams {
+    pub approval_id: Uuid,
+    pub decision: ApprovalDecision,
+    /// Shown to the agent on deny.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ApprovalResult {
+    pub approval: Approval,
+}
+
+method!(ApprovalsDecide, "approvals.decide", ApprovalsDecideParams, ApprovalResult);
+
+// --- live output ------------------------------------------------------------
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiveSubscribeParams {
+    /// Only this session; omit for all sessions.
+    #[serde(default)]
+    pub session_id: Option<Uuid>,
+}
+
+method!(LiveSubscribe, "live.subscribe", LiveSubscribeParams, EventsSubscribeResult);
+method!(LiveUnsubscribe, "live.unsubscribe", EventsUnsubscribeParams, Empty);

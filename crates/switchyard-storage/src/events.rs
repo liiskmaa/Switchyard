@@ -45,6 +45,10 @@ pub fn read(conn: &Connection, filter: &EventFilter) -> Result<Vec<EventEnvelope
         sql.push_str(" AND project_id = ?");
         args.push(SqlValue::Text(project_id.to_string()));
     }
+    if let Some(session_id) = filter.session_id {
+        sql.push_str(" AND session_id = ?");
+        args.push(SqlValue::Text(session_id.to_string()));
+    }
     if !filter.event_types.is_empty() {
         sql.push_str(" AND event_type IN (");
         sql.push_str(&vec!["?"; filter.event_types.len()].join(", "));

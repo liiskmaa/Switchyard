@@ -1,0 +1,3 @@
+{"type":"user","message":{"role":"user","content":"Create a file named notes.txt containing exactly the word 'switchyard'. Use the Write tool. Then reply DONE."},"parent_tool_use_id":null,"session_id":"673ff15e-950c-4eab-9c06-db034134d4b6"}
+{"type":"control_response","response":{"subtype":"success","request_id":"5cecc550-a0eb-4b09-ae73-5967c5ef4c38","response":{"behavior":"allow","updatedInput":{"file_path":"/workspace/demo/notes.txt","content":"switchyard"}}}}
+{"type":"user","message":{"role":"user","content":"Now reply with just the word SECOND."},"parent_tool_use_id":null,"session_id":"673ff15e-950c-4eab-9c06-db034134d4b6"}

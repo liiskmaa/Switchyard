@@ -23,10 +23,30 @@ pub fn config_for(dir: &Path) -> CoreConfig {
     CoreConfig::for_data_dir(dir.join("data"), None).unwrap()
 }
 
+pub const FAKE_CLAUDE: &str = env!("CARGO_BIN_EXE_switchyard-fake-claude");
+
+/// Core configured to run the fake agent instead of a real `claude`.
+pub fn agent_config(dir: &Path) -> CoreConfig {
+    let mut config = config_for(dir);
+    config.claude_executable = Some(PathBuf::from(FAKE_CLAUDE));
+    config.agent_stop_grace = Duration::from_secs(2);
+    config.agent_term_grace = Duration::from_secs(2);
+    config.file_debounce = Duration::from_millis(200);
+    config
+}
+
 impl TestCore {
     pub async fn start() -> Self {
         let dir = data_dir();
         let core = switchyard_core::start(config_for(dir.path())).await.unwrap();
+        Self { dir, core: Some(core) }
+    }
+
+    pub async fn start_with(configure: impl FnOnce(&mut CoreConfig)) -> Self {
+        let dir = data_dir();
+        let mut config = agent_config(dir.path());
+        configure(&mut config);
+        let core = switchyard_core::start(config).await.unwrap();
         Self { dir, core: Some(core) }
     }
 

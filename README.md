@@ -5,9 +5,14 @@ Claude Code and OpenAI Codex. It runs the agents' own CLIs as supervised process
 work, records everything in a durable event journal, and puts a human operator in control. It is not
 a coding agent itself.
 
-> **Status: milestone 1 (foundation).** Working today: a separate Core process with IPC, SQLite
-> persistence, the event engine, project registration with Git status, and the desktop shell.
-> **No agent integration yet.** See [docs/architecture/agent-integration.md](docs/architecture/agent-integration.md).
+> **Status: milestone 2.** Working today:
+>
+> - A separate Core process with IPC, SQLite persistence and the event journal.
+> - Project registration with Git status.
+> - **Native Claude Code sessions** run by Core: streamed output, tool activity, centralized
+>   approvals, interrupt, stop and resume, and observed file changes.
+>
+> Codex is not integrated yet. See [docs/architecture/agent-integration.md](docs/architecture/agent-integration.md).
 
 ## Architecture in one paragraph
 
@@ -26,6 +31,7 @@ crates/switchyard-events/    Event types, journal trait, event bus
 crates/switchyard-storage/   SQLite, migrations, repositories, event journal
 crates/switchyard-git/       Read-only git CLI inspection
 crates/switchyard-client/    Async protocol client (desktop + tests)
+crates/switchyard-agents/    Agent model, process supervision, Claude Code adapter
 migrations/              SQL migrations (embedded into Core at compile time)
 docs/                    Architecture, ADRs, protocol specs
 scripts/                 Build helpers
@@ -38,6 +44,9 @@ scripts/                 Build helpers
 - Node **^20.19 or ≥ 22.12** and **npm ≥ 11** (npm 10.8 fails to resolve the dependency tree; run
   `npm i -g npm@11`)
 - Xcode Command Line Tools (provides `git` and the macOS SDK)
+- For agent sessions: Claude Code CLI (verified with **2.1.322**), logged in with `claude auth login`
+  or configured with your provider's environment variables. Switchyard uses your existing login and
+  never stores credentials.
 
 ## Setup
 
@@ -73,6 +82,8 @@ another one.
 | `SWITCHYARD_AUTO_LAUNCH_CORE` | `1` | `0` stops the desktop from starting Core |
 | `SWITCHYARD_GIT` | `git` on `PATH` | Git executable used by Core |
 | `SWITCHYARD_LOG` | `info` | `tracing` filter for Core and the desktop |
+| `SWITCHYARD_CLAUDE_BIN` | `claude` on `PATH`, then `~/.local/bin`, `/opt/homebrew/bin`, … | Claude Code executable |
+| `SWITCHYARD_APPROVAL_TIMEOUT_SECS` | `900` | Pending permission requests are denied after this long |
 
 Core CLI: `switchyard-core [--data-dir PATH] [--socket PATH] [--log-format text|json] [--version]`.
 Exit codes: `0` clean shutdown, `1` runtime error, `2` usage or configuration error, `3` another Core
@@ -96,6 +107,14 @@ npm run lint                              # rustfmt --check, clippy -D warnings,
 ```
 
 Git-based tests create temporary repositories with the `git` CLI, so `git` must be installed.
+
+Agent tests use `switchyard-fake-claude`, a deterministic stand-in for the CLI built from recorded
+real transcripts, so they need no network and no credentials. An opt-in test drives the **real**
+installed CLI through Core (it makes a few small paid requests):
+
+```sh
+SWITCHYARD_REAL_CLAUDE=1 cargo test -p switchyard-core --test real_claude -- --ignored --nocapture
+```
 
 ## Building a release bundle
 
@@ -127,6 +146,22 @@ data directory:
 
 The UI was not inspected visually in that session, because screen capture was unavailable to the
 tooling. Visual QA and click-through of the project registration form are still open.
+
+## Using Claude Code in Switchyard
+
+1. Go to **Projects** and select a repository, then click **Start Claude session** (an initial task
+   is optional).
+2. Under **Agents**, watch streamed output, tool calls, file changes and state. Send tasks from the
+   composer. While a turn runs, a message can only be *queued* for the next turn, because Claude Code
+   cannot change a running turn. **Interrupt** ends the turn; **Stop session** ends the process;
+   **Resume session** continues a finished session.
+3. **Approvals:** every shell command and file change waits here (or inline in the session) for
+   **Approve** or **Deny**. Unanswered requests are denied after 15 minutes.
+
+Claude runs with `--restricted`, with no MCP servers and a fixed tool list, and with an approval rule
+for every Bash command. Repository and user Claude settings and hooks are not loaded
+([ADR 0011](docs/decisions/0011-agent-workspace-boundary.md)). Closing the desktop does not stop
+agents. Stopping Core does, and a crashed Core's sessions must be resumed explicitly.
 
 ## Documentation
 

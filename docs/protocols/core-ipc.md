@@ -40,6 +40,7 @@ Every frame has a `type` discriminator.
 | `error` | `{"type":"error","id":1,"error":{"code":"not_found","message":"…","data":{…}}}` | Request `id` failed. `id` is `null` when the failing frame could not be attributed to a request (for example, invalid JSON). `data` is optional. |
 | `event` | `{"type":"event","subscription_id":"…","event":{EventEnvelope}}` | An event on an active subscription. |
 | `subscription_closed` | `{"type":"subscription_closed","subscription_id":"…","error":{…}}` | Core ended a subscription on its own. `error.data.last_seq` tells the client where to resume. |
+| `live` | `{"type":"live","subscription_id":"…","output":{"session_id":"…","seq":42,"kind":"text","text":"Hel"}}` | Ephemeral agent output, sent only on `live.subscribe` subscriptions. `kind` is `text`, `thinking`, `message_start`, `message_stop` or `gap` (which carries `missed: n`). Not journaled, and lossy for slow clients. |
 | `shutdown` | `{"type":"shutdown","reason":"SIGTERM"}` | Core is stopping. The connection closes after this frame. |
 
 Requests on one connection run concurrently, so responses can arrive in a different order from the
@@ -87,6 +88,18 @@ client detect a restart. `seq` stays continuous across restarts because it lives
 | `events.list` | `{after_seq?, project_id?, event_types?: string[], limit?: 1..=1000 (default 100)}` | `{events: EventEnvelope[]}` in ascending `seq` order. Without any filter it returns the **latest** `limit` events; with filters it returns the first `limit` events after `after_seq`. |
 | `events.subscribe` | `{after_seq?, project_id?, event_types?}` | `{subscription_id}` |
 | `events.unsubscribe` | `{subscription_id}` | `{}` |
+| `agents.list` | `{refresh?: bool}` | `{agents: [AgentAvailability]}` (Claude Code: installed, version, tested version, executable, error, auth `{logged_in, method, provider}`, capabilities) |
+| `sessions.start` | `{project_id, prompt?, model?, provider?: "claude_code"}` | `{session: Session}`. Launches Claude in the project root. `conflict` if the project already has an attached session; `agent_unavailable` or `agent_failed` (with `data.session_id`) on failure. |
+| `sessions.list` | `{project_id?, live_only?, limit?}` | `{sessions: [Session]}`, newest first |
+| `sessions.get` | `{session_id}` | `{session, live_text, live_seq}`. `live_text` is the message currently streaming (ephemeral). |
+| `sessions.send` | `{session_id, text, queue_if_busy?: bool}` | `{delivery: "started_turn" \| "queued_for_next_turn"}`. Without `queue_if_busy`, sending during a turn fails with `invalid_state`. |
+| `sessions.interrupt` | `{session_id}` | `{session}`. The state becomes `interrupted` when the agent confirms. |
+| `sessions.stop` | `{session_id}` | `{session}` once the process has exited (state `stopped`) |
+| `sessions.resume` | `{session_id, prompt?}` | `{session}`. Continues a terminal session in a new process with the same native ID; `conflict` if it is already attached. |
+| `approvals.list` | `{status?, session_id?, project_id?, limit?}` | `{approvals: [Approval]}`, newest first |
+| `approvals.decide` | `{approval_id, decision: "approve" \| "deny", note?}` | `{approval}` after the decision is durable. `conflict` if it is no longer pending. `note` is shown to the agent on deny. |
+| `live.subscribe` | `{session_id?}` | `{subscription_id}`. Delivers `live` frames. |
+| `live.unsubscribe` | `{subscription_id}` | `{}` |
 
 Unknown fields in method params are rejected with `invalid_params`.
 
@@ -130,6 +143,20 @@ the registration is kept and `projects.git_status` returns `repository_unavailab
 | `core.stopping` | `{instance_id, reason}` |
 | `project.registered` | `{project_id, name, root_path}` |
 | `project.removed` | `{project_id, root_path}` |
+| `agent.started` | `{provider, cli_version, pid, cwd, native_session_id, resumed}` |
+| `agent.ready` | `{native_session_id, model, tools}` |
+| `agent.state_changed` | `{from, to}` |
+| `agent.turn_started` | `{prompt, prompt_truncated, queued}` |
+| `agent.message` | `{message_id, text, truncated}` (complete messages only) |
+| `agent.tool_started` | `{tool_use_id, tool_name, input, input_truncated}` |
+| `agent.tool_completed` / `agent.tool_failed` | `{tool_use_id, tool_name, output, output_truncated[, rejected]}`; `causation_id` is the matching `tool_started` |
+| `agent.turn_completed` | `{success, interrupted, reason, stop_reason, duration_ms, cost_usd, result}` |
+| `agent.permission_requested` | `{approval_id, tool_name, tool_use_id, input, description, expires_at_ms}` |
+| `agent.permission_resolved` | `{approval_id, tool_name, status, source, decided_by, note}` |
+| `agent.interrupted`, `agent.session_resumed`, `agent.warning`, `agent.exited`, `agent.failed` | See `crates/switchyard-events/src/envelope.rs` |
+| `files.changed` | `{changes: [{path, kind: created\|modified\|deleted\|renamed, from?}], dropped}`: what the filesystem reported (debounced, `.git` and ignored paths excluded) |
+
+Agent events carry `project_id`, `workspace_id`, `session_id` and `agent_id` in the envelope. `events.list` also accepts `session_id`.
 
 Clients must tolerate unknown event types and payload fields.
 
@@ -147,6 +174,10 @@ Clients must tolerate unknown event types and payload fields.
 | `not_a_git_repository` | The path is not a Git working tree, is a bare repository, or is a subdirectory of a repository (`data.repository_root` is given in that last case). |
 | `repository_unavailable` | A registered repository is gone or unreadable. |
 | `git_unavailable`, `git_failed` | `git` cannot be executed, or it failed or timed out (15 s). |
+| `agent_unavailable` | The Claude Code CLI is missing, unusable or lacks required flags. |
+| `invalid_state` | The operation does not fit the session state (for example, sending during a turn without `queue_if_busy`, or interrupting an idle session). |
+| `unsupported` | The agent or provider cannot do this. |
+| `agent_failed` | The agent process failed to start or to accept a command. |
 | `shutting_down` | Core is stopping. |
 | `overloaded` | More than 32 concurrent requests, or too many subscriptions, on one connection. |
 | `internal` | An unexpected failure. Details are logged by Core. |

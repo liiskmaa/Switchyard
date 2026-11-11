@@ -5,9 +5,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 Switchyard orchestrates **native** coding agents (Claude Code, Codex CLIs) from a separate long-running
-Rust process, **Switchyard Core**. The Tauri desktop app is only a client. Milestone 1 is done: Core,
-IPC, SQLite, the event engine, project registration and the desktop shell. Agent adapters are **not
-implemented**. Their design lives in `docs/architecture/agent-integration.md` and
+Rust process, **Switchyard Core**. The Tauri desktop app is only a client.
+
+- Milestone 1: Core, IPC, SQLite, the event engine, projects, and the desktop shell.
+- Milestone 2: Claude Code sessions (`crates/switchyard-agents` and `crates/switchyard-core/src/agents`).
+- Codex is not implemented.
+
+The verified Claude CLI behaviour is in `docs/architecture/agent-integration.md`, and the contract in
 `docs/protocols/agent-adapter-contract.md`.
 
 ## Commands
@@ -23,6 +27,9 @@ cargo test -p switchyard-core --test events             # one integration test f
 cargo test -p switchyard-core --test projects vanished  # one test by name filter
 cargo test -p switchyard-storage projects::tests        # one module's unit tests
 npm run test:web                                        # vitest only (apps/desktop/src/**/*.test.ts)
+cargo test -p switchyard-core --test agents             # agent sessions via the fake CLI
+cargo test -p switchyard-agents claude::wire            # parser against recorded real transcripts
+SWITCHYARD_REAL_CLAUDE=1 cargo test -p switchyard-core --test real_claude -- --ignored   # real CLI, paid
 ```
 
 Rust is pinned to 1.99.1 (`rust-toolchain.toml`), edition 2024. Clippy warns on `unwrap`/`expect`
@@ -60,6 +67,18 @@ When running Core or the app manually, set `SWITCHYARD_DATA_DIR` (and, if that p
   must wait on `closing`, not `shutdown`, or clients miss `core.stopping`.
 - `tokio::sync::watch::Ref` is not `Send`. Use the `wait_shutdown` / `wait_closing` helpers in
   `state.rs` inside `select!`.
+
+- **Agents.**
+  - Every session state change goes through `AgentService::transition`/`commit` (state, events and
+    approvals in one transaction). Never update `sessions` rows elsewhere.
+  - Claude wire JSON stays inside `switchyard_agents::claude::wire`. Core sees only `AdapterOutput`.
+  - Token deltas go to `LiveHub` only, never the journal.
+  - Approvals are settled through `approvals::decide` (SQL-guarded `pending → final`), committed
+    before delivery; every non-operator path denies.
+  - When CLI behaviour changes, re-record fixtures in `crates/switchyard-agents/tests/fixtures/`
+    (sanitized; see its README) and keep `src/bin/fake_claude.rs` in sync with them.
+- Text edits made with ad-hoc scripts can silently no-op after `cargo fmt` reflows code. Verify
+  behaviour-only edits (guards, checks) with a test.
 
 ## Conventions
 

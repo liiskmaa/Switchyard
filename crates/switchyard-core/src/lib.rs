@@ -8,6 +8,7 @@
 //! [`start`] brings Core up and returns a [`RunningCore`] handle; the binary
 //! in `main.rs` adds argument parsing, logging and signal handling.
 
+mod agents;
 pub mod config;
 mod connection;
 mod error;

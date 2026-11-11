@@ -1,7 +1,8 @@
 //! Request dispatch. Each handler takes typed params and returns a typed
 //! result; this module does the JSON conversion and method routing.
 
-mod errors;
+mod agents;
+pub(crate) mod errors;
 mod events;
 mod projects;
 mod system;
@@ -68,6 +69,42 @@ pub(crate) async fn dispatch(conn: &Connection, method: &str, params: Value) -> 
         }
         methods::EventsUnsubscribe::NAME => {
             typed::<methods::EventsUnsubscribe, _, _>(params, |p| events::unsubscribe(conn, p)).await
+        }
+        methods::AgentsList::NAME => {
+            typed::<methods::AgentsList, _, _>(params, |p| agents::list(state, p)).await
+        }
+        methods::SessionsStart::NAME => {
+            typed::<methods::SessionsStart, _, _>(params, |p| agents::start(state, p)).await
+        }
+        methods::SessionsList::NAME => {
+            typed::<methods::SessionsList, _, _>(params, |p| agents::sessions(state, p)).await
+        }
+        methods::SessionsGet::NAME => {
+            typed::<methods::SessionsGet, _, _>(params, |p| agents::get(state, p)).await
+        }
+        methods::SessionsSend::NAME => {
+            typed::<methods::SessionsSend, _, _>(params, |p| agents::send(state, p)).await
+        }
+        methods::SessionsInterrupt::NAME => {
+            typed::<methods::SessionsInterrupt, _, _>(params, |p| agents::interrupt(state, p)).await
+        }
+        methods::SessionsStop::NAME => {
+            typed::<methods::SessionsStop, _, _>(params, |p| agents::stop(state, p)).await
+        }
+        methods::SessionsResume::NAME => {
+            typed::<methods::SessionsResume, _, _>(params, |p| agents::resume(state, p)).await
+        }
+        methods::ApprovalsList::NAME => {
+            typed::<methods::ApprovalsList, _, _>(params, |p| agents::approvals(state, p)).await
+        }
+        methods::ApprovalsDecide::NAME => {
+            typed::<methods::ApprovalsDecide, _, _>(params, |p| agents::decide(conn, p)).await
+        }
+        methods::LiveSubscribe::NAME => {
+            events::live_subscribe(conn, parse::<methods::LiveSubscribe>(params)?).await
+        }
+        methods::LiveUnsubscribe::NAME => {
+            typed::<methods::LiveUnsubscribe, _, _>(params, |p| events::unsubscribe(conn, p)).await
         }
         other => Err(ProtocolError::new(ErrorCode::MethodNotFound, format!("unknown method {other:?}"))),
     }

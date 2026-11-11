@@ -8,7 +8,9 @@ import { useConnection, useEventFeed } from "../../stores/core";
 import { useCoreQuery } from "../../stores/useCoreQuery";
 import type { EventEnvelope, HealthReport } from "../../types/protocol";
 import { EventList } from "../activity/EventList";
+import { STATE_LABEL, isAgentEvent, listSessions, stateTone } from "../agents/api";
 import { isProjectEvent, listProjects } from "../projects/api";
+import { navigate } from "../../stores/navigation";
 
 const fetchHealth = () => coreRequest("system.health", {});
 
@@ -26,7 +28,10 @@ const countOrDash = (n: number | null | undefined) => (n === null || n === undef
 
 export function DashboardView({ onOpenProjects }: { onOpenProjects: () => void }) {
   const connection = useConnection();
-  const refreshOn = useCallback((e: EventEnvelope) => isProjectEvent(e), []);
+  const refreshOn = useCallback((e: EventEnvelope) => isProjectEvent(e) || e.event_type === "agent.state_changed", []);
+  const liveSessions = useCoreQuery("dashboard-live-sessions", () => listSessions({ live_only: true }), {
+    refreshOn: (e) => isAgentEvent(e) && e.event_type !== "agent.message",
+  });
   const health = useCoreQuery<HealthReport>("health", fetchHealth, { intervalMs: 5_000, refreshOn });
   const projects = useCoreQuery("projects", listProjects, { refreshOn: isProjectEvent });
   const feed = useEventFeed();
@@ -93,11 +98,24 @@ export function DashboardView({ onOpenProjects }: { onOpenProjects: () => void }
         </Panel>
       </div>
 
-      <Panel title="Agents">
-        <EmptyState icon="agents" title="No agent sessions">
-          Claude Code and Codex adapters are not part of this milestone. When they land, running sessions, their
-          workspaces and live output will be supervised from here.
-        </EmptyState>
+      <Panel title="Active agent sessions">
+        {(liveSessions.data ?? []).length === 0 ? (
+          <EmptyState icon="agents" title="No agent sessions running">
+            Start Claude Code from a project in Projects.
+          </EmptyState>
+        ) : (
+          <ul className="mini-list">
+            {(liveSessions.data ?? []).map((s) => (
+              <li key={s.id}>
+                <Badge tone={stateTone(s.state)}>{STATE_LABEL[s.state]}</Badge>
+                <button type="button" className="link" onClick={() => navigate("agents", { sessionId: s.id })}>
+                  {projects.data?.find((p) => p.id === s.project_id)?.name ?? "project"} · pid {s.pid}
+                </button>
+                {s.pending_approvals > 0 ? <Badge tone="warn">{s.pending_approvals} pending approval</Badge> : null}
+              </li>
+            ))}
+          </ul>
+        )}
       </Panel>
     </div>
   );

@@ -29,6 +29,8 @@ pub(crate) struct Connection {
     pub state: CoreState,
     pub outbound: mpsc::Sender<ServerFrame>,
     pub subscriptions: Arc<Mutex<HashMap<Uuid, AbortHandle>>>,
+    /// Client name from `initialize`, recorded as the decider of approvals.
+    pub client_name: Arc<std::sync::OnceLock<String>>,
 }
 
 impl Connection {
@@ -71,6 +73,7 @@ pub(crate) async fn serve(stream: UnixStream, state: CoreState) {
         state: state.clone(),
         outbound,
         subscriptions: Arc::default(),
+        client_name: Arc::default(),
     };
     tracing::info!(connection = %conn.id, clients = state.clients(), "client connected");
 
@@ -116,7 +119,10 @@ pub(crate) async fn serve(stream: UnixStream, state: CoreState) {
         };
 
         if method == Initialize::NAME {
-            let outcome = initialize(&state, initialized, params).and_then(Reply::encode);
+            let outcome = initialize(&state, initialized, params).and_then(|(result, client)| {
+                let _ = conn.client_name.set(client);
+                Reply::encode(result)
+            });
             initialized |= outcome.is_ok();
             conn.send(response(id, outcome)).await;
             continue;
@@ -176,7 +182,11 @@ fn decode_request(line: &[u8]) -> Result<(RequestId, String, Value), (Option<Req
     }
 }
 
-fn initialize(state: &CoreState, already: bool, params: Value) -> Result<InitializeResult, ProtocolError> {
+fn initialize(
+    state: &CoreState,
+    already: bool,
+    params: Value,
+) -> Result<(InitializeResult, String), ProtocolError> {
     if already {
         return Err(ProtocolError::new(ErrorCode::AlreadyInitialized, "connection is already initialized"));
     }
@@ -196,10 +206,13 @@ fn initialize(state: &CoreState, already: bool, params: Value) -> Result<Initial
         })));
     }
     tracing::info!(client = %params.client.name, version = %params.client.version, "client initialized");
-    Ok(InitializeResult {
-        protocol_version: params.protocol_version.min(PROTOCOL_VERSION),
-        core: (*state.info).clone(),
-    })
+    Ok((
+        InitializeResult {
+            protocol_version: params.protocol_version.min(PROTOCOL_VERSION),
+            core: (*state.info).clone(),
+        },
+        params.client.name,
+    ))
 }
 
 async fn write_loop(mut write: OwnedWriteHalf, mut frames: mpsc::Receiver<ServerFrame>) {

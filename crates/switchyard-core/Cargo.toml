@@ -11,11 +11,19 @@ publish.workspace = true
 name = "switchyard-core"
 path = "src/main.rs"
 
+# Deterministic stand-in for the `claude` CLI, used by integration tests.
+# Never bundled (only `switchyard-core` is a Tauri externalBin).
+[[bin]]
+name = "switchyard-fake-claude"
+path = "src/bin/fake_claude.rs"
+
 [dependencies]
 switchyard-protocol.workspace = true
 switchyard-events.workspace = true
 switchyard-storage.workspace = true
 switchyard-git.workspace = true
+switchyard-agents.workspace = true
+notify.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

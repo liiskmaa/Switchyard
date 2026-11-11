@@ -5,7 +5,8 @@ use rusqlite::Connection;
 use crate::{StorageError, events, migrations, projects};
 
 /// Session statuses that count as "active" for health reporting.
-pub const ACTIVE_SESSION_STATUSES: &str = "'starting', 'active', 'idle'";
+pub const ACTIVE_SESSION_STATUSES: &str =
+    "'starting', 'initializing', 'idle', 'running', 'waiting_for_approval', 'interrupted'";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DatabaseStats {
@@ -24,7 +25,7 @@ pub fn collect(conn: &Connection) -> Result<DatabaseStats, StorageError> {
         projects: projects::count(conn)?,
         active_sessions: projects::count_query(
             conn,
-            &format!("SELECT COUNT(*) FROM sessions WHERE status IN ({ACTIVE_SESSION_STATUSES})"),
+            &format!("SELECT COUNT(*) FROM sessions WHERE state IN ({ACTIVE_SESSION_STATUSES})"),
         )?,
         last_event_seq: events::last_seq(conn)?,
     })

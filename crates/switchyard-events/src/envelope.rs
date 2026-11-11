@@ -25,6 +25,116 @@ pub enum DomainEvent {
     ProjectRegistered { project_id: Uuid, name: String, root_path: String },
     #[serde(rename = "project.removed")]
     ProjectRemoved { project_id: Uuid, root_path: String },
+
+    // --- agent sessions (context carries project/workspace/session/agent) --
+    /// A native agent process was launched for a session.
+    #[serde(rename = "agent.started")]
+    AgentStarted {
+        provider: String,
+        cli_version: String,
+        pid: u32,
+        cwd: String,
+        native_session_id: Option<String>,
+        resumed: bool,
+    },
+    /// The agent completed its handshake.
+    #[serde(rename = "agent.ready")]
+    AgentReady { native_session_id: String, model: Option<String>, tools: Vec<String> },
+    #[serde(rename = "agent.state_changed")]
+    AgentStateChanged { from: String, to: String },
+    /// Switchyard delivered a user message. `queued` means a turn was still
+    /// running, so the agent will process it as its next turn.
+    #[serde(rename = "agent.turn_started")]
+    AgentTurnStarted { prompt: String, prompt_truncated: bool, queued: bool },
+    /// A complete assistant message (never individual tokens).
+    #[serde(rename = "agent.message")]
+    AgentMessage { message_id: Option<String>, text: String, truncated: bool },
+    #[serde(rename = "agent.tool_started")]
+    AgentToolStarted {
+        tool_use_id: String,
+        tool_name: String,
+        input: serde_json::Value,
+        input_truncated: bool,
+    },
+    #[serde(rename = "agent.tool_completed")]
+    AgentToolCompleted {
+        tool_use_id: String,
+        tool_name: Option<String>,
+        output: String,
+        output_truncated: bool,
+    },
+    /// The tool failed, or did not run (`rejected`: permission denied or the
+    /// turn was interrupted first).
+    #[serde(rename = "agent.tool_failed")]
+    AgentToolFailed {
+        tool_use_id: String,
+        tool_name: Option<String>,
+        output: String,
+        output_truncated: bool,
+        rejected: bool,
+    },
+    #[serde(rename = "agent.turn_completed")]
+    AgentTurnCompleted {
+        success: bool,
+        interrupted: bool,
+        reason: Option<String>,
+        stop_reason: Option<String>,
+        duration_ms: Option<u64>,
+        cost_usd: Option<f64>,
+        result: Option<String>,
+    },
+    #[serde(rename = "agent.permission_requested")]
+    AgentPermissionRequested {
+        approval_id: Uuid,
+        tool_name: String,
+        tool_use_id: Option<String>,
+        input: serde_json::Value,
+        description: Option<String>,
+        expires_at_ms: i64,
+    },
+    #[serde(rename = "agent.permission_resolved")]
+    AgentPermissionResolved {
+        approval_id: Uuid,
+        tool_name: String,
+        status: String,
+        source: String,
+        decided_by: Option<String>,
+        note: Option<String>,
+    },
+    /// The agent acknowledged an interrupt request.
+    #[serde(rename = "agent.interrupted")]
+    AgentInterrupted {},
+    #[serde(rename = "agent.session_resumed")]
+    AgentSessionResumed { native_session_id: String, resume_count: u32 },
+    #[serde(rename = "agent.warning")]
+    AgentWarning { message: String },
+    /// The agent process ended.
+    #[serde(rename = "agent.exited")]
+    AgentExited {
+        exit_code: Option<i32>,
+        exit_signal: Option<i32>,
+        stop_requested: bool,
+        final_state: String,
+    },
+    /// The session failed (start failure, crash, lost supervision).
+    #[serde(rename = "agent.failed")]
+    AgentFailed { reason: String, detail: Option<String> },
+
+    // --- filesystem --------------------------------------------------------
+    /// Actual changes observed on disk in a project (debounced batch). This
+    /// records what the filesystem reported, independent of agent intent.
+    #[serde(rename = "files.changed")]
+    FilesChanged { changes: Vec<FileChange>, dropped: u32 },
+}
+
+/// One observed filesystem change, relative to the project root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileChange {
+    pub path: String,
+    /// `created`, `modified`, `deleted` or `renamed`.
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
 }
 
 impl DomainEvent {
@@ -35,6 +145,23 @@ impl DomainEvent {
             Self::CoreStopping { .. } => "core.stopping",
             Self::ProjectRegistered { .. } => "project.registered",
             Self::ProjectRemoved { .. } => "project.removed",
+            Self::AgentStarted { .. } => "agent.started",
+            Self::AgentReady { .. } => "agent.ready",
+            Self::AgentStateChanged { .. } => "agent.state_changed",
+            Self::AgentTurnStarted { .. } => "agent.turn_started",
+            Self::AgentMessage { .. } => "agent.message",
+            Self::AgentToolStarted { .. } => "agent.tool_started",
+            Self::AgentToolCompleted { .. } => "agent.tool_completed",
+            Self::AgentToolFailed { .. } => "agent.tool_failed",
+            Self::AgentTurnCompleted { .. } => "agent.turn_completed",
+            Self::AgentPermissionRequested { .. } => "agent.permission_requested",
+            Self::AgentPermissionResolved { .. } => "agent.permission_resolved",
+            Self::AgentInterrupted {} => "agent.interrupted",
+            Self::AgentSessionResumed { .. } => "agent.session_resumed",
+            Self::AgentWarning { .. } => "agent.warning",
+            Self::AgentExited { .. } => "agent.exited",
+            Self::AgentFailed { .. } => "agent.failed",
+            Self::FilesChanged { .. } => "files.changed",
         }
     }
 
@@ -155,6 +282,26 @@ mod tests {
         let envelope = draft.into_envelope(7);
         assert_eq!(envelope.seq, 7);
         assert_eq!(envelope.decode()?, event);
+        Ok(())
+    }
+
+    #[test]
+    fn every_variant_tag_matches_event_type() -> Result<(), Box<dyn std::error::Error>> {
+        let samples = vec![
+            DomainEvent::AgentInterrupted {},
+            DomainEvent::AgentWarning { message: "m".into() },
+            DomainEvent::AgentStateChanged { from: "idle".into(), to: "running".into() },
+            DomainEvent::FilesChanged {
+                changes: vec![FileChange { path: "a".into(), kind: "created".into(), from: None }],
+                dropped: 0,
+            },
+        ];
+        for event in samples {
+            let tagged = serde_json::to_value(&event)?;
+            assert_eq!(tagged["type"], event.event_type());
+            let envelope = EventDraft::new(event.clone(), EventContext::default())?.into_envelope(1);
+            assert_eq!(envelope.decode()?, event);
+        }
         Ok(())
     }
 

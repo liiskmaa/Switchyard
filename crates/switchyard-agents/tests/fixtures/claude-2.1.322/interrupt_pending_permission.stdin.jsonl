@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":"Create a file named pending.txt containing 'x' using the Write tool."},"parent_tool_use_id":null,"session_id":"c0554757-803c-4a5f-a23d-2101e22e0467"}
+{"type":"control_request","request_id":"int-2","request":{"subtype":"interrupt"}}

@@ -14,7 +14,7 @@ pub mod journal;
 
 pub use bus::{EventBus, EventBusConfig, EventSubscription, PublishError, RecvError};
 pub use envelope::{
-    DomainEvent, EVENT_SCHEMA_VERSION, EventContext, EventDecodeError, EventDraft, EventEnvelope,
+    DomainEvent, EVENT_SCHEMA_VERSION, EventContext, EventDecodeError, EventDraft, EventEnvelope, FileChange,
 };
 pub use ids::{EventId, new_id, now_ms};
 pub use journal::{EventFilter, EventJournal, JournalError};

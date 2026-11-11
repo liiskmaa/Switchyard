@@ -8,6 +8,7 @@ use switchyard_protocol::model::CoreInfo;
 use switchyard_storage::Storage;
 use tokio::sync::watch;
 
+use crate::agents::AgentService;
 use crate::config::CoreConfig;
 
 /// Shared state for all connections. Cheap to clone.
@@ -19,6 +20,7 @@ pub(crate) struct CoreState {
     pub storage: Storage,
     pub bus: EventBus,
     pub git: Git,
+    pub agents: AgentService,
     pub connected_clients: Arc<AtomicU64>,
     /// `Some(reason)` once shutdown has been requested.
     pub shutdown: watch::Sender<Option<String>>,

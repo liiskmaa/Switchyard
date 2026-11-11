@@ -32,9 +32,22 @@ use uuid::Uuid;
 /// Frames Core sends without a matching request.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Notification {
-    Event { subscription_id: Uuid, event: EventEnvelope },
-    SubscriptionClosed { subscription_id: Uuid, error: ProtocolError },
-    Shutdown { reason: String },
+    Event {
+        subscription_id: Uuid,
+        event: EventEnvelope,
+    },
+    SubscriptionClosed {
+        subscription_id: Uuid,
+        error: ProtocolError,
+    },
+    /// Ephemeral agent output (`live.subscribe`).
+    Live {
+        subscription_id: Uuid,
+        output: switchyard_protocol::model::LiveOutput,
+    },
+    Shutdown {
+        reason: String,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -255,6 +268,7 @@ async fn read_loop(
             ServerFrame::SubscriptionClosed { subscription_id, error } => {
                 Notification::SubscriptionClosed { subscription_id, error }
             }
+            ServerFrame::Live { subscription_id, output } => Notification::Live { subscription_id, output },
             ServerFrame::Shutdown { reason } => Notification::Shutdown { reason },
         };
         // If the consumer dropped its receiver it no longer wants

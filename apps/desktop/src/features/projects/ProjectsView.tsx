@@ -7,6 +7,7 @@ import { useCoreQuery } from "../../stores/useCoreQuery";
 import type { Project } from "../../types/protocol";
 import { AddProjectForm } from "./AddProjectForm";
 import { GitStatusPanel } from "./GitStatusPanel";
+import { ProjectAgentPanel } from "./ProjectAgentPanel";
 import { isProjectEvent, listProjects, removeProject } from "./api";
 
 export function ProjectsView() {
@@ -119,6 +120,7 @@ function ProjectDetail({ project, onRemoved }: { project: Project; onRemoved: ()
           ]}
         />
       </Panel>
+      <ProjectAgentPanel project={project} />
       <GitStatusPanel project={project} />
       <Panel title="Registration">
         <p className="muted small">

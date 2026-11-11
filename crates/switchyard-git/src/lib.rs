@@ -10,6 +10,7 @@
 
 mod command;
 mod error;
+mod ignore;
 mod repository;
 mod status;
 

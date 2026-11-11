@@ -1,156 +1,108 @@
-# Agent adapter contract (draft v0)
+# Agent adapter contract (v1, implemented for Claude Code)
 
-Status: **specification for a future milestone. Nothing here is implemented yet.** It defines how
-Switchyard Core will drive native coding agents through a common interface while keeping each
-vendor's own capabilities. Background: [agent-integration.md](../architecture/agent-integration.md).
+Code: `crates/switchyard-agents` (model, process supervision, Claude adapter) and
+`crates/switchyard-core/src/agents` (sessions, approvals, live output, file watching). Claude-specific
+wire types are private to `switchyard_agents::claude`, so the rest of Switchyard sees only the
+vendor-neutral types below. Background: [agent-integration.md](../architecture/agent-integration.md).
 
-## Principles
+## Principles (unchanged from the draft)
 
-1. **Native agents, not API calls.** An adapter supervises a vendor's own CLI process (`claude`,
-   `codex`). It never reimplements the agent loop or calls model APIs directly.
-2. **Core owns processes.** Adapters live inside Core (a future `switchyard-agents` crate) and spawn
-   children of Core. The UI only observes and issues commands through the Core protocol.
-3. **Common core, explicit extensions.** Behaviour that every adapter supports goes in the common
-   interface. Anything vendor-specific is advertised through capabilities and exposed as typed
-   extensions, never squeezed into a lowest-common-denominator shape.
-4. **Everything important becomes an event.** Adapter output is normalized into Switchyard events,
-   carrying `session_id`, `agent_id`, `workspace_id`, `project_id` and `task_id`, plus a
-   `causation_id` that links back to the command that caused them.
-5. **No silent permissions.** Every vendor approval request becomes a Switchyard approval. It is
-   answered by central policy or by the operator, and the decision is journaled.
+1. **Native agents.** Adapters supervise the vendor CLI as a child of Core. They never call model
+   APIs or reimplement the agent loop.
+2. **Core owns processes.** The UI observes and sends commands through the Core protocol.
+3. **Explicit capabilities.** Operations an agent lacks fail with `unsupported` or `invalid_state`.
+   They are never emulated, for example by silently restarting a process.
+4. **Important activity is durable; token streams are not.**
+5. **Switchyard owns every permission decision.** There is no auto-approval, and every
+   non-operator path denies.
 
-## Lifecycle
+## Vendor-neutral model (`switchyard_agents::model`)
 
-```text
-             start()                 turn completes / idle
-  ┌────────┐ ───────► ┌──────────┐ ─────────────────────► ┌──────┐
-  │starting│          │  active  │ ◄───────────────────── │ idle │
-  └────────┘          └──────────┘   send_input()/steer   └──────┘
-      │ spawn/handshake    │ interrupt() ends turn only        │
-      ▼ failure            ▼ process exit / stop()             ▼ stop()
-  ┌──────┐            ┌─────────────────────────┐
-  │failed│            │ completed | terminated  │
-  └──────┘            └─────────────────────────┘
-```
+| Type | Values |
+|------|--------|
+| `AgentProvider` | `claude_code`, `codex` (`codex` is reserved; no adapter yet) |
+| `SessionState` | `starting` → `initializing` → `idle` ⇄ `running` ⇄ `waiting_for_approval`; `running`/`waiting_for_approval` → `interrupted` → `running`; any live state → `completed` \| `failed` \| `stopped`; terminal → `starting` (explicit resume only). `SessionState::transition` enforces this graph and storage rejects illegal transitions. |
+| `Capabilities` | `multi_turn`, `streaming_text`, `interrupt_turn`, `queue_message_during_turn`, `steer_running_turn`, `resume_session`, `permission_requests`, `caller_assigned_session_id` |
+| `ApprovalStatus` | `pending`, `approved`, `denied`, `expired`, `cancelled` |
+| `DecisionSource` | `operator`, `timeout`, `agent_cancelled`, `agent_exited`, `core_shutdown`, `core_restart` |
+| `PermissionDecision` | `Allow` (original input) \| `Deny { message }` |
 
-These states map 1:1 to `sessions.status` in the schema.
+The Claude Code capabilities are all true except `steer_running_turn`, which is false (verified; see
+the integration notes).
 
-## Common interface (Rust sketch)
+## Adapter → Core (`AdapterOutput`)
 
-```rust
-/// Static description of an installed agent.
-pub struct AgentDescriptor {
-    pub vendor: Vendor,                 // ClaudeCode | Codex
-    pub executable: PathBuf,
-    pub cli_version: String,            // detected at registration
-    pub capabilities: Capabilities,
-}
+| Output | Meaning | Durable? |
+|--------|---------|----------|
+| `Event(Ready { native_session_id, model, cwd, tools })` | Handshake. Emitted once per process. | yes, as `agent.ready` |
+| `Event(Message { text, truncated })` | A complete assistant message (at most 8 KB). | yes, as `agent.message` |
+| `Event(ToolStarted { tool_use_id, tool_name, input })` | The agent issued a tool call. This records intent, not effect. | yes |
+| `Event(ToolFinished { outcome: Succeeded \| Failed \| Rejected, output })` | The tool result. `Rejected` means the tool never ran (denied, cancelled or interrupted). | yes |
+| `Event(TurnFinished { success, interrupted, reason, duration_ms, cost_usd, … })` | End of a turn. | yes |
+| `Event(InterruptAcknowledged)` | The agent confirmed an interrupt request. | yes |
+| `Event(Warning { message })` | A malformed line, an API retry and similar. | yes (at most 25 per session) |
+| `Live(LiveChunk { kind: Text \| Thinking \| MessageStart \| MessageStop })` | A streaming fragment. | **no** |
+| `PermissionRequested(PermissionRequest)` | The agent waits for a decision. | yes (approval row) |
+| `PermissionCancelled { native_request_id }` | The agent withdrew the request. | yes |
 
-pub struct Capabilities {
-    pub streaming_text: bool,           // token/message deltas
-    pub steer_running_turn: bool,       // Codex turn/steer
-    pub interrupt_turn: bool,           // Claude SIGINT/control request, Codex turn/interrupt
-    pub resume_session: bool,
-    pub fork_session: bool,
-    pub approval_requests: ApprovalSupport, // which kinds are routed to Switchyard
-    pub structured_output: bool,
-    pub review_mode: bool,              // Codex review/start
-    pub extensions: Vec<ExtensionId>,   // vendor-specific operations
-}
+The session driver (`claude::spawn_session`) delivers these on a bounded channel (256 entries). The
+last update is always `Exited(ExitReport { exit, stop_requested, stderr_tail, malformed_lines })`.
 
-pub struct SessionSpec {
-    pub session_id: Uuid,               // Switchyard id (Claude: also passed as --session-id)
-    pub workspace: PathBuf,             // cwd; must be a registered workspace
-    pub resume: Option<VendorSessionRef>,
-    pub permission_profile: PermissionProfile, // central policy, translated per vendor
-    pub model: Option<String>,
-    pub initial_input: Option<AgentInput>,
-}
+## Core → adapter (`ClaudeSession` handle)
 
-// Sketch only: async fns in traits are shown for readability; the real design
-// will likely run each session as an actor task behind a command channel.
-pub trait AgentAdapter: Send + Sync {
-    fn descriptor(&self) -> &AgentDescriptor;
-    async fn start(&self, spec: SessionSpec, sink: AdapterSink) -> Result<SessionHandle, AdapterError>;
-}
+| Operation | Contract |
+|-----------|----------|
+| `send_message(text)` | Writes a user message. Core decides whether that is a new turn (state `idle` or `interrupted`) or a queued next turn (state `running`, and only with `queue_if_busy`). |
+| `interrupt()` | Requests the end of the running turn. The resulting state change arrives as `TurnFinished { interrupted: true }`. |
+| `decide(native_request_id, decision)` | Answers one pending request. Fails with `UnknownPermission` if the request was already cancelled. |
+| `stop()` | Closes stdin, waits `stop_grace`, sends SIGTERM, waits `term_grace`, then sends SIGKILL. Resolves with `ExitInfo` once the process is reaped. |
+| dropping every handle | Treated as `stop()`; `kill_on_drop` guarantees no orphan. |
 
-pub trait SessionHandle: Send + Sync {
-    async fn send_input(&self, input: AgentInput) -> Result<TurnRef, AdapterError>;   // new turn
-    async fn steer(&self, turn: TurnRef, input: AgentInput) -> Result<(), AdapterError>; // if capable
-    async fn interrupt(&self, turn: TurnRef) -> Result<(), AdapterError>;
-    async fn resolve_approval(&self, id: ApprovalId, decision: ApprovalDecision) -> Result<(), AdapterError>;
-    async fn stop(&self, mode: StopMode) -> Result<ExitInfo, AdapterError>; // Graceful (SIGINT → SIGTERM after grace) | Kill
-    fn vendor_session(&self) -> Option<VendorSessionRef>; // Claude session_id / Codex threadId
-    fn extension(&self, id: ExtensionId) -> Option<&dyn Any>; // typed vendor operations
-}
-```
+## Normalized journal events
 
-`AdapterSink` is a bounded channel into Core's event engine. Adapters must not block on it
-indefinitely. When the sink is full, they apply backpressure by pausing reads from the child's
-stdout.
+Every agent event carries `project_id`, `workspace_id`, `session_id` and `agent_id`, plus a
+`causation_id` where it applies (for example, `tool_completed` and `tool_failed` point to their
+`tool_started` event).
 
-## Normalized events (proposed `event_type` values)
+`agent.started`, `agent.ready`, `agent.state_changed`, `agent.turn_started` (`queued`),
+`agent.message`, `agent.tool_started`, `agent.tool_completed`, `agent.tool_failed` (`rejected`),
+`agent.turn_completed`, `agent.permission_requested`, `agent.permission_resolved`,
+`agent.interrupted`, `agent.session_resumed`, `agent.warning`, `agent.exited`, `agent.failed`, and
+`files.changed`.
 
-| Event | Durable | Payload highlights | Claude source | Codex source |
-|-------|---------|--------------------|---------------|--------------|
-| `session.started` | yes | vendor, cli_version, pid, vendor_session_id | `system/init` | `thread/started` |
-| `session.state_changed` | yes | from, to | process + result | `thread/status/changed` |
-| `turn.started` / `turn.completed` | yes | turn_ref, status (`completed\|interrupted\|failed`), usage, cost? | first message / `result` | `turn/started` / `turn/completed` |
-| `item.started` / `item.completed` | yes | kind (`message\|reasoning\|command\|file_change\|tool_call\|plan`), summary, vendor_item | `assistant`/`user` tool_use + tool_result | `item/started` / `item/completed` |
-| `item.delta` | **no** (ephemeral stream) | item ref, text chunk / output chunk | `stream_event` | `item/*/delta`, `outputDelta` |
-| `approval.requested` | yes | kind (`command\|file_change\|permission\|tool`), command/cwd/diff, vendor request id | `--permission-prompt-tool` MCP call | `item/*/requestApproval` |
-| `approval.resolved` | yes | decision, decided_by (`operator\|policy`), scope (`once\|session`) | MCP tool reply | response + `serverRequest/resolved` |
-| `session.ended` | yes | exit code / signal, reason | process exit (143 = SIGTERM) | process exit |
-| `adapter.warning` / `adapter.error` | yes | message, vendor detail | `api_retry`, stderr | `warning`, `error` |
+The draft names map onto these:
 
-Rules:
+- `AgentTurnStarted` is `agent.turn_started`. It is written **before** the message goes to the agent,
+  so a turn can never complete before it is recorded as started.
+- `AgentExited` and `AgentFailed` are separate events. A failure always has both.
 
-- Raw vendor payloads go in a `vendor` sub-object for diagnostics. Consumers rely only on the
-  normalized fields.
-- Durable events go through the journal (ADR 0004). `item.delta` uses a separate, bounded,
-  lossy-by-design stream; the authoritative text is in `item.completed`.
+## Approvals
 
-## Approval decisions
+- Every request becomes an `approvals` row (status `pending`, with `expires_at`) **in the same
+  transaction** as `agent.permission_requested` and the transition to `waiting_for_approval`.
+- A decision is committed with a SQL guard (`… WHERE status = 'pending'`), so at most one decision
+  ever wins. Only after the commit is the decision delivered to the agent. A failed delivery is
+  journaled as `agent.warning` and never reported as success.
+- The session returns to `running` only when **no** request of that session is still pending; the
+  agent may send several in parallel.
 
-```text
-ApprovalDecision = Approve { scope: Once | Session } | Deny { reason } | Cancel
-```
+## Differences from the milestone-1 draft
 
-| Switchyard | Claude (`--permission-prompt-tool`) | Codex (`requestApproval`) |
-|------------|-------------------------------------|---------------------------|
-| Approve(Once) | allow | `accept` |
-| Approve(Session) | allow, plus a session-scoped rule kept by Core | `acceptForSession` |
-| Deny | deny, with reason | `decline` |
-| Cancel | deny, plus interrupt the turn | `cancel` |
+- **Permission transport.** Claude's permission requests use `--permission-prompt-tool stdio`
+  control messages, not an MCP server (see the integration notes).
+- **Steering.** `steer` is not part of the Claude handle. The capability is false, and the protocol
+  exposes queued messages (`queue_if_busy`) instead.
+- **Approve-with-modifications.** `Approve { scope: Session }` and approving with modified input are
+  not offered yet. Every approval covers one tool call, with the agent's original input.
+- **Sessions per project.** One attached session per project until workspace isolation (worktrees)
+  exists.
 
-Vendor-only options are exposed as extensions, for example Codex `acceptWithExecpolicyAmendment`
-and Codex `item/permissions/requestApproval` with granted subsets.
+## Conformance harness
 
-## Permission profiles
-
-Core keeps central rules (the `permissions` table: scope project/agent, `allow|ask|deny`, a rule
-string). An adapter translates the effective profile into vendor configuration at start:
-
-- **Claude:** `--permission-mode`, `--allowedTools` / `--disallowedTools`, and a
-  `--settings` JSON with `permissions.{allow,ask,deny}`. `ask` routes to Switchyard via the prompt
-  tool.
-- **Codex:** `sandbox`/`sandboxPolicy`, `approvalPolicy` (`on-request` routes to Switchyard; `never`
-  only with read-only or pre-approved policies), and the writable roots of the workspace.
-
-Unrepresentable rules must make `start()` fail with `AdapterError::UnsupportedPolicy`. They are never
-silently weakened.
-
-## Error model
-
-`AdapterError` variants: `ExecutableNotFound`, `UnsupportedVersion { found, supported }`,
-`HandshakeFailed`, `UnsupportedPolicy`, `CapabilityMissing(capability)`, `SessionNotRunning`,
-`Vendor { code, message }`, `Io`. Every failure that ends a session also emits `session.ended` with a
-reason.
-
-## Conformance tests (to write with the first adapter)
-
-- Use a **fake vendor binary** that replays recorded stream-json or JSON-RPC transcripts, so tests run
-  without network access or credentials. This is a test fixture, not a UI simulator.
-- Cover: start → turn → completion; interrupt mid-turn; approval request → each decision; crash →
-  `session.ended`; resume using the vendor session ref; sink backpressure; unsupported version.
-- Run optional live smoke tests behind an environment flag against the real CLIs.
+`switchyard-fake-claude` (`crates/switchyard-core/src/bin/fake_claude.rs`) implements the same
+process contract: arguments, stream-json on both pipes, `can_use_tool`, interrupt,
+`control_cancel_request`, resume by ID, and exit codes. Its shapes follow the recorded real
+transcripts. Scenarios are selected with a `[fake:…]` marker in the prompt: text, write, multi,
+slow, delay, crash, malformed, whoami and exit. A `.fake-claude-fail` file simulates an
+unauthenticated start. A future Codex adapter should get an equivalent fake built from recorded
+App Server transcripts.

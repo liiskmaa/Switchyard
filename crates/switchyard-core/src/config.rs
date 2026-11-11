@@ -20,6 +20,19 @@ pub struct CoreConfig {
     pub max_frame_bytes: usize,
     /// How long shutdown waits for connections to drain.
     pub shutdown_grace: Duration,
+    /// Claude Code executable; `None` resolves `SWITCHYARD_CLAUDE_BIN`, then
+    /// `PATH` and common install locations.
+    pub claude_executable: Option<PathBuf>,
+    /// Pending permission requests are denied (`expired`) after this long.
+    pub approval_timeout: Duration,
+    /// Agent stop: wait after closing stdin before SIGTERM.
+    pub agent_stop_grace: Duration,
+    /// Agent stop: wait after SIGTERM before SIGKILL.
+    pub agent_term_grace: Duration,
+    /// Live output fan-out ring size.
+    pub live_capacity: usize,
+    /// Debounce window for filesystem change batches.
+    pub file_debounce: Duration,
 }
 
 impl CoreConfig {
@@ -33,6 +46,12 @@ impl CoreConfig {
             max_subscriptions_per_client: 16,
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
             shutdown_grace: Duration::from_secs(3),
+            claude_executable: None,
+            approval_timeout: Duration::from_secs(15 * 60),
+            agent_stop_grace: Duration::from_secs(5),
+            agent_term_grace: Duration::from_secs(5),
+            live_capacity: 1024,
+            file_debounce: Duration::from_millis(500),
         }
     }
 
@@ -46,6 +65,11 @@ impl CoreConfig {
         let mut config = Self::with_paths(CorePaths::from_env()?);
         if let Some(git) = std::env::var_os("SWITCHYARD_GIT").filter(|v| !v.is_empty()) {
             config.git.binary = PathBuf::from(git);
+        }
+        if let Some(secs) =
+            std::env::var("SWITCHYARD_APPROVAL_TIMEOUT_SECS").ok().and_then(|v| v.parse::<u64>().ok())
+        {
+            config.approval_timeout = Duration::from_secs(secs.max(1));
         }
         Ok(config)
     }
