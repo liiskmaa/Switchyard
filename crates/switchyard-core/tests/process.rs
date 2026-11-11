@@ -1,0 +1,134 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+//! Runs the real `switchyard-core` binary as a separate process.
+
+mod common;
+
+use std::path::Path;
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant};
+
+use switchyard_protocol::methods::{
+    Empty, ProjectsAdd, ProjectsAddParams, ProjectsList, ShutdownParams, SystemHealth, SystemShutdown,
+};
+
+use common::{connect, data_dir, git_repo};
+
+const BIN: &str = env!("CARGO_BIN_EXE_switchyard-core");
+
+fn spawn_core(data: &Path) -> Child {
+    Command::new(BIN)
+        .arg("--data-dir")
+        .arg(data)
+        .env("SWITCHYARD_LOG", "warn")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
+async fn wait_for_socket(socket: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !socket.exists() {
+        assert!(Instant::now() < deadline, "Core did not create its socket");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+}
+
+fn wait_exit(child: &mut Child) -> std::process::ExitStatus {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        assert!(Instant::now() < deadline, "Core did not exit");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[tokio::test]
+async fn core_survives_client_disconnects_and_accepts_reconnection() {
+    let dir = data_dir();
+    let data = dir.path().join("data");
+    let socket = data.join("core.sock");
+    let mut child = spawn_core(&data);
+    wait_for_socket(&socket).await;
+
+    let (first, _rx) = connect(&socket).await;
+    let instance = first.info().core.instance_id;
+    let repo = git_repo(dir.path(), "proc");
+    first.call::<ProjectsAdd>(ProjectsAddParams { path: repo.display().to_string() }).await.unwrap();
+    drop(first); // UI goes away without saying goodbye.
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(child.try_wait().unwrap().is_none(), "Core must keep running without clients");
+
+    let (second, _rx) = connect(&socket).await;
+    assert_eq!(second.info().core.instance_id, instance, "same Core process");
+    assert_eq!(second.call::<ProjectsList>(Empty {}).await.unwrap().projects.len(), 1);
+    let health = second.call::<SystemHealth>(Empty {}).await.unwrap();
+    assert_eq!(health.core.pid, child.id());
+    assert_eq!(health.connected_clients, 1, "the dropped connection was cleaned up");
+
+    let status = Command::new("kill").arg("-TERM").arg(child.id().to_string()).status().unwrap();
+    assert!(status.success());
+    let exit = wait_exit(&mut child);
+    assert!(exit.success(), "graceful SIGTERM exit, got {exit:?}");
+    assert!(!socket.exists(), "socket removed on shutdown");
+    second.closed().await;
+}
+
+#[tokio::test]
+async fn only_one_core_may_own_a_data_directory() {
+    let dir = data_dir();
+    let data = dir.path().join("data");
+    let mut first = spawn_core(&data);
+    wait_for_socket(&data.join("core.sock")).await;
+
+    let mut second = spawn_core(&data);
+    let exit = wait_exit(&mut second);
+    assert_eq!(exit.code(), Some(3), "second instance refuses to start");
+
+    let (client, _rx) = connect(&data.join("core.sock")).await;
+    client.call::<SystemShutdown>(ShutdownParams { reason: Some("test".into()) }).await.unwrap();
+    assert!(wait_exit(&mut first).success());
+}
+
+#[tokio::test]
+async fn stale_socket_from_a_killed_core_is_recovered() {
+    let dir = data_dir();
+    let data = dir.path().join("data");
+    let socket = data.join("core.sock");
+    let mut child = spawn_core(&data);
+    wait_for_socket(&socket).await;
+    child.kill().unwrap(); // SIGKILL: no cleanup runs.
+    wait_exit(&mut child);
+    assert!(socket.exists(), "stale socket left behind");
+
+    let mut child = spawn_core(&data);
+    // Wait until the new Core answers on the replaced socket.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let client = loop {
+        let mut options = switchyard_client::ClientOptions::new("t", "0");
+        options.request_timeout = Duration::from_secs(5);
+        if let Ok((c, _)) = switchyard_client::CoreClient::connect(&socket, options).await {
+            break c;
+        }
+        assert!(Instant::now() < deadline, "restarted Core never became reachable");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(client.call::<SystemHealth>(Empty {}).await.unwrap().core.pid, child.id());
+    client.call::<SystemShutdown>(ShutdownParams::default()).await.unwrap();
+    assert!(wait_exit(&mut child).success());
+}
+
+#[test]
+fn version_and_usage_errors() {
+    let out = Command::new(BIN).arg("--version").output().unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains(switchyard_core::CORE_VERSION));
+    let out = Command::new(BIN).arg("--bogus").output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let out = Command::new(BIN).args(["--data-dir", "relative"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(2));
+}

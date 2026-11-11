@@ -1,0 +1,31 @@
+[package]
+name = "switchyard-desktop"
+description = "Switchyard desktop application (a client of Switchyard Core)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "switchyard_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+switchyard-client.workspace = true
+switchyard-protocol.workspace = true
+tauri = { version = "2.12", features = [] }
+tauri-plugin-dialog = "2.8"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros"] }
+
+[lints]
+workspace = true
