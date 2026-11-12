@@ -468,8 +468,10 @@ async fn unsupported_requests_fail_closed_and_are_audited() {
 
     // A sub-agent's command.
     send(&f, s.id, "[fake:subagent]", false).await;
-    let ans = wait_answers(&thread, 3).await;
-    assert_eq!(decision_of(&ans[2]), "decline");
+    // The child's turn is interrupted (M5.1) and its request declined.
+    let ans = wait_answers(&thread, 4).await;
+    assert!(ans[2..].iter().any(|a| a.get("child_interrupt").is_some()));
+    assert!(ans[2..].iter().any(|a| decision_of(a) == "decline"));
     wait_events(&f, s.id, "subagent turn", |e| turns(e) == 3).await;
     assert!(!f.ws.join("from-subagent.txt").exists());
 

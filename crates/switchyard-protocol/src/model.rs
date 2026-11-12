@@ -188,6 +188,28 @@ pub struct ApprovalPolicy {
     pub explanation: String,
     pub deciding_rule: Option<PolicyRuleRef>,
     pub policy_revision: i64,
+    /// What approving would reach, as Core established it before asking.
+    /// Absent for approvals recorded before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<ApprovalScope>,
+}
+
+/// The reach of an approval, so a person never mistakes it for a
+/// workspace-limited action.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApprovalScope {
+    /// `workspace` (every target resolved inside the workspace),
+    /// `outside_workspace`, `unknown` (a target cannot be resolved, or the
+    /// operation has no file targets) or `unrestricted` (a shell command).
+    pub kind: String,
+    /// Targets outside the workspace.
+    #[serde(default)]
+    pub outside_paths: Vec<String>,
+    /// Targets whose location could not be established.
+    #[serde(default)]
+    pub unresolved_paths: Vec<String>,
+    /// One or two sentences for the person deciding.
+    pub note: String,
 }
 
 /// A configured policy rule.

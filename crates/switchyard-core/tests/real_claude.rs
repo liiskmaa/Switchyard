@@ -19,7 +19,7 @@ use switchyard_protocol::EventEnvelope;
 use switchyard_protocol::methods::*;
 use switchyard_protocol::model::{ApprovalStatus, LiveKind, SessionState};
 
-use common::{TestCore, git_repo};
+use common::{RealCli, TestCore, git_repo};
 
 async fn events(c: &switchyard_client::CoreClient, s: uuid::Uuid) -> Vec<EventEnvelope> {
     c.call::<EventsList>(EventsListParams {
@@ -82,7 +82,9 @@ async fn real_claude_session_end_to_end() {
         return;
     }
     let model = std::env::var("SWITCHYARD_REAL_CLAUDE_MODEL").unwrap_or_else(|_| "haiku".into());
-    let core = TestCore::start_with(|c| c.claude_executable = None).await;
+    let Some(core) = TestCore::start_real(RealCli { claude: true, codex: false }, |_| {}).await else {
+        return;
+    };
     let (client, mut rx) = core.connect().await;
 
     let agents = client.call::<AgentsList>(AgentsListParams { refresh: true }).await.unwrap().agents;
@@ -212,7 +214,9 @@ async fn real_claude_two_workspaces_concurrently() {
         return;
     }
     let model = std::env::var("SWITCHYARD_REAL_CLAUDE_MODEL").unwrap_or_else(|_| "haiku".into());
-    let core = TestCore::start_with(|c| c.claude_executable = None).await;
+    let Some(core) = TestCore::start_real(RealCli { claude: true, codex: false }, |_| {}).await else {
+        return;
+    };
     let (client, _rx) = core.connect().await;
     let repo = git_repo(core.dir.path(), "real-claude-parallel");
     let project = client
@@ -280,7 +284,9 @@ async fn real_claude_policy_decisions() {
     }
     use switchyard_protocol::model::{OperationCategory, PolicyConditions, PolicyDecision};
     let model = std::env::var("SWITCHYARD_REAL_CLAUDE_MODEL").unwrap_or_else(|_| "haiku".into());
-    let core = TestCore::start_with(|c| c.claude_executable = None).await;
+    let Some(core) = TestCore::start_real(RealCli { claude: true, codex: false }, |_| {}).await else {
+        return;
+    };
     let (client, _rx) = core.connect().await;
     let repo = git_repo(core.dir.path(), "real-policy-repo");
     let project = client

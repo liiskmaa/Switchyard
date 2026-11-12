@@ -249,6 +249,7 @@ pub(crate) fn approval_policy(
 ) -> Result<Option<switchyard_protocol::model::ApprovalPolicy>, StorageError> {
     let Some(id) = evaluation_id else { return Ok(None) };
     let Some(record) = repo::get_evaluation(conn, id)? else { return Ok(None) };
+    let scope = stored_input(&record).ok().map(|input| approval_scope(&input));
     let wire = evaluation_to_wire(conn, record)?;
     Ok(Some(switchyard_protocol::model::ApprovalPolicy {
         evaluation_id: wire.id,
@@ -257,7 +258,82 @@ pub(crate) fn approval_policy(
         explanation: wire.explanation,
         deciding_rule: wire.deciding_rule,
         policy_revision: wire.policy_revision,
+        scope,
     }))
+}
+
+/// What approving this request would reach (shown before a person decides).
+pub(crate) fn approval_scope(input: &EvaluationInput) -> switchyard_protocol::model::ApprovalScope {
+    use switchyard_policy::{OperationCategory as C, PathFact};
+    let op = &input.operation;
+    let scope = |kind: &str, outside: Vec<String>, unresolved: Vec<String>, note: String| {
+        switchyard_protocol::model::ApprovalScope {
+            kind: kind.into(),
+            outside_paths: outside,
+            unresolved_paths: unresolved,
+            note,
+        }
+    };
+    if op.category == C::Shell {
+        let mut note = "An approved command runs with your user account's permissions and can read, \
+                        change or delete any file you can."
+            .to_owned();
+        if op.adapter == switchyard_agents::codex::ADAPTER {
+            note.push_str(
+                " Codex does not apply its own filesystem sandbox to approved commands (verified with codex-cli 0.166.0).",
+            );
+        }
+        return scope("unrestricted", Vec::new(), Vec::new(), note);
+    }
+    if !op.category.is_path_category() {
+        return scope(
+            "unknown",
+            Vec::new(),
+            Vec::new(),
+            "Switchyard cannot establish what this request would reach.".into(),
+        );
+    }
+    let mut outside = Vec::new();
+    let mut unresolved = Vec::new();
+    for (i, fact) in input.paths.iter().enumerate() {
+        let path = op.paths.get(i).cloned().unwrap_or_else(|| "the workspace".into());
+        match fact {
+            PathFact::Inside { .. } => {}
+            PathFact::Outside => outside.push(path),
+            PathFact::Unresolved { .. } => unresolved.push(path),
+        }
+    }
+    if input.paths.is_empty() || input.paths.len() < op.paths.len() {
+        return scope(
+            "unknown",
+            outside,
+            unresolved,
+            "Switchyard could not resolve every target of this request.".into(),
+        );
+    }
+    if !outside.is_empty() {
+        return scope(
+            "outside_workspace",
+            outside,
+            unresolved,
+            "Approving lets the agent change files beyond this workspace.".into(),
+        );
+    }
+    if !unresolved.is_empty() {
+        return scope(
+            "unknown",
+            outside,
+            unresolved,
+            "Switchyard could not establish where some targets point.".into(),
+        );
+    }
+    scope(
+        "workspace",
+        outside,
+        unresolved,
+        "Every target resolves inside the workspace (after following symlinks, at the time of the request)."
+            .into(),
+    )
 }
 
 #[derive(Clone)]

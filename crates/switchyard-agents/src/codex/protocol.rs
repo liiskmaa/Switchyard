@@ -81,6 +81,8 @@ enum OwnRequest {
     Thread,
     TurnStart,
     TurnInterrupt,
+    /// Interrupting a sub-agent's turn (not the session's).
+    ForeignInterrupt,
 }
 
 /// A server request awaiting our answer.
@@ -142,19 +144,31 @@ pub struct Protocol {
     file_item_order: VecDeque<String>,
     /// Unanswered server requests by native request id.
     server_requests: HashMap<String, ServerRequest>,
+    /// Prefix that makes native request ids unique per process. Codex numbers
+    /// its requests from 0 in every process, so without it a decision meant
+    /// for a request of an earlier process could match a new one.
+    instance: String,
+    /// Foreign (sub-agent) threads already reported.
+    foreign_threads: std::collections::HashSet<String>,
 }
 
 fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
 }
 
-/// The native request id Switchyard stores for a JSON-RPC id.
-pub fn request_key(id: &Value) -> String {
+/// The raw JSON-RPC id as text.
+fn raw_id(id: &Value) -> String {
     match id {
         Value::String(s) => s.clone(),
         other => other.to_string(),
     }
 }
+
+/// Told to the model with every thread. Not an enforcement mechanism: sub-agent
+/// turns are interrupted and their requests denied regardless (ADR 0021).
+pub const DEVELOPER_INSTRUCTIONS: &str = "You are running inside Switchyard. Sub-agents are not \
+available: do not use spawn_agent or any other collaboration tool. Every shell command and file \
+change is reviewed by a person before it runs.";
 
 /// Codex runs commands as `<shell> -lc '<script>'`. Returns the script when
 /// the command is exactly that form, so policy rules match what the user
@@ -275,7 +289,14 @@ impl Protocol {
             file_items: HashMap::new(),
             file_item_order: VecDeque::new(),
             server_requests: HashMap::new(),
+            instance: uuid::Uuid::now_v7().simple().to_string(),
+            foreign_threads: std::collections::HashSet::new(),
         }
+    }
+
+    /// The native request id Switchyard stores for a JSON-RPC id of this process.
+    pub fn request_key(&self, id: &Value) -> String {
+        format!("{}/{}", self.instance, raw_id(id))
     }
 
     pub fn thread_id(&self) -> Option<&str> {
@@ -302,7 +323,12 @@ impl Protocol {
     }
 
     fn thread_params(&self) -> Value {
-        let mut p = json!({ "cwd": self.cwd, "approvalPolicy": APPROVAL_POLICY, "sandbox": SANDBOX });
+        let mut p = json!({
+            "cwd": self.cwd,
+            "approvalPolicy": APPROVAL_POLICY,
+            "sandbox": SANDBOX,
+            "developerInstructions": DEVELOPER_INSTRUCTIONS,
+        });
         if let Some(m) = &self.model {
             p["model"] = json!(m);
         }
@@ -513,6 +539,11 @@ impl Protocol {
                 None => step.event(AgentEvent::InterruptAcknowledged),
                 Some(e) => step.warn(format!("interrupt was not accepted: {e}")),
             },
+            OwnRequest::ForeignInterrupt => {
+                if let Some(e) = error {
+                    step.warn(format!("a sub-agent turn could not be interrupted: {e}"));
+                }
+            }
         }
     }
 
@@ -552,7 +583,7 @@ impl Protocol {
             }
             "serverRequest/resolved" => {
                 if let Some(id) = params.get("requestId") {
-                    let key = request_key(id);
+                    let key = self.request_key(id);
                     if self.server_requests.remove(&key).is_some() {
                         step.outputs.push(AdapterOutput::PermissionCancelled { native_request_id: key });
                     }
@@ -566,6 +597,9 @@ impl Protocol {
             // (account, MCP status, rate limits) are not session activity.
             if method == "error" && str_of(params, "threadId").is_none() {
                 self.error_notification(params, step);
+            }
+            if method == "turn/started" {
+                self.interrupt_foreign_turn(params, step);
             }
             return;
         }
@@ -604,6 +638,29 @@ impl Protocol {
             "error" => self.error_notification(params, step),
             _ => {}
         }
+    }
+
+    /// Sub-agents cannot be switched off in codex-cli 0.166.0. Their requests
+    /// are denied; their turns are interrupted as soon as they start so they
+    /// do as little as possible.
+    fn interrupt_foreign_turn(&mut self, params: &Value, step: &mut Step) {
+        let (Some(thread), Some(turn)) =
+            (str_of(params, "threadId"), params.get("turn").and_then(|t| str_of(t, "id")))
+        else {
+            return;
+        };
+        if self.thread_id.is_none() {
+            return;
+        }
+        if self.foreign_threads.insert(thread.to_owned()) {
+            step.warn(format!(
+                "Codex started a sub-agent (thread {thread}); Switchyard does not support sub-agents, \
+                 interrupted it and denies its requests"
+            ));
+        }
+        let params = json!({ "threadId": thread, "turnId": turn });
+        let msg = self.request(OwnRequest::ForeignInterrupt, "turn/interrupt", params);
+        step.writes.push(msg);
     }
 
     fn error_notification(&mut self, params: &Value, step: &mut Step) {
@@ -746,9 +803,17 @@ impl Protocol {
 
     fn server_request(&mut self, id: Value, method: &str, msg: &Value, step: &mut Step) {
         let params = msg.get("params").cloned().unwrap_or(Value::Null);
-        let key = request_key(&id);
+        let key = self.request_key(&id);
+        if self.server_requests.contains_key(&key) {
+            // Answering would be ambiguous: the response would reach whichever
+            // request Codex associates with the id. Stop the session instead.
+            return self
+                .fail(step, format!("Codex reused the id of a pending request ({}); stopping", raw_id(&id)));
+        }
         self.server_requests.insert(key.clone(), ServerRequest { id, method: method.to_owned() });
-        let other_thread = str_of(&params, "threadId").is_some() && !self.own_thread(&params);
+        // A request is the session's own only if it names the session's
+        // thread; a missing thread id is treated as foreign (denied).
+        let other_thread = !self.own_thread(&params);
         let unknown_fields = |known: &[&str]| -> Vec<String> {
             params
                 .as_object()
@@ -802,6 +867,10 @@ impl Protocol {
 mod tests {
     use super::*;
 
+    fn k(p: &Protocol, id: Value) -> String {
+        p.request_key(&id)
+    }
+
     fn line(v: Value) -> Vec<u8> {
         serde_json::to_vec(&v).unwrap()
     }
@@ -830,6 +899,113 @@ mod tests {
             .iter()
             .filter_map(|o| if let AdapterOutput::Event(e) = o { Some(e) } else { None })
             .collect()
+    }
+
+    #[test]
+    fn request_ids_are_unique_per_process() {
+        // Codex numbers requests from 0 in every process: the same JSON-RPC id
+        // in a resumed process must not match an approval for the old one.
+        let mut a = ready();
+        let mut b = ready();
+        let req = json!({"id": 0, "method": COMMAND_APPROVAL, "params": {"kind": "command", "threadId": "t1", "command": "x"}});
+        a.ingest(&line(req.clone()));
+        b.ingest(&line(req));
+        let (ka, kb) = (k(&a, json!(0)), k(&b, json!(0)));
+        assert_ne!(ka, kb);
+        assert!(
+            b.decide(&ka, &PermissionDecision::Allow).is_err(),
+            "another process's approval does not apply"
+        );
+        assert!(a.decide(&ka, &PermissionDecision::Allow).is_ok());
+    }
+
+    #[test]
+    fn a_reused_pending_request_id_stops_the_session() {
+        let mut p = ready();
+        let req = json!({"id": 3, "method": COMMAND_APPROVAL, "params": {"kind": "command", "threadId": "t1", "command": "x"}});
+        assert!(p.ingest(&line(req.clone())).fatal.is_none());
+        let s = p.ingest(&line(req));
+        assert!(s.fatal.as_deref().is_some_and(|f| f.contains("reused")), "{s:?}");
+        assert!(!s.outputs.iter().any(|o| matches!(o, AdapterOutput::PermissionRequested(_))));
+    }
+
+    #[test]
+    fn a_request_without_a_thread_id_is_not_the_sessions_own() {
+        let mut p = ready();
+        let s = p.ingest(&line(
+            json!({"id": 5, "method": COMMAND_APPROVAL, "params": {"kind": "command", "command": "touch x"}}),
+        ));
+        let AdapterOutput::PermissionRequested(r) = &s.outputs[0] else { panic!() };
+        assert_eq!(r.input["other_thread"], true);
+        assert!(super::super::classify(r).problem.is_some(), "denied");
+    }
+
+    #[test]
+    fn sub_agent_turns_are_interrupted_when_they_start() {
+        let mut p = ready();
+        let s = p.ingest(&line(
+            json!({"method": "turn/started", "params": {"threadId": "child", "turn": {"id": "ct1"}}}),
+        ));
+        assert_eq!(s.writes.len(), 1);
+        assert_eq!(s.writes[0]["method"], "turn/interrupt");
+        assert_eq!(s.writes[0]["params"], json!({"threadId": "child", "turnId": "ct1"}));
+        assert!(
+            events(&s)
+                .iter()
+                .any(|e| matches!(e, AgentEvent::Warning { message } if message.contains("sub-agent")))
+        );
+        // Reported once per thread, interrupted on every turn.
+        let s = p.ingest(&line(
+            json!({"method": "turn/started", "params": {"threadId": "child", "turn": {"id": "ct2"}}}),
+        ));
+        assert_eq!(s.writes.len(), 1);
+        assert!(events(&s).is_empty());
+        // Its interrupt response is not the session's interrupt.
+        let id = s.writes[0]["id"].clone();
+        let s = p.ingest(&line(json!({"id": id, "result": {}})));
+        assert!(events(&s).is_empty());
+    }
+
+    #[test]
+    fn threads_carry_developer_instructions_against_sub_agents() {
+        let mut p = Protocol::new(ThreadMode::New, "/ws", None, "0");
+        p.start();
+        let s = p.ingest(&line(json!({"id": 1, "result": {}})));
+        assert!(
+            s.writes[1]["params"]["developerInstructions"]
+                .as_str()
+                .unwrap()
+                .contains("Sub-agents are not available")
+        );
+    }
+
+    #[test]
+    fn malformed_truncated_and_unknown_messages_cause_no_action() {
+        let mut p = ready();
+        for raw in [
+            &b"{\"id\": 9, \"method\": \"item/commandExecution/requestApproval\", \"params\": {\"kind\""[..],
+            b"[1,2,3]",
+            b"null",
+            b"{}",
+            b"{\"method\": \"item/brandNewThing\", \"params\": {\"threadId\": \"t1\"}}",
+            b"{\"method\": \"item/started\", \"params\": {\"threadId\": \"t1\", \"item\": {\"type\": \"commandExecution\"}}}",
+            b"{\"id\": 999, \"result\": {}}",
+        ] {
+            let s = p.ingest(raw);
+            assert!(s.writes.is_empty(), "{}", String::from_utf8_lossy(raw));
+            assert!(!s.outputs.iter().any(|o| matches!(o, AdapterOutput::PermissionRequested(_))));
+        }
+        // An unknown request method is evaluated (and denied), never ignored or accepted.
+        let s = p.ingest(&line(
+            json!({"id": 10, "method": "item/brandNew/requestApproval", "params": {"threadId": "t1"}}),
+        ));
+        let AdapterOutput::PermissionRequested(r) = &s.outputs[0] else { panic!() };
+        assert!(super::super::classify(r).problem.is_some());
+        let answer = p.decide(&r.native_request_id.clone(), &PermissionDecision::Allow).unwrap();
+        assert!(
+            answer.get("error").is_some(),
+            "unknown requests get an error even on a mistaken allow: {answer}"
+        );
     }
 
     #[test]
@@ -901,15 +1077,18 @@ mod tests {
             "kind": "command", "threadId": "t1", "turnId": "u", "itemId": "i1",
             "command": "/bin/zsh -lc 'touch x'", "cwd": "/ws", "startedAtMs": 1}})));
         let AdapterOutput::PermissionRequested(r) = &s.outputs[0] else { panic!("{s:?}") };
-        assert_eq!((r.native_request_id.as_str(), r.tool_name.as_str()), ("7", "shell"));
+        assert_eq!((r.native_request_id.clone(), r.tool_name.as_str()), (k(&p, json!(7)), "shell"));
         assert_eq!(r.input["command"], "touch x");
         assert_eq!(r.input["cwd_is_session_cwd"], true);
-        let answer = p.decide("7", &PermissionDecision::Allow).unwrap();
+        let answer = p.decide(&k(&p, json!(7)), &PermissionDecision::Allow).unwrap();
         assert_eq!(answer, json!({"id": 7, "result": {"decision": "accept"}}));
-        assert!(p.decide("7", &PermissionDecision::Allow).is_err(), "a request is answered once");
+        assert!(
+            p.decide(&k(&p, json!(7)), &PermissionDecision::Allow).is_err(),
+            "a request is answered once"
+        );
 
         p.ingest(&line(json!({"id": "s", "method": COMMAND_APPROVAL, "params": {"kind": "command", "threadId": "t1", "command": "x"}})));
-        let deny = p.decide("s", &PermissionDecision::Deny { message: "no".into() }).unwrap();
+        let deny = p.decide(&k(&p, json!("s")), &PermissionDecision::Deny { message: "no".into() }).unwrap();
         assert_eq!(deny, json!({"id": "s", "result": {"decision": "decline"}}));
     }
 
@@ -941,12 +1120,18 @@ mod tests {
             assert!(matches!(&s.outputs[0], AdapterOutput::PermissionRequested(r) if r.tool_name == method));
         }
         let deny = PermissionDecision::Deny { message: String::new() };
-        assert_eq!(p.decide("10", &deny).unwrap()["result"], json!({"permissions": {}, "scope": "turn"}));
-        assert_eq!(p.decide("11", &deny).unwrap()["result"]["action"], "decline");
-        assert_eq!(p.decide("12", &deny).unwrap()["error"]["code"], -32601);
+        assert_eq!(
+            p.decide(&k(&p, json!(10)), &deny).unwrap()["result"],
+            json!({"permissions": {}, "scope": "turn"})
+        );
+        assert_eq!(p.decide(&k(&p, json!(11)), &deny).unwrap()["result"]["action"], "decline");
+        assert_eq!(p.decide(&k(&p, json!(12)), &deny).unwrap()["error"]["code"], -32601);
         // Even a (mistaken) allow never grants these.
         p.ingest(&line(json!({"id": 13, "method": PERMISSIONS_APPROVAL, "params": {"threadId": "t1"}})));
-        assert_eq!(p.decide("13", &PermissionDecision::Allow).unwrap()["result"]["permissions"], json!({}));
+        assert_eq!(
+            p.decide(&k(&p, json!(13)), &PermissionDecision::Allow).unwrap()["result"]["permissions"],
+            json!({})
+        );
     }
 
     #[test]
@@ -977,8 +1162,14 @@ mod tests {
         let s = p.ingest(&line(
             json!({"method": "serverRequest/resolved", "params": {"threadId": "t1", "requestId": 0}}),
         ));
-        assert_eq!(s.outputs, vec![AdapterOutput::PermissionCancelled { native_request_id: "0".into() }]);
-        assert!(p.decide("0", &PermissionDecision::Allow).is_err(), "a resolved request cannot be answered");
+        assert_eq!(
+            s.outputs,
+            vec![AdapterOutput::PermissionCancelled { native_request_id: k(&p, json!(0)) }]
+        );
+        assert!(
+            p.decide(&k(&p, json!(0)), &PermissionDecision::Allow).is_err(),
+            "a resolved request cannot be answered"
+        );
     }
 
     #[test]

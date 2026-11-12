@@ -139,6 +139,9 @@ unauthenticated start.
 answers `--version`, `login status` and `app-server --help`, and `app-server` speaks the JSON-RPC
 protocol with shapes taken from the recordings in
 `crates/switchyard-agents/tests/fixtures/codex-0.166.0/`. It refuses any thread that is not
-`untrusted` + `workspace-write`. Scenarios: text, write, edit, mixed, cmd, slow, pending, perm,
-subagent, unmediated, whoami, remember, crash and exit. Threads persist under
+`untrusted` + `workspace-write`. Scenarios: text, write, edit, mixed, move, cmd, slow, pending,
+perm, subagent (a child turn, which the adapter must interrupt, then a child request), newreq (unknown
+request method), garbage (malformed and unknown output), crashpending, dupid (reused request id),
+unmediated, whoami, remember, crash and exit. Every answer and child interrupt it receives is logged
+per thread, so tests can prove that a denied operation never ran. Threads persist under
 `$TMPDIR/switchyard-fake-codex/` so a new process can resume them.

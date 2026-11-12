@@ -117,6 +117,37 @@ function MainInput({ tool, input }: { tool: string; input: unknown }) {
 }
 
 
+/** What approving reaches, as Core established it. Never implies a workspace limit that is not real. */
+function ScopeNotice({ approval }: { approval: Approval }) {
+  const scope = approval.policy?.scope;
+  if (!scope) {
+    return approval.status === "pending" ? (
+      <p className="scope-note scope-unknown small">Switchyard did not record what this request would reach.</p>
+    ) : null;
+  }
+  const label: Record<string, string> = {
+    workspace: "Inside the workspace",
+    outside_workspace: "Outside the workspace",
+    unknown: "Scope unknown",
+    unrestricted: "Not limited to the workspace",
+  };
+  const paths = [...scope.outside_paths, ...scope.unresolved_paths];
+  return (
+    <div className={`scope-note scope-${scope.kind} small`} role={scope.kind === "workspace" ? undefined : "note"}>
+      <strong>{label[scope.kind] ?? scope.kind}.</strong> {scope.note}
+      {paths.length > 0 ? (
+        <ul>
+          {paths.map((p) => (
+            <li key={p}>
+              <code className="path">{p}</code>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
 export function ApprovalCard({
   approval,
   projectName,
@@ -188,6 +219,7 @@ export function ApprovalCard({
       ) : (
         <p className="muted small">Recorded before approval policies existed.</p>
       )}
+      <ScopeNotice approval={approval} />
       {approval.description ? <p className="small">{approval.description}</p> : null}
       <ToolInput tool={approval.tool_name} input={approval.input} />
       {error ? <ErrorNotice title="Decision not recorded" message={error.message} code={error.code} /> : null}

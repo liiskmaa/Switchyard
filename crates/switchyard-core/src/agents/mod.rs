@@ -362,6 +362,31 @@ impl AgentService {
                 }
             }
         };
+        // Codex's app-server protocol is experimental and changes per release:
+        // an untested version is not trusted like the verified one.
+        let found = match found {
+            Ok((installation, _))
+                if provider == AgentProvider::Codex
+                    && installation.version() != codex::TESTED_VERSION
+                    && !self.inner.config.allow_untested_codex =>
+            {
+                Err((
+                    true,
+                    format!(
+                        "Codex {} is untested: Switchyard was verified with {} only, and the app-server \
+                         protocol changes between releases. Install {} or set \
+                         SWITCHYARD_ALLOW_UNTESTED_CODEX=1 to use it anyway.",
+                        installation.version(),
+                        codex::TESTED_VERSION,
+                        codex::TESTED_VERSION
+                    ),
+                    Some(installation.version().to_owned()),
+                    Some(installation.executable().display().to_string()),
+                ))
+            }
+            Ok(ok) => Ok(ok),
+            Err((installed, error)) => Err((installed, error, None, None)),
+        };
         match found {
             Ok((installation, auth)) => {
                 tracing::info!(%provider, version = %installation.version(), path = %installation.executable().display(), "agent CLI detected");
@@ -381,11 +406,13 @@ impl AgentService {
                     installation: Some(installation),
                 }
             }
-            Err((installed, error)) => {
+            Err((installed, error, version, executable)) => {
                 tracing::warn!(%provider, %error, "agent CLI is not usable");
                 let mut availability = convert::unavailable(provider, &error);
                 availability.checked_at_ms = checked_at_ms;
                 availability.installed = installed;
+                availability.version = version;
+                availability.executable = executable;
                 Detection { availability, installation: None }
             }
         }
@@ -692,6 +719,7 @@ impl AgentService {
         }
 
         let native = record.native_session_id.clone();
+        let untested = installation.version() != switchyard_agents::tested_version(record.provider);
         let mut events = vec![DomainEvent::AgentStarted {
             provider: record.provider.as_str().into(),
             cli_version: installation.version().to_owned(),
@@ -700,6 +728,15 @@ impl AgentService {
             native_session_id: native.clone(),
             resumed,
         }];
+        if untested && record.provider == AgentProvider::Codex {
+            events.push(DomainEvent::AgentWarning {
+                message: format!(
+                    "running untested Codex {} (verified with {}); allowed by SWITCHYARD_ALLOW_UNTESTED_CODEX",
+                    installation.version(),
+                    codex::TESTED_VERSION
+                ),
+            });
+        }
         if resumed {
             events.push(DomainEvent::AgentSessionResumed {
                 native_session_id: native.unwrap_or_default(),

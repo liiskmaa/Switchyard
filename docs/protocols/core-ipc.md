@@ -182,6 +182,10 @@ Session / Approval  see crates/switchyard-protocol/src/model.rs; both carry work
                    deciding_rule?: PolicyRuleRef, policy_revision }; null for approvals recorded
                    before policies. decision_source adds "policy" (always a denial).
                    Approval.provider (v4): the session's agent.
+                   Approval.policy.scope (v4, additive): { kind: "workspace"|"outside_workspace"|
+                   "unknown"|"unrestricted", outside_paths, unresolved_paths, note }: what approving
+                   would reach, established by Core before asking. Shell commands are always
+                   "unrestricted".
                    Session.capabilities / AgentAvailability.capabilities (v4): every field is
                    "supported" | "unsupported" | "unknown".
 PolicyRule       { id, project_id, workspace_id?, workspace_name?, scope: "project"|"workspace",

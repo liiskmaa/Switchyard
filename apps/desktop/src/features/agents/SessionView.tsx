@@ -14,6 +14,7 @@ import {
   STATE_LABEL,
   getSession,
   interruptSession,
+  listAgents,
   pendingApprovals,
   resumeSession,
   sendMessage,
@@ -97,6 +98,9 @@ function SessionHeader({ session, projectName, onChanged }: { session: Session; 
   const legacy = workspaceId === null || ws?.kind === "legacy_checkout";
   const terminal = TERMINAL_STATES.includes(session.state);
   const running = session.state === "running" || session.state === "waiting_for_approval";
+  const agents = useCoreQuery("agents", () => listAgents(false));
+  const tested = agents.data?.find((a) => a.provider === session.provider)?.tested_version;
+  const untested = tested !== undefined && session.cli_version !== null && session.cli_version !== tested;
 
   async function act(name: string, op: () => Promise<unknown>) {
     setBusy(name);
@@ -156,6 +160,16 @@ function SessionHeader({ session, projectName, onChanged }: { session: Session; 
           ["Working directory", <code className="path">{session.cwd}</code>],
           [nativeIdLabel(session.provider), <code>{session.native_session_id ?? "—"}</code>],
           ["Switchyard session", <code>{session.id}</code>],
+          [
+            "CLI version",
+            untested ? (
+              <Badge tone="warn">
+                {session.cli_version} · untested (verified with {tested})
+              </Badge>
+            ) : (
+              (session.cli_version ?? "—")
+            ),
+          ],
           ["Model", session.model ?? <span className="muted">CLI default</span>],
           [
             "Started",

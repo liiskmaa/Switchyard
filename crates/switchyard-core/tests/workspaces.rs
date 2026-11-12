@@ -55,7 +55,11 @@ async fn fx_with(extra: impl FnOnce(&mut switchyard_core::CoreConfig)) -> Fx {
     let mut config = common::agent_config(dir.path());
     configure(dir.path())(&mut config);
     extra(&mut config);
-    let core = TestCore { core: Some(switchyard_core::start(config).await.unwrap()), dir };
+    let core = TestCore {
+        core: Some(common::start_core(config, dir.path(), common::RealCli::default()).await),
+        dir,
+        real: common::RealCli::default(),
+    };
     let (client, _rx) = core.connect().await;
     let repo = repo(core.dir.path(), "my repo ö");
     let project_id = add_project(&client, &repo).await;

@@ -7,7 +7,18 @@ use crate::process::{EnvPolicy, prepend_path};
 
 /// Features disabled for Switchyard sessions: tools that act without an
 /// approval request (ADR 0021). Verified names for codex-cli 0.166.0.
+///
+/// Verified bypasses closed here (M5.1 audit):
+/// * `view_image`: read any image file the user can read, anywhere, with no
+///   approval request, and sent it to the model.
+/// * `unified_exec` / `unified_exec_tty`: an approved interactive program
+///   (e.g. `sh`) kept running, and `write_stdin` then ran further commands in
+///   it with no approval request. Without them a command runs to completion
+///   and there is no session to write to.
 pub const DISABLED_FEATURES: &[&str] = &[
+    "view_image",
+    "unified_exec",
+    "unified_exec_tty",
     "apps",
     "plugins",
     "remote_plugin",
@@ -103,7 +114,16 @@ mod tests {
     fn arguments_disable_unmediated_tools_and_never_weaken_safety() {
         let args: Vec<String> = build_args().into_iter().map(|a| a.into_string().unwrap()).collect();
         assert_eq!(&args[..3], ["app-server", "--listen", "stdio://"]);
-        for f in ["plugins", "apps", "multi_agent", "computer_use", "hooks"] {
+        for f in [
+            "plugins",
+            "apps",
+            "multi_agent",
+            "computer_use",
+            "hooks",
+            "view_image",
+            "unified_exec",
+            "unified_exec_tty",
+        ] {
             assert!(args.windows(2).any(|w| w == ["--disable", f]), "{f}");
         }
         assert!(args.windows(2).any(|w| w == ["-c", "mcp_servers={}"]));

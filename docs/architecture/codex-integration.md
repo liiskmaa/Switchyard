@@ -26,7 +26,8 @@ Verified against **`codex-cli 0.166.0`** (macOS, ChatGPT sign-in), using:
 The `app-server` command is labelled `[experimental]` in `codex --help`; its stable surface (the
 methods used here, with `experimentalApi` left off) is what the documentation describes. Switchyard
 does not opt into the experimental API. Because the protocol is versioned only by the CLI release,
-the adapter records the version it was verified against and reports any other version as untested.
+the adapter records the version it was verified against and refuses any other version unless the
+operator opts in with `SWITCHYARD_ALLOW_UNTESTED_CODEX=1` (M5.1).
 
 ## Transport and framing
 
@@ -61,16 +62,33 @@ the adapter records the version it was verified against and reports any other ve
 Passed on the command line for every Switchyard-launched app-server:
 
 ```
+--disable view_image --disable unified_exec --disable unified_exec_tty
 --disable apps --disable plugins --disable remote_plugin --disable multi_agent
 --disable browser_use --disable browser_use_external --disable computer_use
 --disable in_app_browser --disable image_generation --disable hooks --disable goals
 -c web_search="disabled" -c mcp_servers={}
 ```
 
-These remove tools that could act **without** an approval request: MCP servers and plugins
-(including those configured in the user's `~/.codex/config.toml`), web search, browser and computer
-use, image generation and user hooks. Verified: with them, web search is unavailable and no MCP
-tools are listed.
+These remove tools that could act **without** an approval request. Verified with 0.166.0:
+
+- MCP servers and plugins (including those in the user's `~/.codex/config.toml`), web search,
+  browser and computer use, image generation and user hooks: unavailable.
+- `view_image` (M5.1 audit): without the flag, the model could read **any image file the user can
+  read**, anywhere on disk, with no approval request, and send it to OpenAI. With the flag the tool
+  is gone.
+- `unified_exec` / `unified_exec_tty` (M5.1 audit): without them, an approved interactive program
+  (e.g. `sh`) kept running, and `write_stdin` then ran further commands inside it (`touch` created a
+  file) with **no approval request**. With the flags, TTY execution is refused and a command runs to
+  completion, so there is no running session to write to.
+
+How Codex calls tools (verified from its session logs): the model's top-level tool is `exec`, which
+runs **JavaScript in a V8 isolate** (`codex-code-mode-host`). That JavaScript calls nested tools
+(`tools.exec_command`, `tools.apply_patch`, `tools.write_stdin`, the MCP resource tools,
+`clock__curr_time`); the commands and patches it starts are what Switchyard is asked about. The
+isolate itself was probed: it has no `require`, `process`, `fetch`, `fs`, `WebSocket`, `Deno` or
+`Bun`, and `import()` fails, so the script cannot touch files or the network except through those
+tools. Other top-level tools: `wait`, `request_user_input` (a server request, denied), `clock.sleep`
+and the `collaboration.*` sub-agent tools (see below).
 
 ## Session and turn model
 
@@ -154,18 +172,42 @@ because the executed text is an arbitrary shell script. So every Codex read asks
 
 ## Security boundary
 
-- **What Switchyard mediates:** every shell command and every patch Codex runs (verified), with the
-  tools listed under "Hardening flags" disabled.
-- **What Codex's sandbox adds:** with `sandbox: "workspace-write"`, commands that run *inside* the
-  sandbox can write only to the workspace (and temp directories) and have no network. Verified:
-  `curl` failed inside the sandbox even after approval.
-- **What it does not add (verified):** under `untrusted`, an **approved** command or patch can run
-  outside the sandbox. An approved `touch` and an approved patch both wrote to `/Users/Shared`, outside
-  the workspace and outside temp directories. So an approval is as strong as it is for Claude: the
-  operation runs with the user's privileges.
+Read this before relying on Codex in Switchyard.
+
+- **What Switchyard mediates (verified):** every shell command and every patch the Codex model
+  starts goes to Switchyard before it runs; nothing ran unasked in any test. Unknown request types
+  are denied and answered with an error. Unmediated tools found in the audit (`view_image`,
+  `write_stdin` into a running program) are disabled at launch.
+- **What an approval means:** an approved command runs **with the user's account permissions and
+  without Codex's filesystem sandbox**. Verified with `approvalPolicy: "untrusted"` in both
+  `read-only` and `workspace-write`: approved `touch` commands wrote to `/Users/Shared`, to a directory
+  outside the workspace and to the workspace alike. Because every command needs approval before it
+  runs, **Codex's filesystem sandbox protects nothing in this configuration**; the approval is the
+  only gate. The approval card says so for every command ("Not limited to the workspace").
+- **Network:** an approved `curl https://example.com` failed to resolve the host while the same
+  command worked from the host shell, so Codex 0.166.0 kept network access off for approved commands
+  in these tests. This is observed behaviour, not a guarantee Switchyard enforces.
+- **Patches:** paths are resolved by Core (following symlinks). A patch with a target outside the
+  workspace, through a symlink, or that cannot be resolved is never allowed automatically, and the
+  card lists the targets as "Outside the workspace". A person can still approve it, and the patch is
+  then written there.
+- **A single earlier observation** (an approved `touch` into a temporary directory failing with
+  "Operation not permitted" in `read-only` mode) could not be reproduced; the controlled experiment
+  above is the reference.
+- **Sub-agents** (`spawn_agent`) cannot be disabled in 0.166.0: `--disable multi_agent`,
+  `agents.max_threads=1` and `agents.max_depth=0` all still allowed a spawn. Switchyard (a) tells the
+  model they are unavailable (instructions only, not enforcement), (b) sends `turn/interrupt` for a
+  sub-agent's turn as soon as it starts (verified: the child turn ended `interrupted` before making
+  any request), and (c) denies every request from another thread. A sub-agent can still spend a
+  model call before it is interrupted, and the parent turn may then wait for it until the operator
+  interrupts the turn. Sub-agents are **unsupported**, not contained.
 - **Not mediated:** what the model sends to OpenAI (file contents it has read become part of the
-  conversation); and sub-agent spawning (`collabAgentToolCall`), which cannot be disabled in 0.166.0.
-  Sub-agents' own commands are still routed as approval requests, and Switchyard denies them.
+  conversation); Codex's own start-up work (for example its login-shell environment snapshot);
+  commands run by an approved command (a script, a build, `npm install`); and processes an approved
+  command deliberately detaches (`nohup`, `setsid`). Verified: an ordinary approved `sleep 25; touch`
+  was killed when the session stopped and never wrote its file.
+- **Versions:** only 0.166.0 is trusted. Any other version is detected but refused, with the reason,
+  unless `SWITCHYARD_ALLOW_UNTESTED_CODEX=1` is set; then the session records a warning.
 - Switchyard does not weaken Codex's defaults: it never uses `danger-full-access`, `never` or
   `acceptForSession`, never sets `externalSandbox`, and never answers with a policy amendment.
 - Policies and worktrees are not an OS-level sandbox, for Codex as for Claude.
@@ -194,7 +236,12 @@ because the executed text is an arbitrary shell script. So every Codex read asks
   adapter is verified against 0.166.0 only.
 - Every Codex read is a shell command and asks by default.
 - Patches mixing additions, edits and deletions, and file moves, are denied; Codex has to split them.
-- Sub-agents are denied, not supported.
+- Sub-agents are unsupported: their turns are interrupted and their requests denied, but they cannot
+  be prevented from starting.
+- Approved commands are not confined to the workspace (see "Security boundary").
+- Interactive programs (TTY sessions, writing to a running command's stdin) are unavailable.
+- Image viewing is unavailable.
+- Only codex-cli 0.166.0 runs without an explicit opt-in.
 - The denial reason is not shown to the model.
 - No cost reporting.
 

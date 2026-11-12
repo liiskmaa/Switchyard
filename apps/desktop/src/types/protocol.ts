@@ -230,6 +230,15 @@ export interface ApprovalPolicy {
   explanation: string;
   deciding_rule: PolicyRuleRef | null;
   policy_revision: number;
+  /** What approving would reach; absent for approvals recorded before it existed. */
+  scope?: ApprovalScope;
+}
+
+export interface ApprovalScope {
+  kind: "workspace" | "outside_workspace" | "unknown" | "unrestricted";
+  outside_paths: string[];
+  unresolved_paths: string[];
+  note: string;
 }
 
 export interface PolicyRule {

@@ -21,7 +21,12 @@
 //! | `slow` | streams 60 deltas 50 ms apart; interruptible |
 //! | `pending` | command approval, then waits; interruptible |
 //! | `perm` | `item/permissions/requestApproval` |
-//! | `subagent` | a command approval from another thread |
+//! | `subagent` | a child thread's `turn/started`, then a command approval from it |
+//! | `move` | a patch that moves README.md |
+//! | `newreq` | a server request with an unknown method |
+//! | `garbage` | malformed, truncated and unknown messages, then a reply |
+//! | `crashpending` | a command approval, then exit 3 before any answer |
+//! | `dupid` | two approval requests with the same JSON-RPC id |
 //! | `unmediated` | an `mcpToolCall` item that never asks |
 //! | `whoami` | replies with its thread id |
 //! | `remember` | replies with every earlier user message of the thread |
@@ -124,6 +129,15 @@ impl Fake {
                     record_answer(&self.thread(), &json!({ "method": method, "answer": m }));
                     return Wait::Answer(m);
                 }
+                Ok(m)
+                    if m["method"] == "turn/interrupt" && m["params"]["threadId"] != json!(self.thread()) =>
+                {
+                    // A sub-agent's turn: acknowledge, record, keep waiting.
+                    record_answer(&self.thread(), &json!({ "child_interrupt": m["params"] }));
+                    if let Some(i) = m.get("id") {
+                        self.respond(i, json!({}));
+                    }
+                }
                 Ok(m) if m["method"] == "turn/interrupt" => {
                     // Like Codex: the turn ends, then the request is resolved.
                     return Wait::Interrupted(json!({ "pending": id, "request": m }));
@@ -182,7 +196,15 @@ impl Fake {
         let item = format!("exec-{}", new_id());
         let list: Vec<Value> = changes
             .iter()
-            .map(|(p, kind)| json!({ "path": format!("{}/{}", self.cwd, p), "kind": { "type": kind }, "diff": "+fake\n" }))
+            .map(|(p, kind)| {
+                let path = if p.starts_with('/') { p.clone() } else { format!("{}/{}", self.cwd, p) };
+                let kind = if *kind == "move" {
+                    json!({ "type": "update", "move_path": format!("{}/moved.txt", self.cwd) })
+                } else {
+                    json!({ "type": kind })
+                };
+                json!({ "path": path, "kind": kind, "diff": "+fake\n" })
+            })
             .collect();
         self.notify("item/started", json!({ "threadId": t, "turnId": turn, "item": { "type": "fileChange", "id": item, "changes": list, "status": "inProgress" } }));
         let answer = self.ask(
@@ -282,9 +304,68 @@ impl Fake {
                 }
             }
             "cmd" => interrupted = self.command(&turn, arg.unwrap_or("true"), None),
+            "move" => {
+                if let Some(m) = self.patch(&turn, vec![("README.md".to_owned(), "move")]) {
+                    interrupted = serde_json::from_str(&m).ok();
+                }
+            }
+            "newreq" => {
+                let answer = self.ask(
+                    "item/brandNew/requestApproval",
+                    json!({ "threadId": t, "turnId": turn, "itemId": "n1" }),
+                );
+                if let Wait::Interrupted(m) = answer {
+                    interrupted = Some(m);
+                } else {
+                    self.message(&turn, "Unknown request answered.");
+                }
+            }
+            "garbage" => {
+                out(&json!("not an object"));
+                {
+                    let mut stdout = std::io::stdout().lock();
+                    let _ = writeln!(
+                        stdout,
+                        "{{\"id\": 77, \"method\": \"item/commandExecution/requestApproval\", \"params\": {{\"kind\""
+                    );
+                    let _ = writeln!(stdout, "this is not json");
+                    let _ = stdout.flush();
+                }
+                self.notify("item/brandNewNotification", json!({ "threadId": t, "x": 1 }));
+                self.notify(
+                    "item/started",
+                    json!({ "threadId": t, "turnId": turn, "item": { "type": "brandNewItem", "id": "z1" } }),
+                );
+                self.notify("item/completed", json!({ "threadId": t, "turnId": turn, "item": { "type": "brandNewItem", "id": "z1", "status": "completed" } }));
+                out(&json!({ "id": 9999, "result": { "unexpected": true } }));
+                self.message(&turn, "Still here.");
+            }
+            "crashpending" => {
+                out(
+                    &json!({ "id": self.next_request, "method": "item/commandExecution/requestApproval", "params": {
+                    "kind": "command", "threadId": t, "turnId": turn, "itemId": "c9", "command": "/bin/zsh -lc 'touch crashed.txt'", "cwd": self.cwd } }),
+                );
+                std::thread::sleep(Duration::from_millis(500));
+                eprintln!("fake codex: crashed with a pending approval");
+                std::process::exit(3);
+            }
+            "dupid" => {
+                for _ in 0..2 {
+                    out(&json!({ "id": 42, "method": "item/commandExecution/requestApproval", "params": {
+                        "kind": "command", "threadId": t, "turnId": turn, "itemId": "d1", "command": "/bin/zsh -lc 'touch dup.txt'", "cwd": self.cwd } }));
+                }
+                // Wait for the adapter to give up (stdin closes).
+                while self.input.recv().is_ok() {}
+                return;
+            }
             "pending" => interrupted = self.command(&turn, "sleep 100", None),
             "subagent" => {
                 let child = new_id();
+                // Like Codex: the child thread's turn starts before its first request.
+                self.notify(
+                    "turn/started",
+                    json!({ "threadId": child, "turn": { "id": format!("child-turn-{child}"), "status": "inProgress", "items": [] } }),
+                );
                 interrupted = self.command(&turn, "touch from-subagent.txt", Some(child));
                 if interrupted.is_none() {
                     self.message(&turn, "Sub-agent finished.");

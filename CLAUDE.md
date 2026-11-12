@@ -110,7 +110,9 @@ When running Core or the app manually, set `SWITCHYARD_DATA_DIR` (and, if that p
     report `supported` for behaviour verified against the real CLI.
   - Codex threads are always opened with `approvalPolicy: "untrusted"` and `sandbox:
     "workspace-write"`, and tools that act without approval are disabled (`codex/launch.rs`, ADR
-    0021). Never answer with `acceptForSession` or a policy amendment; never fall back to a new thread
+    0021, including `view_image` and `unified_exec`, found by the M5.1 audit). Approved Codex commands
+    run without Codex's sandbox; never describe the sandbox setting as a boundary. Untested Codex
+    versions are refused unless `allow_untested_codex`. Never answer with `acceptForSession` or a policy amendment; never fall back to a new thread
     when `thread/resume` fails.
   - Token deltas go to `LiveHub` only, never the journal.
   - Approvals are settled through `approvals::decide` (SQL-guarded `pending → final`), committed
@@ -128,8 +130,11 @@ When running Core or the app manually, set `SWITCHYARD_DATA_DIR` (and, if that p
     they were.
   - When CLI behaviour changes, re-record fixtures in `crates/switchyard-agents/tests/fixtures/`
     (sanitized; see its README) and keep `src/bin/fake_claude.rs` / `src/bin/fake_codex.rs` in sync.
-    Integration tests never run the real CLIs (`tests/common` points both at the fakes); only
-    `real_*.rs` opt in.
+    Integration tests never run the real CLIs: `tests/common` points both at the fakes and its
+    `guard` refuses to start any test Core with another executable (a wrapper inside the test's own
+    temp dir is allowed). Real-CLI tests go through `TestCore::start_real`, which requires
+    `SWITCHYARD_REAL_CLAUDE=1` / `SWITCHYARD_REAL_CODEX=1` exactly. Never start a test Core with
+    `switchyard_core::start` directly; use `common::start_core`.
 - Text edits made with ad-hoc scripts can silently no-op after `cargo fmt` reflows code. Verify
   behaviour-only edits (guards, checks) with a test.
 

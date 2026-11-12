@@ -35,8 +35,12 @@ every action that matters. The desktop app is a client: closing it never stops y
   - interrupt, stop and resume of the same Codex thread;
   - verified against `codex-cli` 0.166.0. Codex's `app-server` is marked experimental by the CLI.
   - Every Codex command and patch is sent to Switchyard for a decision. Codex reads files with
-    shell commands, so its reads ask too, unless a shell rule allows the exact command. See
-    [Codex integration](docs/architecture/codex-integration.md) for what differs from Claude.
+    shell commands, so its reads ask too, unless a shell rule allows the exact command.
+  - **An approved Codex command is not confined to the workspace:** Codex does not apply its own
+    filesystem sandbox to approved commands, so an approval is as strong as running the command
+    yourself. Image viewing, interactive programs and sub-agents are unavailable. Only `codex-cli`
+    0.166.0 runs without an explicit opt-in. See
+    [Codex integration](docs/architecture/codex-integration.md#security-boundary).
 - **Central approvals and policies.** Every tool request from an agent goes through Switchyard:
   - **By default:** reads and searches inside the workspace run without asking; every shell
     command and file change is a pending request you approve or deny; unknown tools are blocked.
@@ -137,7 +141,9 @@ cargo run -p switchyard-core -- --log-format text # run Core by itself; the app 
 
 - The tests use real temporary Git repositories and deterministic fake Claude and Codex CLIs
   built from recorded sessions, so they need no network and no account.
-- Opt-in tests drive the **real** CLIs and make a few small paid requests:
+- The test harness refuses to start a Core whose agent executable is not a fake, so the ordinary
+  suite cannot reach a real (paid) CLI. Opt-in tests drive the **real** CLIs and make a few small
+  paid requests; the variable must be exactly `1`:
 
   ```sh
   SWITCHYARD_REAL_CLAUDE=1 cargo test -p switchyard-core --test real_claude -- --ignored --nocapture
@@ -155,6 +161,7 @@ cargo run -p switchyard-core -- --log-format text # run Core by itself; the app 
 | `SWITCHYARD_GIT` | `git` on `PATH` | Git executable used by Core |
 | `SWITCHYARD_CLAUDE_BIN` | `claude` on `PATH`, then common install locations | Claude Code executable |
 | `SWITCHYARD_CODEX_BIN` | `codex` on `PATH`, then common install locations | Codex executable |
+| `SWITCHYARD_ALLOW_UNTESTED_CODEX` | unset | `1` runs a Codex version other than the verified 0.166.0 (recorded as a warning) |
 | `SWITCHYARD_APPROVAL_TIMEOUT_SECS` | `900` | Pending permission requests are denied after this long |
 | `SWITCHYARD_LOG` | `info` | `tracing` filter |
 

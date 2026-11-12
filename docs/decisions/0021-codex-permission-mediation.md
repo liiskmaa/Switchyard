@@ -37,3 +37,23 @@ Codex decides on its own what needs approval, depending on `approvalPolicy` and 
   Policies are still not a sandbox.
 - A future Codex release could add tools that act without approval; the version check marks such
   releases untested, and unexpected item types are journaled as warnings.
+
+## Amendment (M5.1 audit, 2026-11-12)
+
+An adversarial audit against the real CLI found two tools that acted **without** an approval request,
+and corrected one statement:
+
+- `view_image` read any image file the user can read, outside the workspace, and sent it to the
+  model. It is disabled (`--disable view_image`).
+- After one approved interactive command (`sh`), `write_stdin` ran further commands inside it with no
+  approval request. TTY and persistent command sessions are disabled (`--disable unified_exec`,
+  `--disable unified_exec_tty`); a command now runs to completion.
+- Approved commands run **without Codex's filesystem sandbox** in both `read-only` and
+  `workspace-write`. Since every command is approved before it runs, the sandbox setting does not
+  confine anything here; only the approval does. Approval cards state this for every command, and list
+  patch targets outside the workspace.
+- Sub-agents still cannot be disabled; their turns are now interrupted as soon as they start, in
+  addition to denying their requests, and the thread instructions say they are unavailable.
+- Native request ids are prefixed per process (Codex restarts its ids at 0 in each process), a reused
+  pending id stops the session, and a request without the session's thread id is treated as foreign.
+- Only the verified version (0.166.0) runs without `SWITCHYARD_ALLOW_UNTESTED_CODEX=1`.

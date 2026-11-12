@@ -12,6 +12,56 @@ use tokio::sync::mpsc;
 pub struct TestCore {
     pub dir: tempfile::TempDir,
     pub core: Option<RunningCore>,
+    /// Real CLIs this Core may run (only via [`TestCore::start_real`]).
+    pub real: RealCli,
+}
+
+// --- test isolation: no real (paid) CLI unless explicitly opted in -----------
+
+pub const ENV_REAL_CLAUDE: &str = "SWITCHYARD_REAL_CLAUDE";
+pub const ENV_REAL_CODEX: &str = "SWITCHYARD_REAL_CODEX";
+
+/// Which real agent CLIs a test Core may run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RealCli {
+    pub claude: bool,
+    pub codex: bool,
+}
+
+/// The opt-in is exactly `1`. Anything else (unset, empty, `true`, ` 1`) is no.
+pub fn real_cli_opt_in(value: Option<&str>) -> bool {
+    value == Some("1")
+}
+
+fn opted_in(var: &str) -> bool {
+    real_cli_opt_in(std::env::var(var).ok().as_deref())
+}
+
+/// Refuses to start a Core that could run a real agent CLI: every executable
+/// must be the fake, a wrapper inside the test's own temporary directory, or a
+/// path under `/nonexistent`. Called before Core starts, for every test Core.
+pub fn guard(config: &CoreConfig, test_dir: &Path, real: RealCli) {
+    fn check(name: &str, exe: Option<&Path>, fake: &str, test_dir: &Path, real_ok: bool) {
+        if real_ok {
+            return;
+        }
+        let allowed = exe.is_some_and(|p| {
+            p == Path::new(fake) || p.starts_with(test_dir) || p.starts_with("/nonexistent")
+        });
+        assert!(
+            allowed,
+            "test isolation: this Core would run a real {name} CLI ({exe:?}). Tests must use the fake \
+             CLI; real-CLI tests use TestCore::start_real and an explicit opt-in."
+        );
+    }
+    check("Claude Code", config.claude_executable.as_deref(), FAKE_CLAUDE, test_dir, real.claude);
+    check("Codex", config.codex_executable.as_deref(), FAKE_CODEX, test_dir, real.codex);
+}
+
+/// Starts Core after [`guard`].
+pub async fn start_core(config: CoreConfig, test_dir: &Path, real: RealCli) -> RunningCore {
+    guard(&config, test_dir, real);
+    switchyard_core::start(config).await.unwrap()
 }
 
 pub fn data_dir() -> tempfile::TempDir {
@@ -45,16 +95,42 @@ pub fn agent_config(dir: &Path) -> CoreConfig {
 impl TestCore {
     pub async fn start() -> Self {
         let dir = data_dir();
-        let core = switchyard_core::start(config_for(dir.path())).await.unwrap();
-        Self { dir, core: Some(core) }
+        let core = start_core(config_for(dir.path()), dir.path(), RealCli::default()).await;
+        Self { dir, core: Some(core), real: RealCli::default() }
     }
 
     pub async fn start_with(configure: impl FnOnce(&mut CoreConfig)) -> Self {
         let dir = data_dir();
         let mut config = agent_config(dir.path());
         configure(&mut config);
-        let core = switchyard_core::start(config).await.unwrap();
-        Self { dir, core: Some(core) }
+        let core = start_core(config, dir.path(), RealCli::default()).await;
+        Self { dir, core: Some(core), real: RealCli::default() }
+    }
+
+    /// A Core that runs the real CLIs in `real`, only if every one of them is
+    /// explicitly opted into (`SWITCHYARD_REAL_CLAUDE=1`, `SWITCHYARD_REAL_CODEX=1`).
+    /// Returns `None` (the test is skipped) otherwise, before anything starts.
+    pub async fn start_real(real: RealCli, configure: impl FnOnce(&mut CoreConfig)) -> Option<Self> {
+        let missing: Vec<&str> = [(real.claude, ENV_REAL_CLAUDE), (real.codex, ENV_REAL_CODEX)]
+            .into_iter()
+            .filter(|(wanted, var)| *wanted && !opted_in(var))
+            .map(|(_, var)| var)
+            .collect();
+        if !missing.is_empty() || real == RealCli::default() {
+            eprintln!("skipped: set {} to exactly 1 to run real CLIs (paid)", missing.join(" and "));
+            return None;
+        }
+        let dir = data_dir();
+        let mut config = agent_config(dir.path());
+        if real.claude {
+            config.claude_executable = None;
+        }
+        if real.codex {
+            config.codex_executable = None;
+        }
+        configure(&mut config);
+        let core = start_core(config, dir.path(), real).await;
+        Some(Self { dir, core: Some(core), real })
     }
 
     /// Stops Core gracefully and starts it again on the same data directory
@@ -65,6 +141,7 @@ impl TestCore {
         }
         let mut config = agent_config(self.dir.path());
         configure(&mut config);
+        guard(&config, self.dir.path(), self.real);
         self.core = Some(start_after_stop(config).await);
     }
 
@@ -86,7 +163,9 @@ impl TestCore {
         if self.core.is_some() {
             self.stop().await;
         }
-        self.core = Some(start_after_stop(config_for(self.dir.path())).await);
+        let config = config_for(self.dir.path());
+        guard(&config, self.dir.path(), self.real);
+        self.core = Some(start_after_stop(config).await);
     }
 }
 

@@ -350,6 +350,11 @@ button { font: inherit; color: inherit; }
 @media (max-width: 760px) { .agent-card + .agent-card { border-left: 0; padding-left: 0; border-top: 1px solid var(--border); padding-top: 12px; } }
 .agent-card-title { margin: 0; font-size: 13px; font-weight: 600; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.scope-note { border-radius: 6px; padding: 6px 10px; border: 1px solid var(--border); }
+.scope-note ul { margin: 4px 0 0; padding-left: 18px; }
+.scope-workspace { color: var(--muted); }
+.scope-unrestricted, .scope-unknown { border-color: var(--warn); background: var(--warn-soft); }
+.scope-outside_workspace { border-color: var(--error, #e5534b); background: var(--error-soft, rgb(229 83 75 / 0.12)); }
 .patch-changes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .provider-choice { display: flex; flex-wrap: wrap; gap: 8px; }
 
