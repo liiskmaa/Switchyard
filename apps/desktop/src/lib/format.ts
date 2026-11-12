@@ -45,6 +45,23 @@ export function formatClock(ms: number): string {
   return CLOCK.format(ms);
 }
 
+const usd = (v: number): string => `~$${v.toFixed(4)}`;
+
+/**
+ * Cost text for an `agent.turn_completed` payload. `turn_cost_usd` is this turn's cost;
+ * `cost_usd` is the agent's running total for the whole session (it carries across a
+ * resume), so it is labelled as such and never shown as the turn's cost. Events journaled
+ * before `turn_cost_usd` existed, and aborted turns, only have the session total.
+ */
+export function turnCostText(payload: Record<string, unknown>): string {
+  const turn = payload["turn_cost_usd"];
+  const total = payload["cost_usd"];
+  const parts: string[] = [];
+  if (typeof turn === "number") parts.push(`${usd(turn)} this turn`);
+  if (typeof total === "number" && total > 0) parts.push(`${usd(total)} session total`);
+  return parts.join(" · ");
+}
+
 export const shortId = (id: string): string => id.slice(-8);
 export const shortOid = (oid: string): string => oid.slice(0, 8);
 

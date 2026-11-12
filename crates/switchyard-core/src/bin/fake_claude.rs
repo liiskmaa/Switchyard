@@ -41,11 +41,15 @@ fn out(v: &Value) {
     let _ = stdout.flush();
 }
 
+const FAKE_TURN_COST_USD: f64 = 0.001;
+
 struct Fake {
     session_id: String,
     cwd: String,
     input: Receiver<Value>,
     last_error: bool,
+    /// Running session total, like the real CLI's `total_cost_usd`.
+    total_cost_usd: f64,
     request_seq: u32,
     /// User messages that arrived while a turn ran (processed next).
     queued: Vec<Value>,
@@ -109,7 +113,15 @@ fn main() {
             }
         }
     });
-    let mut fake = Fake { session_id, cwd, input: rx, last_error: false, request_seq: 0, queued: Vec::new() };
+    let mut fake = Fake {
+        session_id,
+        cwd,
+        input: rx,
+        last_error: false,
+        total_cost_usd: 0.0,
+        request_seq: 0,
+        queued: Vec::new(),
+    };
     fake.run();
     std::process::exit(i32::from(fake.last_error));
 }
@@ -174,8 +186,18 @@ impl Fake {
 
     fn result(&mut self, success: bool, terminal: &str, text: &str) {
         self.last_error = !success;
+        // Like 2.1.322: a finished turn reports its own usage since the last result and the
+        // session's running total; an aborted turn reports no usage (`{}`).
+        let aborted = terminal.starts_with("aborted");
+        let usage = if aborted {
+            json!({})
+        } else {
+            self.total_cost_usd += FAKE_TURN_COST_USD;
+            json!({"fake-model": {"costUSD": FAKE_TURN_COST_USD}})
+        };
         let mut v = json!({"type": "result", "subtype": if success { "success" } else { "error_during_execution" },
-            "is_error": !success, "duration_ms": 10, "num_turns": 1, "total_cost_usd": 0.0,
+            "is_error": !success, "duration_ms": 10, "num_turns": 1, "total_cost_usd": self.total_cost_usd,
+            "model_usage_since_last_result": usage,
             "stop_reason": if success { json!("end_turn") } else { Value::Null },
             "terminal_reason": terminal, "permission_denials": []});
         if success {

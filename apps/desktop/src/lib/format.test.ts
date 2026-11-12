@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { EventEnvelope } from "../types/protocol";
-import { describeEvent, formatClock, formatDuration, formatRelative, formatTimestamp, mergeEvents } from "./format";
+import { describeEvent, formatClock, formatDuration, formatRelative, formatTimestamp, mergeEvents, turnCostText } from "./format";
 import { toCoreError } from "./core";
 
 const event = (seq: number, event_type = "project.registered", payload: Record<string, unknown> = {}): EventEnvelope => ({
@@ -107,5 +107,19 @@ describe("cached date formatters", () => {
         new Date(ms).toLocaleString(undefined, { year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }),
       );
     }
+  });
+});
+
+describe("turnCostText", () => {
+  it("shows the turn's own cost and labels the running total as the session's", () => {
+    expect(turnCostText({ turn_cost_usd: 0.00021418, cost_usd: 0.00224667 })).toBe("~$0.0002 this turn · ~$0.0022 session total");
+  });
+  it("never presents the session total as the turn's cost", () => {
+    // Aborted turns and events journaled before turn_cost_usd existed only carry the total.
+    expect(turnCostText({ cost_usd: 0.2663024 })).toBe("~$0.2663 session total");
+  });
+  it("shows nothing when no cost is known", () => {
+    expect(turnCostText({ cost_usd: 0 })).toBe("");
+    expect(turnCostText({})).toBe("");
   });
 });

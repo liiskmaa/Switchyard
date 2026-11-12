@@ -128,6 +128,7 @@ impl AgentService {
                 reason,
                 duration_ms,
                 cost_usd,
+                turn_cost_usd,
                 result_text,
                 ..
             } => {
@@ -151,6 +152,7 @@ impl AgentService {
                     stop_reason,
                     duration_ms,
                     cost_usd,
+                    turn_cost_usd,
                     result: result_text,
                 };
                 if let Err(err) =

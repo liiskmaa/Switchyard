@@ -42,7 +42,7 @@ the integration notes).
 | `Event(Message { text, truncated })` | A complete assistant message (at most 8 KB). | yes, as `agent.message` |
 | `Event(ToolStarted { tool_use_id, tool_name, input })` | The agent issued a tool call. This records intent, not effect. | yes |
 | `Event(ToolFinished { outcome: Succeeded \| Failed \| Rejected, output })` | The tool result. `Rejected` means the tool never ran (denied, cancelled or interrupted). | yes |
-| `Event(TurnFinished { success, interrupted, reason, duration_ms, cost_usd, … })` | End of a turn. | yes |
+| `Event(TurnFinished { success, interrupted, reason, duration_ms, cost_usd, turn_cost_usd, … })` | End of a turn. `cost_usd` is the session's running total; `turn_cost_usd` is this turn's cost, `None` when unreported. | yes |
 | `Event(InterruptAcknowledged)` | The agent confirmed an interrupt request. | yes |
 | `Event(Warning { message })` | A malformed line, an API retry and similar. | yes (at most 25 per session) |
 | `Live(LiveChunk { kind: Text \| Thinking \| MessageStart \| MessageStop })` | A streaming fragment. | **no** |

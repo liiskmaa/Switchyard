@@ -221,6 +221,7 @@ impl Normalizer {
             reason: terminal.or(subtype),
             duration_ms: m.get("duration_ms").and_then(Value::as_u64),
             cost_usd: m.get("total_cost_usd").and_then(Value::as_f64),
+            turn_cost_usd: turn_cost(m),
             num_turns: m.get("num_turns").and_then(Value::as_u64),
             result_text,
         })
@@ -335,6 +336,16 @@ fn tool_result_text(content: &Value) -> String {
     }
 }
 
+/// Cost of one turn: the sum of `costUSD` over `model_usage_since_last_result`
+/// (one entry per model used since the previous `result`). `total_cost_usd` is the
+/// session's running total instead. `None` when the CLI reports no usage for the
+/// turn (an aborted turn reports `{}`).
+fn turn_cost(m: &Value) -> Option<f64> {
+    let models = m.get("model_usage_since_last_result")?.as_object()?;
+    let costs: Vec<f64> = models.values().filter_map(|u| u.get("costUSD").and_then(Value::as_f64)).collect();
+    if costs.is_empty() { None } else { Some(costs.iter().sum()) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,6 +423,32 @@ mod tests {
             }
         }
         assert!(matches!(&finished[..], [AgentEvent::ToolFinished { outcome: ToolOutcome::Rejected, .. }]));
+    }
+
+    fn turn_costs(out: &[AdapterOutput]) -> Vec<(Option<f64>, Option<f64>)> {
+        events(out)
+            .into_iter()
+            .filter_map(|e| match e {
+                AgentEvent::TurnFinished { cost_usd, turn_cost_usd, .. } => Some((*cost_usd, *turn_cost_usd)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn turn_cost_is_per_turn_and_cost_usd_is_the_session_total() {
+        let close = |a: Option<f64>, b: f64| a.is_some_and(|a| (a - b).abs() < 1e-9);
+        // Two turns in one process: the total grows, each turn reports its own cost.
+        let two = turn_costs(&replay("write_allow").1);
+        assert_eq!(two.len(), 2);
+        assert!(close(two[0].0, 0.00203249) && close(two[0].1, 0.00203249));
+        assert!(close(two[1].0, 0.00224667) && close(two[1].1, 0.00021418));
+        // A resumed process carries the earlier total; the turn itself is small.
+        let resumed = turn_costs(&replay("resume").1);
+        assert!(close(resumed[0].0, 0.00453177) && close(resumed[0].1, 0.00028583));
+        // An aborted turn reports no usage: unknown, not zero.
+        let interrupted = turn_costs(&replay("interrupt").1);
+        assert_eq!(interrupted[0].1, None);
     }
 
     #[test]

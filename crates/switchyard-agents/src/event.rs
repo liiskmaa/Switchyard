@@ -79,7 +79,12 @@ pub enum AgentEvent {
         /// Vendor detail such as Claude's `terminal_reason`.
         reason: Option<String>,
         duration_ms: Option<u64>,
+        /// Running total the agent reports for the whole session so far (Claude's
+        /// `total_cost_usd`; it carries across a resume). Not the cost of this turn.
         cost_usd: Option<f64>,
+        /// Cost of this turn alone, when the agent reports it (Claude's
+        /// `model_usage_since_last_result`). `None` when unreported, e.g. an aborted turn.
+        turn_cost_usd: Option<f64>,
         num_turns: Option<u64>,
         result_text: Option<String>,
     },

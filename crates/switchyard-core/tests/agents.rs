@@ -344,6 +344,28 @@ async fn concurrent_requests_keep_waiting_until_all_are_decided() {
 }
 
 #[tokio::test]
+async fn turn_completion_journals_the_turn_cost_and_the_session_total_separately() {
+    let f = fixture().await;
+    let s = start(&f).await;
+    send(&f, s.id, "first").await.unwrap();
+    wait_events(&f, s.id, "first turn", |e| turns_done(e) == 1).await;
+    wait_state(&f, s.id, SessionState::Idle).await;
+    send(&f, s.id, "second").await.unwrap();
+    let evs = wait_events(&f, s.id, "second turn", |e| turns_done(e) == 2).await;
+    let costs: Vec<_> = of_type(&evs, "agent.turn_completed")
+        .iter()
+        .map(|e| (e.payload["turn_cost_usd"].as_f64().unwrap(), e.payload["cost_usd"].as_f64().unwrap()))
+        .collect();
+    let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+    // The fake CLI charges 0.001 per turn, like the real CLI's per-result usage.
+    assert!(close(costs[0].0, 0.001) && close(costs[0].1, 0.001), "{costs:?}");
+    assert!(
+        close(costs[1].0, 0.001) && close(costs[1].1, 0.002),
+        "turn cost is not the running total: {costs:?}"
+    );
+}
+
+#[tokio::test]
 async fn interrupting_a_streaming_turn_keeps_the_session_usable() {
     let f = fixture().await;
     let s = start(&f).await;
@@ -353,7 +375,9 @@ async fn interrupting_a_streaming_turn_keeps_the_session_usable() {
         f.client.call::<SessionsInterrupt>(SessionIdParams { session_id: s.id }).await.unwrap().session;
     assert!(after.attached);
     let evs = wait_events(&f, s.id, "interrupt", |e| turns_done(e) == 1).await;
-    assert_eq!(of_type(&evs, "agent.turn_completed")[0].payload["interrupted"], true);
+    let aborted = &of_type(&evs, "agent.turn_completed")[0].payload;
+    assert_eq!(aborted["interrupted"], true);
+    assert!(aborted.get("turn_cost_usd").is_none(), "an aborted turn reports no turn cost: {aborted}");
     assert_eq!(of_type(&evs, "agent.interrupted").len(), 1);
     wait_state(&f, s.id, SessionState::Interrupted).await;
     assert_eq!(send(&f, s.id, "again").await.unwrap(), Delivery::StartedTurn);

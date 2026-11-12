@@ -2,7 +2,7 @@ import { memo } from "react";
 import type React from "react";
 
 import { Badge, type Tone } from "../../components/ui";
-import { formatClock, formatTimestamp, toolSummary } from "../../lib/format";
+import { formatClock, formatTimestamp, toolSummary, turnCostText } from "../../lib/format";
 import type { EventEnvelope } from "../../types/protocol";
 
 const str = (p: Record<string, unknown>, k: string): string => (typeof p[k] === "string" ? (p[k] as string) : "");
@@ -87,7 +87,7 @@ const Item = memo(function Item({ e }: { e: EventEnvelope }) {
         <span className="muted">
           {p["interrupted"] === true ? "interrupted" : p["success"] === true ? "completed" : `error: ${str(p, "reason")}`}
           {typeof p["duration_ms"] === "number" ? ` · ${(p["duration_ms"] / 1000).toFixed(1)}s` : ""}
-          {typeof p["cost_usd"] === "number" && p["cost_usd"] > 0 ? ` · ~$${p["cost_usd"].toFixed(4)}` : ""}
+          {turnCostText(p) ? ` · ${turnCostText(p)}` : ""}
         </span>,
       );
     case "files.changed": {

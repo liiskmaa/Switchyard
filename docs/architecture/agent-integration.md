@@ -93,6 +93,11 @@ Examples are abbreviated, verbatim shapes from the fixtures.
  "permission_denials":[]}
 ```
 
+- Cost on `result`: `total_cost_usd` is the **running total for the session**. It grows with
+  every turn and carries across `--resume`, so it is not the cost of the turn. The turn's own cost
+  is the sum of `costUSD` over `model_usage_since_last_result` (one entry per model). An aborted
+  turn reports `{}` there and repeats the previous total. Switchyard journals both: `cost_usd` is
+  the session total and `turn_cost_usd` is the turn's cost, absent when unreported.
 - `assistant` lines carry **one content block each** (thinking, text or tool_use). The text is
   complete, so Switchyard journals it once as `agent.message` and does not journal each delta.
 - Other message types seen and ignored: `system/status`, `system/thinking_tokens` and

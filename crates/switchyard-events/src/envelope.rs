@@ -80,7 +80,11 @@ pub enum DomainEvent {
         reason: Option<String>,
         stop_reason: Option<String>,
         duration_ms: Option<u64>,
+        /// The session's running total as reported by the agent, not this turn's cost.
         cost_usd: Option<f64>,
+        /// This turn's cost, when reported. Absent from events journaled before it existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_cost_usd: Option<f64>,
         result: Option<String>,
     },
     #[serde(rename = "agent.permission_requested")]

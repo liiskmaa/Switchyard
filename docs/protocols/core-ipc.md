@@ -222,7 +222,7 @@ the registration is kept and `projects.git_status` returns `repository_unavailab
 | `agent.message` | `{message_id, text, truncated}` (complete messages only) |
 | `agent.tool_started` | `{tool_use_id, tool_name, input, input_truncated}` |
 | `agent.tool_completed` / `agent.tool_failed` | `{tool_use_id, tool_name, output, output_truncated[, rejected]}`; `causation_id` is the matching `tool_started` |
-| `agent.turn_completed` | `{success, interrupted, reason, stop_reason, duration_ms, cost_usd, result}` |
+| `agent.turn_completed` | `{success, interrupted, reason, stop_reason, duration_ms, cost_usd, turn_cost_usd?, result}`. `cost_usd` is the session's running total as reported by the agent, not this turn's cost; `turn_cost_usd` is this turn's cost, omitted when unreported (aborted turns, and events journaled before it was added). |
 | `agent.permission_evaluated` | `{evaluation_id, trigger, tool_name, category, decision, reason, explanation, rule_id, rule_revision, policy_revision, approval_id, target}`: every evaluation. For `allow`/`deny` it is the final, automatic decision; for `ask` an `agent.permission_requested` follows. `target` is the path or command (at most 512 bytes). |
 | `agent.permission_requested` | `{approval_id, tool_name, tool_use_id, input, description, expires_at_ms, evaluation_id, explanation}` (only for `ask`) |
 | `agent.permission_resolved` | `{approval_id, tool_name, status, source, decided_by, note}`; `source` `policy` means a policy change denied the pending request (`note` explains) |
