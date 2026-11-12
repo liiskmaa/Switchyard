@@ -1,4 +1,4 @@
-# Switchyard Core IPC protocol — version 3
+# Switchyard Core IPC protocol — version 4
 
 This is the protocol between Switchyard Core and its clients (the desktop app, tests, and future
 tools). The source of truth is `crates/switchyard-protocol`, and the TypeScript mirror is
@@ -69,18 +69,26 @@ Versions:
 - **Version 1:** milestones 1–2.
 - **Version 2:** milestone 3; `sessions.start` requires `workspace_id`
   ([ADR 0015](../decisions/0015-protocol-version-2.md)).
-- **Version 3 (current):** milestone 4 approval policies
+- **Version 3:** milestone 4 approval policies
   ([ADR 0016](../decisions/0016-approval-policy-model.md)). It is incompatible with version 2:
   - a permission request may be allowed or denied by policy without creating an approval;
   - `Approval.decision_source` gains `policy`;
   - `approvals.decide {approve}` can fail with `policy_denied`;
   - `policies.*` methods are added.
+- **Version 4 (current):** milestone 5 Codex
+  ([ADR 0022](../decisions/0022-agent-capabilities-and-protocol-4.md)). It is incompatible with
+  version 3:
+  - every capability is `"supported" | "unsupported" | "unknown"` instead of a boolean, and
+    capabilities `tool_activity`, `denial_reason_to_agent`, `usage_tokens`, `cost` and
+    `file_read_tool` are added;
+  - `sessions.start` accepts `provider: "codex"`, and `agents.list` returns one entry per provider;
+  - additive: `Approval.provider`, and `usage` on `agent.turn_completed`.
 
-The minimum is 3 on both sides:
-- **A client that offers 1 or 2** is refused with `unsupported_protocol_version`. `data` contains
+The minimum is 4 on both sides:
+- **A client that offers 1, 2 or 3** is refused with `unsupported_protocol_version`. `data` contains
   `{min_supported, max_supported, client_protocol, client_name, client_version, core_version,
   action: "update_client"}`. Its later requests get `not_initialized`.
-- **A Core that selects 1 or 2** (an older Core still running) is refused by the client.
+- **A Core that selects 1, 2 or 3** (an older Core still running) is refused by the client.
   `switchyard-client` reports `IncompatibleCore {core_protocol, required, core_version, core_pid,
   client_version}`, closes the connection and sends nothing else. The desktop shows that message
   and does not stop the old Core by itself.
@@ -108,7 +116,7 @@ client detect a restart. `seq` stays continuous across restarts because it lives
 | `events.list` | `{after_seq?, project_id?, session_id?, event_types?: string[], limit?: 1..=1000 (default 100)}` | `{events: EventEnvelope[]}` in ascending `seq` order. Without any filter it returns the **latest** `limit` events; with filters it returns the first `limit` events after `after_seq`. |
 | `events.subscribe` | `{after_seq?, project_id?, event_types?}` | `{subscription_id}` |
 | `events.unsubscribe` | `{subscription_id}` | `{}` |
-| `agents.list` | `{refresh?: bool}` | `{agents: [AgentAvailability]}` (Claude Code: installed, version, tested version, executable, error, auth `{logged_in, method, provider}`, capabilities) |
+| `agents.list` | `{refresh?: bool}` | `{agents: [AgentAvailability]}` One entry per provider (`claude_code`, `codex`): installed, version, tested version, executable, error, auth `{logged_in, method, provider}` (never account identity), capabilities |
 | `workspaces.list` | `{project_id, include_archived?: bool}` | `{workspaces: [Workspace]}`, oldest first. Archived, removed and legacy records only with `include_archived`. `project_not_found`. |
 | `workspaces.get` | `{workspace_id}` | `{workspace, sessions: [Session]}` (the sessions that ran in it, newest first, up to 50) |
 | `workspaces.create` | `{project_id, name?, base_ref?}` | `{workspace}` in `ready`/`dirty`. Creates `switchyard/<id>` from `base_ref` (default `HEAD`) in `<data>/workspaces/<project>/<id>`. Errors: `project_not_found`, `invalid_params` (name, unknown or option-like revision, no commits), `repository_unavailable`, `branch_collision`, `worktree_creation_failed`, `worktree_identity_mismatch`; on failure after the record was written, `data.workspace_id` names the `failed` record. |
@@ -119,13 +127,13 @@ client detect a restart. `seq` stays continuous across restarts because it lives
 | `workspaces.complete` | `{workspace_id}` | `{workspace}`. `ready`/`dirty` → `completed` (marker; can be reopened by starting a session). |
 | `workspaces.cleanup_check` | `{workspace_id}` | `{workspace, report: CleanupReport}`. Read-only safety evaluation. |
 | `workspaces.cleanup` | `{workspace_id, confirmation}` | `{workspace, report}` with status `removed`. The confirmation is bound to a full scan of every entry under the worktree, so any change after review refuses it; the scan is repeated immediately before `git worktree remove`. Refused with `dirty_workspace` (uncommitted or untracked changes) or `unsafe_cleanup` (any other blocker, a changed state, a change detected by the final scan, or a Git failure; the workspace is `archived` again and nothing is deleted). `data.report` holds the current report when available. The branch is always kept. |
-| `sessions.start` | `{workspace_id, project_id?, prompt?, model?, provider?: "claude_code"}` | `{session: Session}`. Launches Claude with the workspace path as its working directory, never the project root. Errors: `workspace_not_found`, `workspace_project_mismatch`, `legacy_workspace`, `workspace_occupied`, `invalid_workspace_state`, `worktree_missing`, `worktree_identity_mismatch`, `repository_unavailable`, `agent_unavailable`, `agent_failed` (with `data.session_id`). |
+| `sessions.start` | `{workspace_id, project_id?, prompt?, model?, provider?: "claude_code" \| "codex"}` | `{session: Session}`. `provider` defaults to `claude_code`; another value is `invalid_params`. Launches the agent with the workspace path as its working directory, never the project root. Errors: `workspace_not_found`, `workspace_project_mismatch`, `legacy_workspace`, `workspace_occupied`, `invalid_workspace_state`, `worktree_missing`, `worktree_identity_mismatch`, `repository_unavailable`, `agent_unavailable`, `agent_failed` (with `data.session_id`). |
 | `sessions.list` | `{project_id?, workspace_id?, live_only?, limit?}` | `{sessions: [Session]}`, newest first |
 | `sessions.get` | `{session_id}` | `{session, live_text, live_seq}`. `live_text` is the message currently streaming (ephemeral); it is empty between `message_stop` and the next `message_start`, because the complete message is journaled before `message_stop` (for example while a permission request waits). |
 | `sessions.send` | `{session_id, text, queue_if_busy?: bool}` | `{delivery: "started_turn" \| "queued_for_next_turn"}`. Without `queue_if_busy`, sending during a turn fails with `invalid_state`. |
 | `sessions.interrupt` | `{session_id}` | `{session}`. The state becomes `interrupted` when the agent confirms. |
 | `sessions.stop` | `{session_id}` | `{session}` once the process has exited (state `stopped`) |
-| `sessions.resume` | `{session_id, prompt?}` | `{session}`. Continues a terminal session in a new process with the same native ID, in the same workspace, after the same validation as `sessions.start`. `conflict` if it is already attached; `legacy_workspace` for sessions from before workspace isolation. |
+| `sessions.resume` | `{session_id, prompt?}` | `{session}`. Continues a terminal session in a new process with the same native ID (Claude `--resume`, Codex `thread/resume`; a failed Codex resume fails the session and never opens a new thread), in the same workspace, after the same validation as `sessions.start`. `conflict` if it is already attached; `legacy_workspace` for sessions from before workspace isolation. |
 | `approvals.list` | `{status?, session_id?, project_id?, limit?}` | `{approvals: [Approval]}`, newest first |
 | `approvals.decide` | `{approval_id, decision: "approve" \| "deny", note?}` | `{approval}` after the decision is durable. `conflict` if it is no longer pending. `note` is shown to the agent on deny. An approval is re-checked against the current policy in the same transaction: if the policy now blocks the request, it is settled `denied` (source `policy`), the agent is told, and the call fails with `policy_denied`. A deny is always accepted. |
 | `policies.list` | `{project_id, include_archived?}` | `{rules: [PolicyRule], policy_revision}`: project and workspace rules of the project, oldest first |
@@ -173,6 +181,9 @@ Session / Approval  see crates/switchyard-protocol/src/model.rs; both carry work
                    Approval.policy (v3): { evaluation_id, category, reason, explanation,
                    deciding_rule?: PolicyRuleRef, policy_revision }; null for approvals recorded
                    before policies. decision_source adds "policy" (always a denial).
+                   Approval.provider (v4): the session's agent.
+                   Session.capabilities / AgentAvailability.capabilities (v4): every field is
+                   "supported" | "unsupported" | "unknown".
 PolicyRule       { id, project_id, workspace_id?, workspace_name?, scope: "project"|"workspace",
                    category, decision, conditions: {path_prefix?, command?}, description, enabled,
                    archived, revision, created_at_ms, updated_at_ms, archived_at_ms? }
@@ -222,7 +233,7 @@ the registration is kept and `projects.git_status` returns `repository_unavailab
 | `agent.message` | `{message_id, text, truncated}` (complete messages only) |
 | `agent.tool_started` | `{tool_use_id, tool_name, input, input_truncated}` |
 | `agent.tool_completed` / `agent.tool_failed` | `{tool_use_id, tool_name, output, output_truncated[, rejected]}`; `causation_id` is the matching `tool_started` |
-| `agent.turn_completed` | `{success, interrupted, reason, stop_reason, duration_ms, cost_usd, turn_cost_usd?, result}`. `cost_usd` is the session's running total as reported by the agent, not this turn's cost; `turn_cost_usd` is this turn's cost, omitted when unreported (aborted turns, and events journaled before it was added). |
+| `agent.turn_completed` | `{success, interrupted, reason, stop_reason, duration_ms, cost_usd, turn_cost_usd?, usage?, result}`. `cost_usd` is the session's running total as reported by the agent, not this turn's cost; `turn_cost_usd` is this turn's cost, omitted when unreported (aborted turns, and events journaled before it was added). `usage` (`input_tokens`, `cached_input_tokens`, `output_tokens`, `reasoning_output_tokens`, `total_tokens`) is this turn's token counts, omitted when unreported (Claude, aborted turns). |
 | `agent.permission_evaluated` | `{evaluation_id, trigger, tool_name, category, decision, reason, explanation, rule_id, rule_revision, policy_revision, approval_id, target}`: every evaluation. For `allow`/`deny` it is the final, automatic decision; for `ask` an `agent.permission_requested` follows. `target` is the path or command (at most 512 bytes). |
 | `agent.permission_requested` | `{approval_id, tool_name, tool_use_id, input, description, expires_at_ms, evaluation_id, explanation}` (only for `ask`) |
 | `agent.permission_resolved` | `{approval_id, tool_name, status, source, decided_by, note}`; `source` `policy` means a policy change denied the pending request (`note` explains) |
@@ -281,8 +292,8 @@ Clients must tolerate unknown event types and payload fields.
 ## Example session
 
 ```text
-→ {"type":"request","id":1,"method":"initialize","params":{"protocol_version":3,"client":{"name":"cli","version":"0.1.0"}}}
-← {"type":"response","id":1,"result":{"protocol_version":3,"core":{"version":"0.1.0","instance_id":"01a1…","started_at_ms":1794354584000,"pid":72726}}}
+→ {"type":"request","id":1,"method":"initialize","params":{"protocol_version":4,"client":{"name":"cli","version":"0.1.0"}}}
+← {"type":"response","id":1,"result":{"protocol_version":4,"core":{"version":"0.1.0","instance_id":"01a1…","started_at_ms":1794354584000,"pid":72726}}}
 → {"type":"request","id":2,"method":"events.subscribe","params":{"after_seq":0}}
 ← {"type":"response","id":2,"result":{"subscription_id":"01a1…"}}
 ← {"type":"event","subscription_id":"01a1…","event":{"seq":1,"event_type":"core.started",…}}

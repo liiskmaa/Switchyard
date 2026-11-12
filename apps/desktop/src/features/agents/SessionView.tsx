@@ -1,6 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 import { Badge, Button, EmptyState, ErrorNotice, KeyValue, Panel } from "../../components/ui";
+import { nativeIdLabel, providerName, providerShort, supported } from "../../lib/agents";
 import { toCoreError, type CoreRequestError } from "../../lib/core";
 import { formatTimestamp, mergeEvents } from "../../lib/format";
 import { liveStore, useCoreEvents } from "../../stores/core";
@@ -60,7 +61,7 @@ export function SessionView({ sessionId, projectName }: { sessionId: string; pro
         {visible.length === 0 ? (
           <EmptyState icon="activity" title="No activity yet">Send a task to start the first turn.</EmptyState>
         ) : (
-          <SessionTimeline events={visible} />
+          <SessionTimeline events={visible} agent={providerShort(session.provider).toLowerCase()} />
         )}
         {running && (liveText || live?.thinking) ? (
           <div className="live">
@@ -112,7 +113,7 @@ function SessionHeader({ session, projectName, onChanged }: { session: Session; 
 
   return (
     <Panel
-      title={`Claude Code${projectName ? ` · ${projectName}` : ""}`}
+      title={`${providerName(session.provider)}${projectName ? ` · ${projectName}` : ""}`}
       actions={
         <div className="page-actions">
           {session.attached ? (
@@ -129,7 +130,7 @@ function SessionHeader({ session, projectName, onChanged }: { session: Session; 
                 {busy === "stop" ? "Stopping…" : "Stop session"}
               </Button>
             </>
-          ) : terminal && !legacy && session.native_session_id && session.capabilities.resume_session ? (
+          ) : terminal && !legacy && session.native_session_id && supported(session.capabilities.resume_session) ? (
             <Button variant="primary" onClick={() => void act("resume", () => resumeSession(session.id))} disabled={busy !== null}>
               {busy === "resume" ? "Resuming…" : "Resume session"}
             </Button>
@@ -153,7 +154,7 @@ function SessionHeader({ session, projectName, onChanged }: { session: Session; 
           ],
           ["Branch", ws?.branch ? <code>{ws.branch}</code> : <span className="muted">{legacy ? "project checkout" : "—"}</span>],
           ["Working directory", <code className="path">{session.cwd}</code>],
-          ["Claude session", <code>{session.native_session_id ?? "—"}</code>],
+          [nativeIdLabel(session.provider), <code>{session.native_session_id ?? "—"}</code>],
           ["Switchyard session", <code>{session.id}</code>],
           ["Model", session.model ?? <span className="muted">CLI default</span>],
           [
@@ -162,6 +163,17 @@ function SessionHeader({ session, projectName, onChanged }: { session: Session; 
           ],
         ]}
       />
+      {!supported(session.capabilities.denial_reason_to_agent) ? (
+        <p className="muted small">
+          When you deny a request, {providerName(session.provider)} is only told that it was rejected, not why.
+        </p>
+      ) : null}
+      {!supported(session.capabilities.file_read_tool) ? (
+        <p className="muted small">
+          {providerName(session.provider)} reads files with shell commands, so reads ask for approval unless a shell rule
+          allows the exact command.
+        </p>
+      ) : null}
       {legacy && terminal ? (
         <p className="muted small">
           This session ran in the project checkout before workspace isolation. It is kept as history and cannot be
@@ -185,7 +197,8 @@ function Composer({ session }: { session: Session }) {
   const [notice, setNotice] = useState<string | null>(null);
   const running = session.state === "running" || session.state === "waiting_for_approval";
   const ready = session.attached && (session.state === "idle" || session.state === "interrupted");
-  const canQueue = session.attached && running && session.capabilities.queue_message_during_turn;
+  const canQueue = session.attached && running && supported(session.capabilities.queue_message_during_turn);
+  const name = providerShort(session.provider);
 
   async function submit(queue: boolean) {
     if (!text.trim()) return;
@@ -195,7 +208,7 @@ function Composer({ session }: { session: Session }) {
     try {
       const { delivery } = await sendMessage(session.id, text.trim(), queue);
       setText("");
-      setNotice(delivery === "queued_for_next_turn" ? "Queued: Claude will start it when the current turn finishes." : null);
+      setNotice(delivery === "queued_for_next_turn" ? `Queued: ${name} will start it when the current turn finishes.` : null);
     } catch (e) {
       setError(toCoreError(e));
     } finally {
@@ -212,7 +225,9 @@ function Composer({ session }: { session: Session }) {
     return (
       <p className="muted small composer-note">
         This session has no running process.{" "}
-        {session.native_session_id ? "Resume it to continue the same Claude conversation." : ""}
+        {session.native_session_id && supported(session.capabilities.resume_session)
+          ? `Resume it to continue the same ${providerShort(session.provider)} conversation.`
+          : ""}
       </p>
     );
   }
@@ -220,8 +235,8 @@ function Composer({ session }: { session: Session }) {
     <form className="composer" onSubmit={onSubmit}>
       <textarea
         className="input textarea"
-        aria-label={running ? "Follow-up message for the next turn" : "Message to Claude"}
-        placeholder={running ? "A turn is running. You can queue a follow-up for the next turn." : "Describe a development task for Claude…"}
+        aria-label={running ? "Follow-up message for the next turn" : `Message to ${name}`}
+        placeholder={running ? "A turn is running. You can queue a follow-up for the next turn." : `Describe a development task for ${name}…`}
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
@@ -233,9 +248,9 @@ function Composer({ session }: { session: Session }) {
       <div className="composer-actions">
         <span className="muted small">
           {running
-            ? session.capabilities.steer_running_turn
+            ? supported(session.capabilities.steer_running_turn)
               ? ""
-              : "Claude Code cannot change a running turn. Queue a follow-up, or interrupt."
+              : `Switchyard cannot change ${providerName(session.provider)}'s running turn. Queue a follow-up, or interrupt.`
             : "⌘↩ to send"}
         </span>
         {running ? (

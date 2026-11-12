@@ -152,27 +152,55 @@ pub enum PermissionDecision {
     Deny { message: String },
 }
 
+string_enum!(
+    /// Whether an adapter supports a capability. `Supported` means implemented
+    /// and verified against the real CLI; `Unknown` means not verified, and is
+    /// treated like `Unsupported` by Core (ADR 0022).
+    Support {
+        Supported => "supported",
+        Unsupported => "unsupported",
+        Unknown => "unknown",
+    }
+);
+
+impl Support {
+    pub fn is_supported(self) -> bool {
+        self == Self::Supported
+    }
+}
+
 /// What an adapter can do. Core and the UI must consult this instead of
 /// assuming every agent supports every operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capabilities {
     /// Several turns can be driven through one process.
-    pub multi_turn: bool,
+    pub multi_turn: Support,
     /// Incremental assistant text is streamed.
-    pub streaming_text: bool,
+    pub streaming_text: Support,
+    /// Tool calls (commands, file changes) are reported as they start and end.
+    pub tool_activity: Support,
     /// A running turn can be interrupted while the process stays alive.
-    pub interrupt_turn: bool,
+    pub interrupt_turn: Support,
     /// A message sent during a running turn is queued and starts the next
     /// turn (it does not alter the running turn).
-    pub queue_message_during_turn: bool,
+    pub queue_message_during_turn: Support,
     /// New guidance can be injected into the *running* turn.
-    pub steer_running_turn: bool,
+    pub steer_running_turn: Support,
     /// A finished session can be continued in a new process.
-    pub resume_session: bool,
+    pub resume_session: Support,
     /// Tool permission requests are routed to Switchyard.
-    pub permission_requests: bool,
+    pub permission_requests: Support,
+    /// The reason for a denial reaches the agent (not only "rejected").
+    pub denial_reason_to_agent: Support,
     /// Switchyard can choose the native session id before launch.
-    pub caller_assigned_session_id: bool,
+    pub caller_assigned_session_id: Support,
+    /// Token usage is reported per turn.
+    pub usage_tokens: Support,
+    /// Monetary cost is reported by the agent.
+    pub cost: Support,
+    /// File reads are a distinct tool (rather than shell commands), so
+    /// read policies apply to them.
+    pub file_read_tool: Support,
 }
 
 #[cfg(test)]

@@ -206,7 +206,10 @@ async fn detects_cli_version_and_auth_without_account_identity() {
     assert_eq!(auth.method.as_deref(), Some("fake"));
     let raw = serde_json::to_string(&agents).unwrap();
     assert!(!raw.contains("never-read@example.invalid"), "account identity must not be exposed");
-    assert!(claude.capabilities.interrupt_turn && !claude.capabilities.steer_running_turn);
+    assert!(
+        claude.capabilities.interrupt_turn.is_supported()
+            && !claude.capabilities.steer_running_turn.is_supported()
+    );
 }
 
 #[tokio::test]
@@ -497,7 +500,8 @@ async fn one_live_session_per_workspace_and_project_removal_is_guarded() {
         })
         .await
         .unwrap_err();
-    assert_eq!(code(other), ErrorCode::Unsupported);
+    // A live Claude session owns the workspace; a Codex session cannot share it.
+    assert_eq!(code(other), ErrorCode::WorkspaceOccupied);
     let _ = s;
 }
 

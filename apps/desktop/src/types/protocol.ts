@@ -87,16 +87,26 @@ export interface CoreEnvironment {
   desktop_version: string;
 }
 
+/** `supported` = implemented and verified against the real CLI (ADR 0022). */
+export type Support = "supported" | "unsupported" | "unknown";
+
 export interface Capabilities {
-  multi_turn: boolean;
-  streaming_text: boolean;
-  interrupt_turn: boolean;
-  queue_message_during_turn: boolean;
-  steer_running_turn: boolean;
-  resume_session: boolean;
-  permission_requests: boolean;
-  caller_assigned_session_id: boolean;
+  multi_turn: Support;
+  streaming_text: Support;
+  tool_activity: Support;
+  interrupt_turn: Support;
+  queue_message_during_turn: Support;
+  steer_running_turn: Support;
+  resume_session: Support;
+  permission_requests: Support;
+  denial_reason_to_agent: Support;
+  caller_assigned_session_id: Support;
+  usage_tokens: Support;
+  cost: Support;
+  file_read_tool: Support;
 }
+
+export type AgentProvider = "claude_code" | "codex";
 
 export interface AgentAvailability {
   provider: string;
@@ -158,6 +168,8 @@ export interface Approval {
   workspace_id?: Uuid | null;
   workspace_name?: string | null;
   agent_id: Uuid | null;
+  /** The session's agent. */
+  provider: string;
   tool_name: string;
   tool_use_id: string | null;
   input: unknown;
@@ -433,7 +445,7 @@ export interface CoreMethods {
     result: { workspace: Workspace; report: CleanupReport };
   };
   "sessions.start": {
-    params: { workspace_id: Uuid; project_id?: Uuid; prompt?: string; model?: string };
+    params: { workspace_id: Uuid; project_id?: Uuid; provider?: AgentProvider; prompt?: string; model?: string };
     result: { session: Session };
   };
   "sessions.list": {

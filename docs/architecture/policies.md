@@ -11,11 +11,15 @@ Design: [ADR 0016](../decisions/0016-approval-policy-model.md) (model and preced
 
 ## The path of one request
 
-1. **Request.** Claude Code sends `can_use_tool`. Every enabled tool reaches Switchyard, because
-   the launch settings carry an `ask` rule for each one.
-2. **Classification.** `switchyard_agents::claude::classify` turns the request into an `Operation`:
-   category, target paths, command, and unknown input fields. Unknown tools, tools not enabled at
-   launch, and malformed input get a `problem`.
+1. **Request.** Claude Code sends `can_use_tool`; every enabled tool reaches Switchyard, because
+   the launch settings carry an `ask` rule for each one. Codex sends an approval request for every
+   command and every patch, because its threads run with `approvalPolicy: "untrusted"` (ADR 0021).
+2. **Classification.** The session's adapter (`switchyard_agents::classify`, chosen by the provider
+   in Core's own session record) turns the request into an `Operation`: category, target paths,
+   command, and unknown input fields. Unknown tools, tools not enabled at launch, malformed input,
+   and for Codex mixed-kind patches, file moves and sub-agent requests get a `problem`. Codex
+   commands are always `shell`, even when they only read (`cat`); its patches are `file_write`,
+   `file_edit` or `file_delete` by change kind.
 3. **Scope.** Core reads the session's project and workspace from its own records. It computes the
    **path facts** for each target, lexically and after following symlinks: inside the workspace,
    outside, or unresolvable.
@@ -26,7 +30,8 @@ Design: [ADR 0016](../decisions/0016-approval-policy-model.md) (model and preced
    - **allow:** the agent is told "allow" at once; no approval is created.
    - **ask:** an approval is created in the same transaction and a person decides, exactly as
      before milestone 4. Expiry, cancellation and shutdown all still deny.
-   - **deny:** the agent is told "deny" with the explanation. No approval is created, so there is
+   - **deny:** the agent is told "deny" with the explanation (Codex is only told "declined"; it does
+     not receive the explanation). No approval is created, so there is
      nothing to approve.
 6. **Fail closed.** If any step fails (classification, storage, recording), the agent is denied.
 
@@ -111,4 +116,7 @@ See [ADR 0019](../decisions/0019-policy-threat-model.md). In short:
 - time-of-check to time-of-use changes to symlinks;
 - Unicode normalization variants in path names;
 - managed Claude settings;
+- for Codex: an approved command or patch can run outside Codex's own sandbox (verified), what the
+  model sends to OpenAI, and sub-agent spawning (sub-agents' requests are denied, see
+  [codex-integration.md](codex-integration.md));
 - anyone with access to the local user account.

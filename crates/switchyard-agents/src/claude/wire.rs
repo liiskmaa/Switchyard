@@ -222,6 +222,7 @@ impl Normalizer {
             duration_ms: m.get("duration_ms").and_then(Value::as_u64),
             cost_usd: m.get("total_cost_usd").and_then(Value::as_f64),
             turn_cost_usd: turn_cost(m),
+            usage: None,
             num_turns: m.get("num_turns").and_then(Value::as_u64),
             result_text,
         })

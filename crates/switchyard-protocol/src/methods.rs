@@ -270,7 +270,7 @@ pub struct SessionsStartParams {
     /// workspace belongs to another project.
     #[serde(default)]
     pub project_id: Option<Uuid>,
-    /// Only `claude_code` is supported in this version.
+    /// `claude_code` (default) or `codex`.
     #[serde(default)]
     pub provider: Option<String>,
     /// First task; sent once the agent is ready.

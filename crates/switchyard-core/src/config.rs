@@ -23,6 +23,10 @@ pub struct CoreConfig {
     /// Claude Code executable; `None` resolves `SWITCHYARD_CLAUDE_BIN`, then
     /// `PATH` and common install locations.
     pub claude_executable: Option<PathBuf>,
+    /// Codex CLI to use; `None` = `SWITCHYARD_CODEX_BIN`, `PATH`, common locations.
+    pub codex_executable: Option<PathBuf>,
+    /// How long a Codex session may take to open its thread before start fails.
+    pub agent_ready_timeout: Duration,
     /// Pending permission requests are denied (`expired`) after this long.
     pub approval_timeout: Duration,
     /// Agent stop: wait after closing stdin before SIGTERM.
@@ -52,6 +56,8 @@ impl CoreConfig {
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
             shutdown_grace: Duration::from_secs(3),
             claude_executable: None,
+            codex_executable: None,
+            agent_ready_timeout: Duration::from_secs(60),
             approval_timeout: Duration::from_secs(15 * 60),
             agent_stop_grace: Duration::from_secs(5),
             agent_term_grace: Duration::from_secs(5),

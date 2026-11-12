@@ -1,4 +1,5 @@
 import type { EventEnvelope } from "../types/protocol";
+import { providerName } from "./agents";
 
 export function formatRelative(thenMs: number, nowMs: number): string {
   const seconds = Math.round((nowMs - thenMs) / 1000);
@@ -62,6 +63,19 @@ export function turnCostText(payload: Record<string, unknown>): string {
   return parts.join(" · ");
 }
 
+const count = new Intl.NumberFormat("en-US");
+
+/** Token counts from an `agent.turn_completed` payload's `usage`, if reported. */
+export function usageText(payload: Record<string, unknown>): string {
+  const u = payload["usage"];
+  if (!u || typeof u !== "object") return "";
+  const n = (k: string) => (typeof (u as Record<string, unknown>)[k] === "number" ? ((u as Record<string, unknown>)[k] as number) : null);
+  const input = n("input_tokens");
+  const output = n("output_tokens");
+  if (input === null || output === null) return "";
+  return `${count.format(input)} in / ${count.format(output)} out tokens`;
+}
+
 export const shortId = (id: string): string => id.slice(-8);
 export const shortOid = (oid: string): string => oid.slice(0, 8);
 
@@ -83,7 +97,7 @@ export function describeEvent(event: EventEnvelope): string {
     case "project.removed":
       return `Removed registration for ${str(p, "root_path") ?? "project"}`;
     case "agent.started":
-      return `${p["resumed"] === true ? "Resumed" : "Started"} Claude Code ${str(p, "cli_version") ?? ""} (pid ${String(p["pid"] ?? "?")})`;
+      return `${p["resumed"] === true ? "Resumed" : "Started"} ${providerName(str(p, "provider") ?? "claude_code")} ${str(p, "cli_version") ?? ""} (pid ${String(p["pid"] ?? "?")})`;
     case "agent.ready":
       return `Agent ready${str(p, "model") ? ` · ${str(p, "model")}` : ""}`;
     case "agent.state_changed":

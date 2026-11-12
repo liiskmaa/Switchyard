@@ -24,3 +24,15 @@ describe("otherInputFields", () => {
     expect(otherInputFields("not an object")).toEqual([]);
   });
 });
+
+describe("otherInputFields for Codex input", () => {
+  it("lists every flag except what the card already renders", () => {
+    const shell = { command: "touch x", raw_command: "/bin/zsh -lc 'touch x'", cwd: "/ws", cwd_is_session_cwd: true, unexpected_fields: [] };
+    expect(otherInputFields(shell).map(([k]) => k)).toEqual(["raw_command", "cwd", "cwd_is_session_cwd", "unexpected_fields"]);
+    const patch = { changes: [{ path: "/ws/a", kind: "add" }], grant_root: "/", other_thread: false };
+    expect(otherInputFields(patch, ["changes"])).toEqual([
+      ["grant_root", "/"],
+      ["other_thread", "false"],
+    ]);
+  });
+});

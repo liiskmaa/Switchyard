@@ -20,15 +20,22 @@ pub fn data_dir() -> tempfile::TempDir {
 }
 
 pub fn config_for(dir: &Path) -> CoreConfig {
-    CoreConfig::for_data_dir(dir.join("data"), None).unwrap()
+    let mut config = CoreConfig::for_data_dir(dir.join("data"), None).unwrap();
+    // Tests never run the user's real CLIs; the opt-in real-CLI tests clear
+    // these explicitly.
+    config.claude_executable = Some(PathBuf::from(FAKE_CLAUDE));
+    config.codex_executable = Some(PathBuf::from(FAKE_CODEX));
+    config
 }
 
 pub const FAKE_CLAUDE: &str = env!("CARGO_BIN_EXE_switchyard-fake-claude");
+pub const FAKE_CODEX: &str = env!("CARGO_BIN_EXE_switchyard-fake-codex");
 
 /// Core configured to run the fake agent instead of a real `claude`.
 pub fn agent_config(dir: &Path) -> CoreConfig {
     let mut config = config_for(dir);
     config.claude_executable = Some(PathBuf::from(FAKE_CLAUDE));
+    config.codex_executable = Some(PathBuf::from(FAKE_CODEX));
     config.agent_stop_grace = Duration::from_secs(2);
     config.agent_term_grace = Duration::from_secs(2);
     config.file_debounce = Duration::from_millis(200);

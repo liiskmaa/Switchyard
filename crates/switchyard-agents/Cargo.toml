@@ -1,6 +1,6 @@
 [package]
 name = "switchyard-agents"
-description = "Vendor-neutral agent model and native agent adapters (Claude Code) for Switchyard Core."
+description = "Vendor-neutral agent model and native agent adapters (Claude Code, Codex) for Switchyard Core."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

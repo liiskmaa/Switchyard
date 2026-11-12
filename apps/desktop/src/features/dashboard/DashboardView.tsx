@@ -101,7 +101,7 @@ export function DashboardView({ onOpenProjects }: { onOpenProjects: () => void }
       <Panel title="Active agent sessions">
         {(liveSessions.data ?? []).length === 0 ? (
           <EmptyState icon="agents" title="No agent sessions running">
-            Start Claude Code from a project in Projects.
+            Start Claude Code or Codex from a project in Projects.
           </EmptyState>
         ) : (
           <ul className="mini-list">

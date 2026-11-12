@@ -32,6 +32,18 @@ pub fn bound_json(value: &Value, max: usize) -> (Value, bool) {
     (Value::String(preview), true)
 }
 
+/// Token counts for one turn, as reported by the agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct TokenUsage {
+    pub input_tokens: u64,
+    /// Part of `input_tokens` served from the provider's cache.
+    pub cached_input_tokens: u64,
+    pub output_tokens: u64,
+    /// Part of `output_tokens` spent on reasoning.
+    pub reasoning_output_tokens: u64,
+    pub total_tokens: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolOutcome {
@@ -85,6 +97,8 @@ pub enum AgentEvent {
         /// Cost of this turn alone, when the agent reports it (Claude's
         /// `model_usage_since_last_result`). `None` when unreported, e.g. an aborted turn.
         turn_cost_usd: Option<f64>,
+        /// Token counts for this turn, when the adapter reports them.
+        usage: Option<TokenUsage>,
         num_turns: Option<u64>,
         result_text: Option<String>,
     },

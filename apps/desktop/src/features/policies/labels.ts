@@ -46,10 +46,12 @@ export function categoryNote(category: OperationCategory): string | null {
       return "A command can read, write, delete and reach the network. Switchyard does not inspect what it does.";
     case "file_delete":
     case "directory_list":
-      return "Claude Code has no separate tool for this; it happens through shell commands.";
+      return category === "file_delete"
+        ? "Claude Code deletes files with shell commands; Codex deletes them in patches, which this category covers."
+        : "Neither agent has a separate tool for this; it happens through shell commands.";
     case "network":
     case "external_tool":
-      return "These tools are not enabled for Claude Code sessions, so requests for them are always blocked. A rule can only make them ask or stay blocked.";
+      return "These tools are not enabled for Claude Code or Codex sessions, so requests for them are blocked by default. A rule can only make them ask or stay blocked.";
     default:
       return null;
   }

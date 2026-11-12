@@ -2,12 +2,13 @@ import { memo } from "react";
 import type React from "react";
 
 import { Badge, type Tone } from "../../components/ui";
-import { formatClock, formatTimestamp, toolSummary, turnCostText } from "../../lib/format";
+import { providerName } from "../../lib/agents";
+import { formatClock, formatTimestamp, toolSummary, turnCostText, usageText } from "../../lib/format";
 import type { EventEnvelope } from "../../types/protocol";
 
 const str = (p: Record<string, unknown>, k: string): string => (typeof p[k] === "string" ? (p[k] as string) : "");
 
-const Item = memo(function Item({ e }: { e: EventEnvelope }) {
+const Item = memo(function Item({ e, agent }: { e: EventEnvelope; agent: string }) {
   const p = e.payload;
   const time = (
     <time className="tl-time" title={formatTimestamp(e.occurred_at_ms)}>
@@ -25,7 +26,7 @@ const Item = memo(function Item({ e }: { e: EventEnvelope }) {
     case "agent.turn_started":
       return line("accent", p["queued"] === true ? "queued" : "you", <p className="tl-prompt">{str(p, "prompt")}</p>);
     case "agent.message":
-      return line("neutral", "claude", <p className="tl-message">{str(p, "text")}</p>);
+      return line("neutral", agent, <p className="tl-message">{str(p, "text")}</p>);
     case "agent.tool_started":
       return line(
         "neutral",
@@ -88,6 +89,7 @@ const Item = memo(function Item({ e }: { e: EventEnvelope }) {
           {p["interrupted"] === true ? "interrupted" : p["success"] === true ? "completed" : `error: ${str(p, "reason")}`}
           {typeof p["duration_ms"] === "number" ? ` · ${(p["duration_ms"] / 1000).toFixed(1)}s` : ""}
           {turnCostText(p) ? ` · ${turnCostText(p)}` : ""}
+          {usageText(p) ? ` · ${usageText(p)}` : ""}
         </span>,
       );
     case "files.changed": {
@@ -113,7 +115,7 @@ const Item = memo(function Item({ e }: { e: EventEnvelope }) {
     case "agent.exited":
       return line("neutral", "exited", <span className="muted">→ {str(p, "final_state")}</span>);
     case "agent.started":
-      return line("neutral", p["resumed"] === true ? "resumed" : "started", <span className="muted">pid {String(p["pid"])} · Claude Code {str(p, "cli_version")}</span>);
+      return line("neutral", p["resumed"] === true ? "resumed" : "started", <span className="muted">pid {String(p["pid"])} · {providerName(str(p, "provider") || "claude_code")} {str(p, "cli_version")}</span>);
     case "agent.interrupted":
       return line("warn", "interrupt", <span className="muted">acknowledged by the agent</span>);
     default:
@@ -122,11 +124,11 @@ const Item = memo(function Item({ e }: { e: EventEnvelope }) {
 });
 
 /** Memoized: live output re-renders the session view many times a second. */
-export const SessionTimeline = memo(function SessionTimeline({ events }: { events: EventEnvelope[] }) {
+export const SessionTimeline = memo(function SessionTimeline({ events, agent }: { events: EventEnvelope[]; agent: string }) {
   return (
     <ol className="timeline">
       {events.map((e) => (
-        <Item key={e.seq} e={e} />
+        <Item key={e.seq} e={e} agent={agent} />
       ))}
     </ol>
   );

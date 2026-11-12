@@ -14,7 +14,6 @@
 //!   denies, and a policy change can only deny a pending request.
 
 use serde_json::json;
-use switchyard_agents::claude;
 use switchyard_agents::event::{MAX_DURABLE_INPUT, bound_json};
 use switchyard_agents::{
     ApprovalStatus, DecisionSource, PermissionDecision, PermissionRequest, SessionState,
@@ -76,7 +75,8 @@ fn settle_in_tx(
 fn wire_approval(c: &switchyard_storage::Connection, r: ApprovalRecord) -> Result<Approval, StorageError> {
     let ws = switchyard_storage::workspaces::for_session(c, r.session_id)?;
     let policy = policy::approval_policy(c, r.evaluation_id)?;
-    Ok(convert::approval(r, ws, policy))
+    let provider = sessions::get(c, r.session_id)?.provider;
+    Ok(convert::approval(r, ws, policy, provider))
 }
 
 /// What happened to a new permission request.
@@ -196,8 +196,8 @@ impl AgentService {
         ctx: &EventContext,
         request: PermissionRequest,
     ) -> Result<Outcome, ProtocolError> {
-        let operation = claude::classify(&request);
-        // Scope from Core's own records, never from the agent.
+        // Scope (and the adapter that classifies) from Core's own records,
+        // never from the agent.
         let (session, workspace) = self
             .inner
             .storage
@@ -211,6 +211,7 @@ impl AgentService {
             })
             .await
             .map_err(errors::storage)?;
+        let operation = switchyard_agents::classify(session.provider, &request);
         let scope = RequestScope {
             project_id: session.project_id,
             session_id,
@@ -518,7 +519,7 @@ impl AgentService {
     async fn deliver(
         &self,
         record: &ApprovalRecord,
-        handle: switchyard_agents::claude::ClaudeSession,
+        handle: switchyard_agents::AgentSession,
         decision: PermissionDecision,
     ) {
         if let Err(err) = handle.decide(record.native_request_id.clone(), decision).await {

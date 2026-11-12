@@ -163,14 +163,14 @@ async fn remote_errors_surface_as_typed_client_errors() {
 
 // --- protocol compatibility (ADR 0015) ---------------------------------------
 
-/// Desktops from before workspaces (protocol 1) and before policies
-/// (protocol 2) connecting to this Core are refused during the handshake
+/// Desktops from before workspaces (protocol 1), before policies
+/// (protocol 2) and before Codex (protocol 3) connecting to this Core are refused during the handshake
 /// with an actionable error, and the connection stays unusable: their next
 /// request never reaches a handler.
 #[tokio::test]
 async fn old_client_is_refused_before_any_operation() {
     let core = TestCore::start().await;
-    for (old, version) in [(1, "0.1.0-m2"), (2, "0.1.0-m3")] {
+    for (old, version) in [(1, "0.1.0-m2"), (2, "0.1.0-m3"), (3, "0.1.0-m4")] {
         let mut raw = Raw::connect(&core).await;
         raw.send(&format!(r#"{{"type":"request","id":1,"method":"initialize","params":{{"protocol_version":{old},"client":{{"name":"switchyard-desktop","version":"{version}"}}}}}}"#)).await;
         let reply = raw.recv().await;
@@ -179,14 +179,14 @@ async fn old_client_is_refused_before_any_operation() {
         let data = &reply["error"]["data"];
         assert_eq!(
             (data["min_supported"].clone(), data["max_supported"].clone()),
-            (json!(3), json!(PROTOCOL_VERSION))
+            (json!(4), json!(PROTOCOL_VERSION))
         );
         assert_eq!(data["client_protocol"], old);
         assert_eq!(data["client_version"], version);
         assert_eq!(data["core_version"], switchyard_core::CORE_VERSION);
         assert_eq!(data["action"], "update_client");
         let message = reply["error"]["message"].as_str().unwrap();
-        assert!(message.contains(version) && message.contains("requires protocol 3"), "{message}");
+        assert!(message.contains(version) && message.contains("requires protocol 4"), "{message}");
 
         // The old client's next step fails safely instead of reaching Core.
         raw.send(r#"{"type":"request","id":2,"method":"approvals.decide","params":{"approval_id":"00000000-0000-0000-0000-000000000000","decision":"approve"}}"#).await;
@@ -195,12 +195,12 @@ async fn old_client_is_refused_before_any_operation() {
 }
 
 /// This client connecting to an older Core (one that answers the handshake
-/// with protocol 1 or 2, as milestone-2 and milestone-3 Cores do) gives up
+/// with protocol 1, 2 or 3, as milestone-2 to milestone-4 Cores do) gives up
 /// during the handshake with a typed, actionable error and sends nothing
 /// else.
 #[tokio::test]
 async fn new_client_refuses_an_older_core() {
-    for old in [1, 2] {
+    for old in [1, 2, 3] {
         refuses_core_speaking(old).await;
     }
 }
@@ -236,7 +236,7 @@ async fn refuses_core_speaking(old: u32) {
         ClientError::IncompatibleCore { core_protocol, required, core_version, core_pid, .. } => {
             assert_eq!(
                 (*core_protocol, *required, core_version.as_str(), *core_pid),
-                (old, 3, "0.1.0-m2", 4242)
+                (old, 4, "0.1.0-m2", 4242)
             );
         }
         other => panic!("expected IncompatibleCore, got {other:?}"),
@@ -249,8 +249,8 @@ async fn refuses_core_speaking(old: u32) {
 
 /// Matching versions still negotiate normally.
 #[tokio::test]
-async fn current_client_and_core_agree_on_protocol_3() {
+async fn current_client_and_core_agree_on_protocol_4() {
     let core = TestCore::start().await;
     let (client, _rx) = core.connect().await;
-    assert_eq!(client.info().protocol_version, 3);
+    assert_eq!(client.info().protocol_version, 4);
 }

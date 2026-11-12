@@ -35,7 +35,11 @@ pub use switchyard_events::EventEnvelope;
 ///   policy without an approval; approvals carry their policy evaluation;
 ///   decision source `policy`; `approvals.decide` can fail with
 ///   `policy_denied`; `policies.*` methods (ADR 0016).
-pub const PROTOCOL_VERSION: u32 = 3;
+/// - 4: milestone 5 Codex: capabilities are `supported` / `unsupported` /
+///   `unknown` instead of booleans, with new capabilities; `sessions.start`
+///   accepts `provider: "codex"`; `agents.list` lists every provider;
+///   `agent.turn_completed` may carry `usage` (ADR 0022).
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Oldest protocol version this build can serve or use. Core rejects older
 /// clients during `initialize`; the client rejects a Core that selects an
@@ -43,7 +47,9 @@ pub const PROTOCOL_VERSION: u32 = 3;
 /// (agent in the project checkout) no longer exists. Version 2 is not
 /// served: a v2 client would assume every permission request becomes an
 /// approval a person decides, and cannot parse the `policy` decision source.
-pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 3;
+/// Version 3 is not served: a v3 client reads capabilities as booleans and
+/// would treat every non-empty string as supported.
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 4;
 
 /// Default upper bound for a single frame, in bytes.
 pub const DEFAULT_MAX_FRAME_BYTES: usize = 1024 * 1024;

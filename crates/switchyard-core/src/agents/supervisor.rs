@@ -4,10 +4,10 @@
 
 use std::collections::HashMap;
 
-use switchyard_agents::claude::{ExitReport, SessionUpdate};
 use switchyard_agents::{
     AdapterOutput, AgentEvent, ApprovalStatus, DecisionSource, SessionState, ToolOutcome,
 };
+use switchyard_agents::{ExitReport, SessionUpdate};
 use switchyard_events::{DomainEvent, EventContext, EventId};
 use switchyard_storage::sessions::SessionChanges;
 use tokio::sync::mpsc;
@@ -56,6 +56,7 @@ pub(super) async fn run(
         stop_requested: false,
         stderr_tail: "adapter task ended without an exit report".into(),
         malformed_lines: 0,
+        failure: None,
     });
     svc.on_exit(session_id, &ctx, report).await;
 }
@@ -70,16 +71,23 @@ impl AgentService {
     async fn on_event(&self, session_id: Uuid, ctx: &EventContext, event: AgentEvent, t: &mut Tracking) {
         match event {
             AgentEvent::Ready { native_session_id, model, tools, .. } => {
-                let state = self.attached().get(&session_id).map(|a| a.state);
-                let Some(state) = state else { return };
+                if !self.is_attached(session_id) {
+                    return;
+                }
                 let changes = SessionChanges {
                     native_session_id: Some(native_session_id.clone()),
                     model: model.clone(),
                     ..Default::default()
                 };
                 let event = DomainEvent::AgentReady { native_session_id, model, tools };
-                if let Err(err) = self.transition(session_id, state, changes, vec![event]).await {
-                    tracing::error!(%session_id, ?err, "cannot record agent readiness");
+                match self.update_in_place(session_id, changes, vec![event]).await {
+                    // Ready only once the native identity is durably recorded.
+                    Ok(_) => {
+                        if let Some(a) = self.attached().get_mut(&session_id) {
+                            a.ready = true;
+                        }
+                    }
+                    Err(err) => tracing::error!(%session_id, ?err, "cannot record agent readiness"),
                 }
             }
             AgentEvent::Message { message_id, text, truncated } => {
@@ -129,6 +137,7 @@ impl AgentService {
                 duration_ms,
                 cost_usd,
                 turn_cost_usd,
+                usage,
                 result_text,
                 ..
             } => {
@@ -153,6 +162,7 @@ impl AgentService {
                     duration_ms,
                     cost_usd,
                     turn_cost_usd,
+                    usage: usage.and_then(|u| serde_json::to_value(u).ok()),
                     result: result_text,
                 };
                 if let Err(err) =
@@ -198,10 +208,12 @@ impl AgentService {
             tracing::error!(%session_id, ?err, "cannot settle approvals for exited session");
         }
 
-        let ExitReport { exit, stop_requested, stderr_tail, malformed_lines } = report;
+        let ExitReport { exit, stop_requested, stderr_tail, malformed_lines, failure: adapter_failure } =
+            report;
         let (state, failure) = match stopping {
             Some(StopReason::CoreShutdown) => (SessionState::Stopped, Some("core_shutdown".to_owned())),
             Some(StopReason::Operator) => (SessionState::Stopped, None),
+            None if adapter_failure.is_some() => (SessionState::Failed, adapter_failure.clone()),
             None if exit.code == Some(0) => (SessionState::Completed, None),
             None => {
                 let (tail, _) = switchyard_agents::event::truncate(&stderr_tail, 1000);
@@ -222,8 +234,10 @@ impl AgentService {
             final_state: state.as_str().into(),
         }];
         if state == SessionState::Failed {
-            events
-                .push(DomainEvent::AgentFailed { reason: "process_exited".into(), detail: failure.clone() });
+            events.push(DomainEvent::AgentFailed {
+                reason: if adapter_failure.is_some() { "adapter_failed" } else { "process_exited" }.into(),
+                detail: failure.clone(),
+            });
         }
         let changes = SessionChanges {
             pid: Some(None),

@@ -15,9 +15,12 @@ Rust process, **Switchyard Core**. The Tauri desktop app is only a client.
 - Milestone 4: approval policies (`crates/switchyard-policy`, `crates/switchyard-agents/src/claude/classify.rs`,
   `crates/switchyard-core/src/policy`, `migrations/0004_policies.sql`). See `docs/architecture/policies.md`
   and ADRs 0016–0019.
-- Codex is not implemented.
+- Milestone 5: Codex sessions through `codex app-server` (JSON-RPC over stdio) in
+  `crates/switchyard-agents/src/codex` (`protocol.rs` is a pure state machine, `classify.rs` maps
+  approvals to operations). See `docs/architecture/codex-integration.md` and ADRs 0020–0022.
 
-The verified Claude CLI behaviour is in `docs/architecture/agent-integration.md`, and the contract in
+The verified Claude CLI behaviour is in `docs/architecture/agent-integration.md`, the verified Codex
+app-server behaviour (0.166.0) in `docs/architecture/codex-integration.md`, and the contract in
 `docs/protocols/agent-adapter-contract.md`.
 
 ## Commands
@@ -37,7 +40,9 @@ cargo test -p switchyard-core --test agents             # agent sessions via the
 cargo test -p switchyard-agents claude::wire            # parser against recorded real transcripts
 cargo test -p switchyard-core --test workspaces         # worktrees, concurrent sessions, cleanup, recovery
 cargo test -p switchyard-git --test worktrees           # git worktree operations on temp repos
+cargo test -p switchyard-core --test codex              # Codex sessions via the fake app-server
 SWITCHYARD_REAL_CLAUDE=1 cargo test -p switchyard-core --test real_claude -- --ignored   # real CLI, paid
+SWITCHYARD_REAL_CODEX=1 cargo test -p switchyard-core --test real_codex -- --ignored     # real CLI, paid
 ```
 
 Rust is pinned to 1.99.1 (`rust-toolchain.toml`), edition 2024. Clippy warns on `unwrap`/`expect`
@@ -57,7 +62,7 @@ When running Core or the app manually, set `SWITCHYARD_DATA_DIR` (and, if that p
 - **Adding a protocol method** touches: `crates/switchyard-protocol/src/methods.rs` (the `method!`
   macro: name + params + result), the dispatch match in `crates/switchyard-core/src/handlers/mod.rs`,
   a handler module, the TS mirror, and `docs/protocols/core-ipc.md`. Keep all of them in sync.
-  Incompatible changes bump `PROTOCOL_VERSION` (currently 3) and, if the old contract can no longer
+  Incompatible changes bump `PROTOCOL_VERSION` (currently 4) and, if the old contract can no longer
   be served, `MIN_SUPPORTED_PROTOCOL_VERSION`; both sides refuse an unsupported version during
   `initialize` (ADR 0015). Never ship an incompatible change under the same version.
 - **Events:** add a variant to `DomainEvent` (`crates/switchyard-events/src/envelope.rs`, with a
@@ -98,7 +103,15 @@ When running Core or the app manually, set `SWITCHYARD_DATA_DIR` (and, if that p
   - Every session state change goes through `AgentService::transition`/`commit` or
     `journal::commit_checked` (state, events, approvals and the workspace attachment in one
     transaction). Never update `sessions` rows elsewhere.
-  - Claude wire JSON stays inside `switchyard_agents::claude::wire`. Core sees only `AdapterOutput`.
+  - Claude wire JSON stays inside `switchyard_agents::claude::wire`, Codex JSON-RPC inside
+    `switchyard_agents::codex` (`protocol.rs`, `classify.rs`). Core sees only `AdapterOutput` and the
+    provider-neutral `AgentSession`; provider differences go through `switchyard_agents::{classify,
+    capabilities}` dispatch. Capabilities are `supported`/`unsupported`/`unknown` (ADR 0022); only
+    report `supported` for behaviour verified against the real CLI.
+  - Codex threads are always opened with `approvalPolicy: "untrusted"` and `sandbox:
+    "workspace-write"`, and tools that act without approval are disabled (`codex/launch.rs`, ADR
+    0021). Never answer with `acceptForSession` or a policy amendment; never fall back to a new thread
+    when `thread/resume` fails.
   - Token deltas go to `LiveHub` only, never the journal.
   - Approvals are settled through `approvals::decide` (SQL-guarded `pending → final`), committed
     before delivery; every non-operator path denies.
@@ -114,7 +127,9 @@ When running Core or the app manually, set `SWITCHYARD_DATA_DIR` (and, if that p
   - Human decisions never create rules. Policies are not a sandbox: never word UI or docs as if
     they were.
   - When CLI behaviour changes, re-record fixtures in `crates/switchyard-agents/tests/fixtures/`
-    (sanitized; see its README) and keep `src/bin/fake_claude.rs` in sync with them.
+    (sanitized; see its README) and keep `src/bin/fake_claude.rs` / `src/bin/fake_codex.rs` in sync.
+    Integration tests never run the real CLIs (`tests/common` points both at the fakes); only
+    `real_*.rs` opt in.
 - Text edits made with ad-hoc scripts can silently no-op after `cargo fmt` reflows code. Verify
   behaviour-only edits (guards, checks) with a test.
 

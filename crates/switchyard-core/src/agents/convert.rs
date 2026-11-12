@@ -1,6 +1,6 @@
 //! Storage records → protocol types.
 
-use switchyard_agents::claude;
+use switchyard_agents::AgentProvider;
 use switchyard_protocol::model::{AgentAvailability, Approval, ApprovalPolicy, Session};
 use switchyard_storage::{ApprovalRecord, SessionRecord};
 
@@ -32,7 +32,7 @@ pub(super) fn session(
         resume_count: r.resume_count,
         attached,
         pending_approvals,
-        capabilities: claude::capabilities(),
+        capabilities: switchyard_agents::capabilities(r.provider),
     }
 }
 
@@ -40,6 +40,7 @@ pub(super) fn approval(
     r: ApprovalRecord,
     workspace: Option<(uuid::Uuid, String)>,
     policy: Option<ApprovalPolicy>,
+    provider: AgentProvider,
 ) -> Approval {
     let (workspace_id, workspace_name) = workspace.map_or((None, None), |(id, name)| (Some(id), Some(name)));
     Approval {
@@ -49,6 +50,7 @@ pub(super) fn approval(
         workspace_id,
         workspace_name,
         agent_id: r.agent_id,
+        provider: provider.as_str().into(),
         tool_name: r.tool_name,
         tool_use_id: r.tool_use_id,
         input: r.request.get("input").cloned().unwrap_or_default(),
@@ -65,17 +67,17 @@ pub(super) fn approval(
     }
 }
 
-pub(super) fn unavailable(error: &str) -> AgentAvailability {
+pub(super) fn unavailable(provider: AgentProvider, error: &str) -> AgentAvailability {
     AgentAvailability {
-        provider: "claude_code".into(),
-        display_name: "Claude Code".into(),
+        provider: provider.as_str().into(),
+        display_name: switchyard_agents::display_name(provider).into(),
         installed: false,
         executable: None,
         version: None,
-        tested_version: claude::TESTED_VERSION.into(),
+        tested_version: switchyard_agents::tested_version(provider).into(),
         error: Some(error.to_owned()),
         auth: None,
-        capabilities: claude::capabilities(),
+        capabilities: switchyard_agents::capabilities(provider),
         checked_at_ms: 0,
     }
 }

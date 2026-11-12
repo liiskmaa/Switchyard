@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 
 import { Badge, EmptyState, ErrorNotice, PageHeader } from "../../components/ui";
+import { providerName } from "../../lib/agents";
 import { formatRelative } from "../../lib/format";
 import { useNow } from "../../lib/useNow";
 import { navigate, useNavigation } from "../../stores/navigation";
@@ -27,7 +28,7 @@ export function AgentsView() {
   const selected = list.find((s) => s.id === sessionId);
   return (
     <div className="page">
-      <PageHeader title="Agents" subtitle="Native Claude Code sessions run and supervised by Switchyard Core." />
+      <PageHeader title="Agents" subtitle="Native Claude Code and Codex sessions run and supervised by Switchyard Core." />
       <AvailabilityPanel />
       {sessions.error ? <ErrorNotice title="Cannot load sessions" message={sessions.error.message} code={sessions.error.code} /> : null}
       <div className="split">
@@ -52,7 +53,7 @@ export function AgentsView() {
                 {s.pending_approvals > 0 ? <Badge tone="warn">{s.pending_approvals} approval</Badge> : null}
               </span>
               <span className="list-item-sub">
-                {name(s.project_id) ?? "project"} · {formatRelative(s.last_activity_at_ms, now)}
+                {providerName(s.provider)} · {name(s.project_id) ?? "project"} · {formatRelative(s.last_activity_at_ms, now)}
               </span>
             </button>
           ))}

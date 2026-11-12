@@ -1,5 +1,6 @@
 //! Agent, session and approval methods.
 
+use switchyard_agents::AgentProvider;
 use switchyard_protocol::methods::{
     AgentsListParams, AgentsListResult, ApprovalResult, ApprovalsDecideParams, ApprovalsListParams,
     ApprovalsListResult, SessionDetail, SessionIdParams, SessionResult, SessionsListParams,
@@ -25,14 +26,21 @@ pub(super) fn limit(requested: Option<u32>) -> Result<u32, ProtocolError> {
 }
 
 pub(crate) async fn list(state: &CoreState, p: AgentsListParams) -> Result<AgentsListResult, ProtocolError> {
-    Ok(AgentsListResult { agents: vec![state.agents.availability(p.refresh).await] })
+    Ok(AgentsListResult { agents: state.agents.availability_all(p.refresh).await })
 }
 
 pub(crate) async fn start(state: &CoreState, p: SessionsStartParams) -> Result<SessionResult, ProtocolError> {
-    if p.provider.as_deref().is_some_and(|v| v != "claude_code") {
-        return Err(ProtocolError::new(ErrorCode::Unsupported, "only the claude_code provider is available"));
-    }
-    let session = state.agents.start(p.workspace_id, p.project_id, p.prompt, p.model).await?;
+    // Omitted = Claude Code, as before Codex existed.
+    let provider = match p.provider.as_deref() {
+        None => AgentProvider::ClaudeCode,
+        Some(v) => v.parse::<AgentProvider>().map_err(|_| {
+            ProtocolError::new(
+                ErrorCode::InvalidParams,
+                format!("unknown provider {v:?}; expected \"claude_code\" or \"codex\""),
+            )
+        })?,
+    };
+    let session = state.agents.start(provider, p.workspace_id, p.project_id, p.prompt, p.model).await?;
     Ok(SessionResult { session })
 }
 

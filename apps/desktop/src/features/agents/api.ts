@@ -1,5 +1,5 @@
 import { coreRequest } from "../../lib/core";
-import type { EventEnvelope, SessionState } from "../../types/protocol";
+import type { AgentProvider, EventEnvelope, SessionState } from "../../types/protocol";
 
 export const listAgents = async (refresh = false) => (await coreRequest("agents.list", { refresh })).agents;
 export const listSessions = async (
@@ -7,11 +7,13 @@ export const listSessions = async (
 ) => (await coreRequest("sessions.list", params)).sessions;
 export const getSession = (sessionId: string) => coreRequest("sessions.get", { session_id: sessionId });
 /** Starts a session in a workspace (never in the project checkout). */
-export const startSession = async (workspaceId: string, projectId: string, prompt?: string) =>
+export const startSession = async (workspaceId: string, projectId: string, provider: AgentProvider, prompt?: string) =>
   (
     await coreRequest(
       "sessions.start",
-      prompt ? { workspace_id: workspaceId, project_id: projectId, prompt } : { workspace_id: workspaceId, project_id: projectId },
+      prompt
+        ? { workspace_id: workspaceId, project_id: projectId, provider, prompt }
+        : { workspace_id: workspaceId, project_id: projectId, provider },
     )
   ).session;
 export const sendMessage = (sessionId: string, text: string, queueIfBusy: boolean) =>

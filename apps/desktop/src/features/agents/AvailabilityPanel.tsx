@@ -1,26 +1,17 @@
 import { useState } from "react";
 
 import { Badge, Button, ErrorNotice, KeyValue, Panel } from "../../components/ui";
+import { CAPABILITY_LABELS, SUPPORT_LABEL, SUPPORT_MARK, loginCommand } from "../../lib/agents";
 import { toCoreError } from "../../lib/core";
 import { useCoreQuery } from "../../stores/useCoreQuery";
-import type { Capabilities } from "../../types/protocol";
+import type { AgentAvailability } from "../../types/protocol";
 import { listAgents } from "./api";
 
-const CAPABILITY_LABELS: [keyof Capabilities, string][] = [
-  ["multi_turn", "Multiple turns per session"],
-  ["streaming_text", "Streaming output"],
-  ["permission_requests", "Permission requests routed to Switchyard"],
-  ["interrupt_turn", "Interrupt a running turn"],
-  ["queue_message_during_turn", "Queue a message for the next turn"],
-  ["steer_running_turn", "Change a running turn"],
-  ["resume_session", "Resume a finished session"],
-];
-
+/** Installation, sign-in and verified capabilities of every agent Switchyard can run. */
 export function AvailabilityPanel() {
   const agents = useCoreQuery("agents", () => listAgents(false));
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
-  const claude = agents.data?.[0];
 
   async function refresh() {
     setRefreshing(true);
@@ -37,7 +28,7 @@ export function AvailabilityPanel() {
 
   return (
     <Panel
-      title="Claude Code"
+      title="Agents"
       actions={
         <Button variant="ghost" icon="refresh" onClick={() => void refresh()} disabled={refreshing}>
           {refreshing ? "Checking…" : "Re-check"}
@@ -46,46 +37,72 @@ export function AvailabilityPanel() {
     >
       {agents.error ? <ErrorNotice title="Cannot query agents" message={agents.error.message} code={agents.error.code} /> : null}
       {refreshError ? <ErrorNotice title="Detection failed" message={refreshError} /> : null}
-      {!claude ? (
-        <p className="muted">Checking installation…</p>
+      {!agents.data ? (
+        <p className="muted">Checking installations…</p>
       ) : (
-        <>
-          <KeyValue
-            rows={[
-              [
-                "Status",
-                claude.error ? (
-                  <Badge tone="error">{claude.installed ? "Unusable" : "Not installed"}</Badge>
-                ) : (
-                  <Badge tone="ok">Available</Badge>
-                ),
-              ],
-              ["Version", claude.version ? `${claude.version} (verified with ${claude.tested_version})` : "—"],
-              ["Executable", claude.executable ? <code className="path">{claude.executable}</code> : "—"],
-              [
-                "Authentication",
-                claude.auth ? (
-                  claude.auth.logged_in ? (
-                    <Badge tone="ok">Logged in{claude.auth.method ? ` · ${claude.auth.method}` : ""}</Badge>
-                  ) : (
-                    <Badge tone="error">Not logged in — run `claude auth login`</Badge>
-                  )
-                ) : (
-                  <span className="muted">unknown</span>
-                ),
-              ],
-            ]}
-          />
-          {claude.error ? <ErrorNotice title="Claude Code cannot be used" message={claude.error} /> : null}
-          <ul className="capabilities">
-            {CAPABILITY_LABELS.map(([key, label]) => (
-              <li key={key} className={claude.capabilities[key] ? "cap-yes" : "cap-no"}>
-                <span aria-hidden="true">{claude.capabilities[key] ? "✓" : "✕"}</span> {label}
-              </li>
-            ))}
-          </ul>
-        </>
+        <div className="agent-grid">
+          {agents.data.map((a) => (
+            <AgentCard key={a.provider} agent={a} />
+          ))}
+        </div>
       )}
     </Panel>
+  );
+}
+
+function AgentCard({ agent }: { agent: AgentAvailability }) {
+  const login = loginCommand(agent.provider);
+  const untested = agent.version !== null && agent.version !== agent.tested_version;
+  return (
+    <section className="agent-card" aria-label={agent.display_name}>
+      <h3 className="agent-card-title">{agent.display_name}</h3>
+      <KeyValue
+        rows={[
+          [
+            "Status",
+            agent.error ? (
+              <Badge tone="error">{agent.installed ? "Unusable" : "Not installed"}</Badge>
+            ) : (
+              <Badge tone="ok">Available</Badge>
+            ),
+          ],
+          [
+            "Version",
+            agent.version ? (
+              <span>
+                {agent.version} {untested ? <Badge tone="warn">untested; verified with {agent.tested_version}</Badge> : <span className="muted">(verified)</span>}
+              </span>
+            ) : (
+              "—"
+            ),
+          ],
+          ["Executable", agent.executable ? <code className="path">{agent.executable}</code> : "—"],
+          [
+            "Authentication",
+            agent.auth ? (
+              agent.auth.logged_in ? (
+                <Badge tone="ok">Logged in{agent.auth.method ? ` · ${agent.auth.method}` : ""}</Badge>
+              ) : (
+                <Badge tone="error">Not logged in{login ? ` — run \`${login}\`` : ""}</Badge>
+              )
+            ) : (
+              <span className="muted">unknown</span>
+            ),
+          ],
+        ]}
+      />
+      {agent.error ? <ErrorNotice title={`${agent.display_name} cannot be used`} message={agent.error} /> : null}
+      <ul className="capabilities" aria-label={`${agent.display_name} capabilities`}>
+        {CAPABILITY_LABELS.map(([key, label]) => {
+          const s = agent.capabilities[key];
+          return (
+            <li key={key} className={`cap-${s}`} title={SUPPORT_LABEL[s]}>
+              <span aria-hidden="true">{SUPPORT_MARK[s]}</span> {label}
+              <span className="sr-only"> — {SUPPORT_LABEL[s]}</span>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }

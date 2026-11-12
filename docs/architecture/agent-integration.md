@@ -1,7 +1,7 @@
-# Agent integration: Claude Code (implemented) and OpenAI Codex (research)
+# Agent integration: Claude Code and OpenAI Codex
 
-**Status:** Claude Code has been integrated since milestone 2. Codex is still at the research stage;
-section 2 is unchanged from milestone 1.
+**Status:** Claude Code has been integrated since milestone 2, Codex since milestone 5 (section 2
+points to its own document).
 
 **Evidence labels**
 
@@ -218,73 +218,15 @@ process exits without running the tool.
 
 ## 2. OpenAI Codex
 
-### Options
+Implemented in milestone 5 through `codex app-server` (JSON-RPC over stdio), verified against
+`codex-cli` 0.166.0. The milestone-1 research that stood here (surfaces, `codex exec`, open
+questions) is superseded by [codex-integration.md](codex-integration.md), which records the verified
+protocol, the permission mediation, the security boundary and the capability differences. The
+recorded sessions are in `crates/switchyard-agents/tests/fixtures/codex-0.166.0/`.
 
-| Surface | Maturity | Use for Switchyard |
-|---------|----------|--------------------|
-| `codex app-server` (JSON-RPC over stdio) | **[experimental]**: the CLI help says "[experimental] Run the app server"; the docs say it "may change without notice" | Best fit: long-lived threads, streaming items, server-initiated approvals, steering, interruption |
-| `codex exec --json` (JSONL events) | [stable] (`exec`, `exec resume`, `exec fork`) | Fallback: one-shot turns with read-only or pre-approved sandboxes; no interactive approvals |
-| Codex SDK | Recommended by the docs for CI and automation | Not evaluated in depth (TypeScript/Python). The core is Rust, so the app-server is preferred. |
-
-### App Server protocol
-
-- **Transport:** stdio (default, `--listen stdio://`), JSONL framing, JSON-RPC 2.0 semantics **with
-  the `"jsonrpc":"2.0"` field omitted** on the wire. WebSocket (`ws://`) and `unix://` listeners exist
-  and are labelled experimental and unsupported. Bounded queues return error `-32001` ("Server
-  overloaded; retry later").
-- **Handshake:** an `initialize` request with `{clientInfo: {name, title, version}, capabilities?}`,
-  then an `initialized` notification. Capabilities include `experimentalApi`,
-  `optOutNotificationMethods`, and others. Calls gated by experimental status fail without
-  `experimentalApi`.
-- **Primitives:** Thread → Turn → Item.
-  - Thread: `thread/start` (cwd, model, approvalPolicy, sandbox, …), `thread/resume`, `thread/fork`,
-    `thread/list`, `thread/read`, `thread/archive`, `thread/unsubscribe`, `thread/revert`, …
-  - Turn: `turn/start` (threadId, input, cwd, approvalPolicy, sandboxPolicy, model, effort,
-    outputSchema, …), **`turn/steer`** (threadId, input, expectedTurnId), **`turn/interrupt`**
-    (threadId, turnId → the turn completes with status `interrupted`), `review/start`.
-- **Notifications:** `thread/started`, `thread/status/changed`, `turn/started`, `turn/completed`
-  (status `completed|interrupted|failed`, plus `inProgress` in the schema enum), `turn/diff/updated`,
-  `turn/plan/updated`, `item/started`, `item/completed` (authoritative final state), deltas
-  (`item/agentMessage/delta`, `item/commandExecution/outputDelta`, `item/reasoning/*Delta`),
-  `thread/tokenUsage/updated`, `serverRequest/resolved`, `error`, `warning`.
-- **Item types:** userMessage, agentMessage, plan, reasoning, commandExecution, fileChange,
-  mcpToolCall, dynamicToolCall, webSearch, contextCompaction, review markers, and others.
-- **Approvals (server → client requests):**
-  - `item/commandExecution/requestApproval`: accept \| acceptForSession \| decline \| cancel \|
-    acceptWithExecpolicyAmendment.
-  - `item/fileChange/requestApproval`: accept \| acceptForSession \| decline \| cancel.
-  - `item/permissions/requestApproval`: a granted subset, with scope `turn|session`.
-  - `mcpServer/elicitation/request`.
-  - The local schema also lists legacy `applyPatchApproval` and `execCommandApproval` (decision enum
-    `approved` and others).
-  - Each request is followed by `serverRequest/resolved`.
-  - **This is the key integration point:** Core answers these requests on the operator's behalf, or
-    according to central policy.
-- **Persistence:** threads are stored as JSONL rollouts in Codex's sessions directory (the path is
-  not documented). Resume by `thread/resume {threadId}`.
-- **Schema:** `codex app-server generate-json-schema` and `generate-ts` (both experimental) produce
-  version-specific definitions. The adapter should generate schemas in CI against a pinned Codex
-  version and generate its Rust types from them.
-
-### Sandbox and approval values
-
-- The CLI and config use `sandbox_mode` values `read-only | workspace-write | danger-full-access`.
-  The App Server `sandboxPolicy.type` values are camelCase (`readOnly`, `workspaceWrite`,
-  `dangerFullAccess`, `externalSandbox`).
-- `approval_policy`: the current docs say `on-request | never`, and say that `untrusted` is
-  **retired** and may prevent start-up. **Discrepancy:** the 0.166.0 generated schema still lists
-  `untrusted | on-request | never | {granular: {...}}`. Treat `untrusted` as unsupported.
-- Network access is off by default in `workspace-write`.
-
-### `codex exec --json` [stable]
-
-JSONL events: `thread.started` (thread_id), `turn.started`, `turn.completed` (usage), `turn.failed`,
-`item.started` and `item.completed` (agent_message, reasoning, command_execution, file_change,
-mcp_tool_call, web_search, plan updates), and `error`. The full item schema and the exit codes are
-**not documented**. `codex exec resume <id>|--last` continues a session. There is no in-band approval
-channel, so only the sandbox and approval policy decide.
-
----
+Section 3 applies to Codex sessions as well: they are supervised by the same Core lifecycle (one
+process per session, stop and shutdown escalation, no automatic restart, explicit resume with
+`thread/resume`).
 
 ## 3. Process ownership and recovery (implemented policy)
 

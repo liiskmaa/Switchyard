@@ -17,8 +17,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use switchyard_agents::claude::{self, ClaudeConfig, ClaudeInstallation, LaunchSpec, NativeSession};
-use switchyard_agents::{AgentProvider, ApprovalStatus, DecisionSource, SessionState};
+use switchyard_agents::claude::{self, ClaudeConfig, ClaudeInstallation, NativeSession};
+use switchyard_agents::codex::{self, CodexConfig, CodexInstallation};
+use switchyard_agents::{
+    AgentProvider, AgentSession, ApprovalStatus, DecisionSource, SessionState, SessionUpdate,
+};
 use switchyard_events::{DomainEvent, EventBus, EventContext, EventDraft, new_id, now_ms};
 use switchyard_git::Git;
 use switchyard_protocol::methods::Delivery;
@@ -27,6 +30,7 @@ use switchyard_protocol::{ErrorCode, ProtocolError};
 use switchyard_storage::sessions::{self, SessionChanges, SessionFilter};
 use switchyard_storage::{SessionRecord, Storage, StorageError, Transaction};
 use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 pub(crate) use live::LiveHub;
@@ -50,7 +54,10 @@ pub(crate) enum StopReason {
 
 /// A session whose process this Core instance supervises.
 pub(crate) struct Attached {
-    handle: claude::ClaudeSession,
+    handle: AgentSession,
+    provider: AgentProvider,
+    /// The adapter reported its native identity (`agent.ready`).
+    ready: bool,
     project_id: Uuid,
     workspace_id: Option<Uuid>,
     state: SessionState,
@@ -59,9 +66,37 @@ pub(crate) struct Attached {
     stopping: Option<StopReason>,
 }
 
+/// A usable CLI installation, per provider.
+#[derive(Debug, Clone)]
+enum Installation {
+    Claude(ClaudeInstallation),
+    Codex(CodexInstallation),
+}
+
+impl Installation {
+    fn executable(&self) -> &std::path::Path {
+        match self {
+            Self::Claude(i) => &i.executable,
+            Self::Codex(i) => &i.executable,
+        }
+    }
+    fn version(&self) -> &str {
+        match self {
+            Self::Claude(i) => &i.version,
+            Self::Codex(i) => &i.version,
+        }
+    }
+}
+
 struct Detection {
     availability: AgentAvailability,
-    installation: Option<ClaudeInstallation>,
+    installation: Option<Installation>,
+}
+
+/// What to launch, per provider.
+enum Launch {
+    Claude(NativeSession),
+    Codex { resume_thread: Option<String> },
 }
 
 #[derive(Clone)]
@@ -79,7 +114,7 @@ struct Inner {
     attached: Mutex<HashMap<Uuid, Attached>>,
     /// Serializes starts/resumes so duplicate-process checks are atomic.
     start_lock: AsyncMutex<()>,
-    detection: AsyncMutex<Option<Detection>>,
+    detection: AsyncMutex<HashMap<AgentProvider, Detection>>,
 }
 
 pub(crate) use crate::journal::draft;
@@ -107,7 +142,7 @@ impl AgentService {
                 config,
                 attached: Mutex::default(),
                 start_lock: AsyncMutex::new(()),
-                detection: AsyncMutex::new(None),
+                detection: AsyncMutex::new(HashMap::new()),
             }),
         }
     }
@@ -185,6 +220,26 @@ impl AgentService {
         Ok(record)
     }
 
+    /// Applies `changes` and journals `extra` without changing the state. The
+    /// state is read inside the transaction, so this never races a concurrent
+    /// transition (e.g. `agent.ready` arriving while start-up advances).
+    pub(crate) async fn update_in_place(
+        &self,
+        session_id: Uuid,
+        changes: SessionChanges,
+        extra: Vec<DomainEvent>,
+    ) -> Result<SessionRecord, ProtocolError> {
+        let now = now_ms();
+        self.commit(move |tx| {
+            let before = sessions::get(tx, session_id)?;
+            let after = sessions::transition(tx, session_id, before.state, &changes, now)?;
+            let ctx = Self::context(&after);
+            let drafts = extra.into_iter().map(|e| draft(e, &ctx)).collect::<Result<Vec<_>, _>>()?;
+            Ok((after, drafts))
+        })
+        .await
+    }
+
     /// Journals events for a session without changing its state.
     pub(crate) async fn record(
         &self,
@@ -248,86 +303,149 @@ impl AgentService {
 
     // --- detection ----------------------------------------------------------
 
-    /// Claude Code availability. Cached; `refresh` re-runs detection.
-    pub async fn availability(&self, refresh: bool) -> AgentAvailability {
-        let mut cache = self.inner.detection.lock().await;
-        if refresh || cache.is_none() {
-            *cache = Some(self.detect().await);
+    /// Availability of every supported agent. Cached; `refresh` re-runs detection.
+    pub async fn availability_all(&self, refresh: bool) -> Vec<AgentAvailability> {
+        let mut out = Vec::new();
+        for provider in AgentProvider::ALL {
+            out.push(self.availability(*provider, refresh).await);
         }
-        cache.as_ref().map(|d| d.availability.clone()).unwrap_or_else(|| convert::unavailable("not detected"))
+        out
     }
 
-    async fn detect(&self) -> Detection {
+    pub async fn availability(&self, provider: AgentProvider, refresh: bool) -> AgentAvailability {
+        let mut cache = self.inner.detection.lock().await;
+        if refresh || !cache.contains_key(&provider) {
+            let d = self.detect(provider).await;
+            cache.insert(provider, d);
+        }
+        cache
+            .get(&provider)
+            .map(|d| d.availability.clone())
+            .unwrap_or_else(|| convert::unavailable(provider, "not detected"))
+    }
+
+    async fn detect(&self, provider: AgentProvider) -> Detection {
         let checked_at_ms = now_ms();
-        match claude::detect(self.inner.config.claude_executable.as_deref()).await {
-            Ok(installation) => {
-                let auth = match claude::auth_status(&installation).await {
-                    Ok(a) => {
-                        Some(AgentAuth { logged_in: a.logged_in, method: a.method, provider: a.provider })
+        let found: Result<(Installation, Option<AgentAuth>), (bool, String)> = match provider {
+            AgentProvider::ClaudeCode => match claude::detect(self.inner.config.claude_executable.as_deref())
+                .await
+            {
+                Ok(installation) => {
+                    let auth = match claude::auth_status(&installation).await {
+                        Ok(a) => {
+                            Some(AgentAuth { logged_in: a.logged_in, method: a.method, provider: a.provider })
+                        }
+                        Err(err) => {
+                            tracing::warn!(%err, "cannot read Claude Code auth status");
+                            None
+                        }
+                    };
+                    Ok((Installation::Claude(installation), auth))
+                }
+                Err(err) => Err((!matches!(err, claude::DetectError::NotFound), err.to_string())),
+            },
+            AgentProvider::Codex => {
+                match codex::detect(self.inner.config.codex_executable.as_deref()).await {
+                    Ok(installation) => {
+                        let auth = match codex::auth_status(&installation).await {
+                            Ok(a) => {
+                                Some(AgentAuth { logged_in: a.logged_in, method: a.method, provider: None })
+                            }
+                            Err(err) => {
+                                tracing::warn!(%err, "cannot read Codex auth status");
+                                None
+                            }
+                        };
+                        Ok((Installation::Codex(installation), auth))
                     }
-                    Err(err) => {
-                        tracing::warn!(%err, "cannot read Claude Code auth status");
-                        None
-                    }
-                };
-                tracing::info!(version = %installation.version, path = %installation.executable.display(), "Claude Code detected");
+                    Err(err) => Err((!matches!(err, codex::DetectError::NotFound), err.to_string())),
+                }
+            }
+        };
+        match found {
+            Ok((installation, auth)) => {
+                tracing::info!(%provider, version = %installation.version(), path = %installation.executable().display(), "agent CLI detected");
                 Detection {
                     availability: AgentAvailability {
-                        provider: AgentProvider::ClaudeCode.as_str().into(),
-                        display_name: "Claude Code".into(),
+                        provider: provider.as_str().into(),
+                        display_name: switchyard_agents::display_name(provider).into(),
                         installed: true,
-                        executable: Some(installation.executable.display().to_string()),
-                        version: Some(installation.version.clone()),
-                        tested_version: claude::TESTED_VERSION.into(),
+                        executable: Some(installation.executable().display().to_string()),
+                        version: Some(installation.version().to_owned()),
+                        tested_version: switchyard_agents::tested_version(provider).into(),
                         error: None,
                         auth,
-                        capabilities: claude::capabilities(),
+                        capabilities: switchyard_agents::capabilities(provider),
                         checked_at_ms,
                     },
                     installation: Some(installation),
                 }
             }
-            Err(err) => {
-                tracing::warn!(%err, "Claude Code is not usable");
-                let mut availability = convert::unavailable(&err.to_string());
+            Err((installed, error)) => {
+                tracing::warn!(%provider, %error, "agent CLI is not usable");
+                let mut availability = convert::unavailable(provider, &error);
                 availability.checked_at_ms = checked_at_ms;
-                availability.installed = !matches!(err, claude::DetectError::NotFound);
+                availability.installed = installed;
                 Detection { availability, installation: None }
             }
         }
     }
 
     /// A usable installation, re-detecting if the last attempt failed.
-    async fn installation(&self) -> Result<ClaudeInstallation, ProtocolError> {
+    async fn installation(&self, provider: AgentProvider) -> Result<Installation, ProtocolError> {
         let mut cache = self.inner.detection.lock().await;
-        if cache.as_ref().is_none_or(|d| d.installation.is_none()) {
-            *cache = Some(self.detect().await);
+        if cache.get(&provider).is_none_or(|d| d.installation.is_none()) {
+            let d = self.detect(provider).await;
+            cache.insert(provider, d);
         }
-        let detection =
-            cache.as_ref().ok_or_else(|| ProtocolError::new(ErrorCode::AgentUnavailable, "not detected"))?;
+        let detection = cache
+            .get(&provider)
+            .ok_or_else(|| ProtocolError::new(ErrorCode::AgentUnavailable, "not detected"))?;
         detection.installation.clone().ok_or_else(|| {
             ProtocolError::new(
                 ErrorCode::AgentUnavailable,
-                detection.availability.error.clone().unwrap_or_else(|| "Claude Code is not available".into()),
+                detection.availability.error.clone().unwrap_or_else(|| {
+                    format!("{} is not available", switchyard_agents::display_name(provider))
+                }),
             )
         })
     }
 
-    fn claude_config(&self, installation: &ClaudeInstallation) -> ClaudeConfig {
-        let mut config = ClaudeConfig::new(installation.executable.clone());
-        config.stop_grace = self.inner.config.agent_stop_grace;
-        config.term_grace = self.inner.config.agent_term_grace;
-        config
+    fn spawn(
+        &self,
+        installation: &Installation,
+        launch: Launch,
+        cwd: std::path::PathBuf,
+        model: Option<String>,
+    ) -> Result<(AgentSession, mpsc::Receiver<SessionUpdate>), switchyard_agents::SessionError> {
+        let stop_grace = self.inner.config.agent_stop_grace;
+        let term_grace = self.inner.config.agent_term_grace;
+        match (installation, launch) {
+            (Installation::Claude(i), Launch::Claude(session)) => {
+                let mut config = ClaudeConfig::new(i.executable.clone());
+                config.stop_grace = stop_grace;
+                config.term_grace = term_grace;
+                claude::spawn_session(&config, &claude::LaunchSpec { session, cwd, model })
+            }
+            (Installation::Codex(i), Launch::Codex { resume_thread }) => {
+                let mut config = CodexConfig::new(i.executable.clone());
+                config.stop_grace = stop_grace;
+                config.term_grace = term_grace;
+                codex::spawn_session(&config, &codex::LaunchSpec { cwd, model, resume_thread })
+            }
+            _ => Err(switchyard_agents::SessionError::Write("provider and launch mismatch".into())),
+        }
     }
 
     // --- lifecycle operations -------------------------------------------------
 
-    /// Starts a new Claude Code session in a workspace. The workspace must
+    /// Starts a new agent session in a workspace. The workspace must
     /// belong to `project_id` (when given), accept a session and validate on
     /// disk and in Git; the agent's working directory is exactly its path.
     /// There is no fallback to the project checkout.
     pub async fn start(
         &self,
+        provider: AgentProvider,
         workspace_id: Uuid,
         project_id: Option<Uuid>,
         prompt: Option<String>,
@@ -338,16 +456,20 @@ impl AgentService {
         }
         let _guard = self.inner.start_lock.lock().await;
         let workspace = self.inner.workspaces.validate_for_session(workspace_id, project_id).await?;
-        let installation = self.installation().await?;
+        let installation = self.installation(provider).await?;
 
         let session_id = new_id();
-        let native = new_id();
+        // Claude takes a caller-chosen id; Codex assigns its thread id.
+        let native = match provider {
+            AgentProvider::ClaudeCode => Some(new_id()),
+            AgentProvider::Codex => None,
+        };
         let now = now_ms();
         let cwd = workspace.path.clone();
         let record = {
             let cwd = cwd.clone();
-            let executable = installation.executable.display().to_string();
-            let version = installation.version.clone();
+            let executable = installation.executable().display().to_string();
+            let version = installation.version().to_owned();
             let model = model.clone();
             let project_id = workspace.project_id;
             crate::journal::commit_checked(&self.inner.storage, &self.inner.bus, move |tx| {
@@ -357,8 +479,8 @@ impl AgentService {
                 };
                 let agent_id = switchyard_storage::agents::upsert_agent(
                     tx,
-                    AgentProvider::ClaudeCode,
-                    "Claude Code",
+                    provider,
+                    switchyard_agents::display_name(provider),
                     &executable,
                     &version,
                     now,
@@ -368,8 +490,8 @@ impl AgentService {
                     project_id,
                     workspace_id: Some(workspace_id),
                     agent_id,
-                    provider: AgentProvider::ClaudeCode,
-                    native_session_id: Some(native.to_string()),
+                    provider,
+                    native_session_id: native.map(|n| n.to_string()),
                     cwd,
                     state: SessionState::Starting,
                     pid: None,
@@ -388,8 +510,11 @@ impl AgentService {
             })
             .await?
         };
-        let spec = LaunchSpec { session: NativeSession::New(native), cwd: cwd.into(), model };
-        self.launch(record, &installation, spec, false).await?;
+        let launch = match native {
+            Some(id) => Launch::Claude(NativeSession::New(id)),
+            None => Launch::Codex { resume_thread: None },
+        };
+        self.launch(record, &installation, launch, cwd.into(), model, false).await?;
         drop(_guard);
         if let Some(prompt) = prompt {
             self.send(session_id, prompt, false).await?;
@@ -417,10 +542,10 @@ impl AgentService {
                 record.state
             )));
         }
-        if record.provider != AgentProvider::ClaudeCode {
+        if !switchyard_agents::capabilities(record.provider).resume_session.is_supported() {
             return Err(ProtocolError::new(
                 ErrorCode::Unsupported,
-                "only Claude Code sessions can be resumed",
+                format!("{} sessions cannot be resumed", switchyard_agents::display_name(record.provider)),
             ));
         }
         let native = record
@@ -453,7 +578,7 @@ impl AgentService {
                 "the session's recorded working directory differs from its workspace path",
             ));
         }
-        let installation = self.installation().await?;
+        let installation = self.installation(record.provider).await?;
 
         let changes = SessionChanges {
             pid: Some(None),
@@ -482,12 +607,12 @@ impl AgentService {
             Ok(Ok((after, drafts)))
         })
         .await?;
-        let spec = LaunchSpec {
-            session: NativeSession::Resume(native),
-            cwd: workspace.path.into(),
-            model: record.model.clone(),
+        let launch = match record.provider {
+            AgentProvider::ClaudeCode => Launch::Claude(NativeSession::Resume(native)),
+            AgentProvider::Codex => Launch::Codex { resume_thread: Some(native) },
         };
-        self.launch(record, &installation, spec, true).await?;
+        let model = record.model.clone();
+        self.launch(record, &installation, launch, workspace.path.into(), model, true).await?;
         drop(_guard);
         if let Some(prompt) = prompt {
             self.send(session_id, prompt, false).await?;
@@ -496,19 +621,23 @@ impl AgentService {
     }
 
     /// Spawns the process for a `starting` session and begins supervision.
+    #[allow(clippy::too_many_arguments)]
     async fn launch(
         &self,
         record: SessionRecord,
-        installation: &ClaudeInstallation,
-        spec: LaunchSpec,
+        installation: &Installation,
+        launch: Launch,
+        cwd: std::path::PathBuf,
+        model: Option<String>,
         resumed: bool,
     ) -> Result<(), ProtocolError> {
         let session_id = record.id;
-        let (handle, updates) = match claude::spawn_session(&self.claude_config(installation), &spec) {
+        let name = switchyard_agents::display_name(record.provider);
+        let (handle, updates) = match self.spawn(installation, launch, cwd, model) {
             Ok(pair) => pair,
             Err(err) => {
                 let detail = err.to_string();
-                tracing::error!(%session_id, %detail, "cannot start Claude Code");
+                tracing::error!(%session_id, %detail, provider = %record.provider, "cannot start agent");
                 self.transition(
                     session_id,
                     SessionState::Failed,
@@ -528,7 +657,7 @@ impl AgentService {
                 }
                 return Err(ProtocolError::new(
                     ErrorCode::AgentFailed,
-                    format!("cannot start Claude Code: {detail}"),
+                    format!("cannot start {name}: {detail}"),
                 )
                 .with_data(serde_json::json!({ "session_id": session_id })));
             }
@@ -538,6 +667,8 @@ impl AgentService {
             session_id,
             Attached {
                 handle,
+                provider: record.provider,
+                ready: false,
                 project_id: record.project_id,
                 workspace_id: record.workspace_id,
                 state: SessionState::Starting,
@@ -563,7 +694,7 @@ impl AgentService {
         let native = record.native_session_id.clone();
         let mut events = vec![DomainEvent::AgentStarted {
             provider: record.provider.as_str().into(),
-            cli_version: installation.version.clone(),
+            cli_version: installation.version().to_owned(),
             pid,
             cwd: record.cwd.clone(),
             native_session_id: native.clone(),
@@ -583,10 +714,31 @@ impl AgentService {
         )
         .await?;
 
-        // The CLI emits nothing until it receives input, so readiness is
-        // "still alive shortly after launch". Early failures (bad flags,
-        // missing auth) are reported by the exit path instead.
+        // Claude emits nothing until it receives input, so its readiness is
+        // "still alive shortly after launch". Codex completes a handshake and
+        // opens (or resumes) its thread first; the session is only reported
+        // idle once that succeeded, so a failed resume is never presented as
+        // a resumed conversation. Early failures are reported by the exit path.
         tokio::time::sleep(LIVENESS_CHECK).await;
+        if record.provider == AgentProvider::Codex {
+            let deadline = tokio::time::Instant::now() + self.inner.config.agent_ready_timeout;
+            loop {
+                match self.attached().get(&session_id).map(|a| a.ready) {
+                    Some(true) | None => break,
+                    Some(false) => {}
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    tracing::error!(%session_id, "Codex did not open its thread in time; stopping");
+                    let _ = self.stop_with(session_id, StopReason::Operator).await;
+                    return Err(ProtocolError::new(
+                        ErrorCode::AgentFailed,
+                        format!("{name} did not become ready in time"),
+                    )
+                    .with_data(serde_json::json!({ "session_id": session_id })));
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
         if self.is_attached(session_id) {
             if let Err(err) =
                 self.transition(session_id, SessionState::Idle, SessionChanges::default(), Vec::new()).await
@@ -597,7 +749,7 @@ impl AgentService {
             let failure = self.session(session_id).await.ok().and_then(|s| s.failure);
             return Err(ProtocolError::new(
                 ErrorCode::AgentFailed,
-                format!("Claude Code exited during start-up: {}", failure.unwrap_or_default()),
+                format!("{name} exited during start-up: {}", failure.unwrap_or_default()),
             )
             .with_data(serde_json::json!({ "session_id": session_id })));
         }
@@ -627,7 +779,7 @@ impl AgentService {
                         "a turn is running; interrupt it, or send with queue_if_busy to run this message next",
                     ));
                 }
-                if !claude::capabilities().queue_message_during_turn {
+                if !switchyard_agents::capabilities(a.provider).queue_message_during_turn.is_supported() {
                     return Err(ProtocolError::new(ErrorCode::Unsupported, "agent cannot queue messages"));
                 }
                 a.queued_turns += 1;

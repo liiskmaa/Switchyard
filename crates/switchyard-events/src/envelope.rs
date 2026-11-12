@@ -85,6 +85,10 @@ pub enum DomainEvent {
         /// This turn's cost, when reported. Absent from events journaled before it existed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_cost_usd: Option<f64>,
+        /// Token counts for this turn (`input_tokens`, `cached_input_tokens`,
+        /// `output_tokens`, `reasoning_output_tokens`, `total_tokens`), when reported.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<serde_json::Value>,
         result: Option<String>,
     },
     #[serde(rename = "agent.permission_requested")]

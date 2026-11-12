@@ -158,6 +158,8 @@ pub struct Approval {
     #[serde(default)]
     pub workspace_name: Option<String>,
     pub agent_id: Option<Uuid>,
+    /// The session's agent: `claude_code` or `codex`.
+    pub provider: String,
     pub tool_name: String,
     pub tool_use_id: Option<String>,
     /// Tool input exactly as the agent requested it.

@@ -4,8 +4,8 @@ Switchyard is a local-first orchestration platform for native AI coding agents (
 Codex). It is not an agent itself. It supervises agent processes, coordinates their work, persists
 what happens, and gives a human operator control.
 
-This document describes what exists **today** (milestones 1–4: the foundation, native Claude Code
-sessions, workspace isolation, and approval policies) and the boundaries that later milestones build on.
+This document describes what exists **today** (milestones 1–5: the foundation, native Claude Code
+sessions, workspace isolation, approval policies, and native Codex sessions) and the boundaries that later milestones build on.
 
 ## Processes
 
@@ -19,7 +19,7 @@ sessions, workspace isolation, and approval policies) and the boundaries that la
 │   - one Core connection      │ 0600   │                             ├─ storage ──► SQLite (WAL)
 │   - reconnect + replay       │        │  event bus ◄── publish ─────┘              │
 │   - auto-launch Core         │        │   (persist → broadcast)                    │
-└──────────────────────────────┘        │  [future] agent supervisors ─► claude, codex│
+└──────────────────────────────┘        │  agent supervisors ─► claude, codex        │
                                         └────────────────────────────────────────────┘
 ```
 
@@ -42,7 +42,7 @@ sessions, workspace isolation, and approval policies) and the boundaries that la
 | `switchyard-storage` | SQLite connection (WAL, foreign keys, `synchronous=FULL`), embedded migrations, project repository, event journal implementation, health stats. | events |
 | `switchyard-git` | Git through the `git` CLI: repository-root validation, `status --porcelain=v2` parsing, and worktree add/list/identity/remove for Core-owned workspaces (never forced, never pruning). | — |
 | `switchyard-client` | Async protocol client: handshake, request correlation, notifications, disconnect detection. Used by the desktop and the tests. | protocol |
-| `switchyard-agents` | Vendor-neutral agent model; process supervision (no shell, controlled environment, bounded lines, SIGTERM/SIGKILL escalation); Claude Code adapter. | — |
+| `switchyard-agents` | Vendor-neutral agent model; process supervision (no shell, controlled environment, bounded lines, SIGTERM/SIGKILL escalation); the provider-neutral `AgentSession` handle; Claude Code and Codex adapters. | — |
 | `switchyard-workspaces` | Workspace domain rules without I/O: lifecycle and transitions, branch and path naming, cleanup safety evaluation. | — |
 | `switchyard-policy` | Approval policy without I/O: normalized operations, rules and their validation, deterministic evaluation with explanations. | — |
 | `switchyard-core` | The executable: config, lifecycle (lock, socket, signals), connection server, request handlers, workspaces (`src/workspaces`), agent sessions (`src/agents`), and the `switchyard-fake-claude` test binary. | all of the above |
@@ -150,11 +150,15 @@ UI ──invoke──► bridge ──IPC──► handlers/agents.rs ──► 
                                                         ├─ approvals: request → pending → operator/timeout/cancel
                                                         └─ WatcherHub (notify/FSEvents, debounced) ──► files.changed
 switchyard-agents::claude::spawn_session ── driver task owns child stdin/stdout ── `claude -p` (stream-json)
+switchyard-agents::codex::spawn_session  ── driver task + codex::Protocol      ── `codex app-server` (JSON-RPC)
 ```
 
-- `switchyard-agents` is vendor-neutral (states, capabilities, adapter output) plus the Claude
-  adapter: detection, argv and environment construction, the wire normalizer, and the session
-  driver. The fake CLI used by tests is `switchyard-core/src/bin/fake_claude.rs`.
+- `switchyard-agents` is vendor-neutral (states, capabilities, adapter output, the `AgentSession`
+  handle) plus two adapters, each with detection, argv and environment construction, a protocol
+  normalizer and a session driver: Claude Code (`claude/`) and Codex (`codex/`, see
+  [codex-integration.md](codex-integration.md)). Core picks the adapter by the session's recorded
+  provider and never sees either wire format. The fake CLIs used by tests are
+  `switchyard-core/src/bin/fake_claude.rs` and `fake_codex.rs`.
 - **Durable vs. ephemeral.** Complete messages, tool calls and results, approvals, state changes and
   file changes go to the journal. Token deltas go only to the live channel, with a per-session
   in-progress snapshot ([ADR 0009](../decisions/0009-durable-vs-live-output.md)).
@@ -188,7 +192,7 @@ Project (registered repo, never an agent cwd)
 ## Approval policies (milestone 4)
 
 ```text
-can_use_tool ─► claude::classify ─► Operation ─► path facts (Core, I/O) ─┐
+request ─► classify(provider) ─► Operation ─► path facts (Core, I/O) ─┐
                                                                           ▼
      one SQLite transaction: load rules + revision ─► evaluate (pure) ─► record evaluation + events
                                                                           │
@@ -196,7 +200,8 @@ can_use_tool ─► claude::classify ─► Operation ─► path facts (Core, I
 ```
 
 - Every Claude tool reaches Switchyard: the launch settings carry an `ask` rule for every enabled
-  tool.
+  tool. Codex runs with `approvalPolicy: "untrusted"`, so every command and patch is an approval
+  request; tools that would act without one are disabled (ADR 0021).
 - `switchyard-policy` evaluates. The precedence is:
   1. system restrictions;
   2. the most restrictive matching rule (deny > ask > allow, whatever its scope);
@@ -211,6 +216,6 @@ can_use_tool ─► claude::classify ─► Operation ─► path facts (Core, I
 
 ## What is intentionally absent
 
-There is no Codex adapter, no integration of workspace branches (merge, rebase, cherry-pick), no
+There is no support for Codex sub-agents (their requests are denied), no integration of workspace branches (merge, rebase, cherry-pick), no
 task, message or finding workflow, no automatic branch deletion or workspace pruning, no global
 (cross-project) policy rules, and no OS-level sandbox yet.

@@ -1,12 +1,13 @@
 import { type FormEvent, useCallback, useState } from "react";
 
 import { Badge, Button, EmptyState, ErrorNotice, KeyValue, Panel } from "../../components/ui";
+import { providerName, supported } from "../../lib/agents";
 import { toCoreError, type CoreRequestError } from "../../lib/core";
 import { formatRelative, formatTimestamp, shortOid } from "../../lib/format";
 import { navigate } from "../../stores/navigation";
 import { useCoreQuery } from "../../stores/useCoreQuery";
-import type { EventEnvelope, Project, Session, Workspace } from "../../types/protocol";
-import { STATE_LABEL, isAgentEvent, listSessions, startSession, stateTone } from "../agents/api";
+import type { AgentProvider, EventEnvelope, Project, Session, Workspace } from "../../types/protocol";
+import { STATE_LABEL, isAgentEvent, listAgents, listSessions, startSession, stateTone } from "../agents/api";
 import { CleanupPanel } from "./CleanupPanel";
 import {
   WORKSPACE_STATUS_LABEL,
@@ -37,7 +38,8 @@ export function WarnNotice({ title, children }: { title: string; children: React
 
 /**
  * A project's workspaces: isolated Git worktrees on their own branches, each
- * able to run one Claude Code session. Core owns them; this view only asks.
+ * able to run one agent session (Claude Code or Codex) at a time. Core owns
+ * them; this view only asks.
  */
 export function WorkspacesPanel({ project }: { project: Project }) {
   const [showArchived, setShowArchived] = useState(false);
@@ -93,7 +95,7 @@ export function WorkspacesPanel({ project }: { project: Project }) {
       ) : null}
       {workspaces.data && list.length === 0 && !creating ? (
         <EmptyState icon="branch" title="No workspaces yet">
-          Create a workspace to start a Claude Code session on this project.
+          Create a workspace to start a Claude Code or Codex session on this project.
         </EmptyState>
       ) : null}
       {list.length > 0 ? (
@@ -263,6 +265,8 @@ function WorkspaceDetail({
   });
   const reason = reasonParts(w.status_reason);
   const acceptsSession = !legacy && (["ready", "dirty", "completed"] as string[]).includes(w.status);
+  const agents = useCoreQuery("agents", () => listAgents(false), { enabled: acceptsSession });
+  const activeSession = (detail.data?.sessions ?? []).find((s) => s.id === w.active_session_id);
 
   async function act(name: string, op: () => Promise<unknown>) {
     setBusy(name);
@@ -278,11 +282,11 @@ function WorkspaceDetail({
     }
   }
 
-  async function start() {
+  async function start(provider: AgentProvider) {
     setBusy("start");
     setError(null);
     try {
-      const session = await startSession(w.id, project.id, task.trim() || undefined);
+      const session = await startSession(w.id, project.id, provider, task.trim() || undefined);
       setTask("");
       navigate("agents", { sessionId: session.id });
     } catch (e) {
@@ -367,7 +371,9 @@ function WorkspaceDetail({
       {w.active_session_id ? (
         <div className="agent-live">
           <Badge tone="accent">Session running</Badge>
-          <span className="small">Claude Code is working in this workspace.</span>
+          <span className="small">
+            {activeSession ? providerName(activeSession.provider) : "An agent"} is working in this workspace.
+          </span>
           <Button variant="primary" onClick={() => navigate("agents", { sessionId: w.active_session_id })}>
             Open session
           </Button>
@@ -383,14 +389,32 @@ function WorkspaceDetail({
             disabled={busy !== null}
           />
           <p className="muted small">
-            Claude runs in this workspace&apos;s directory with its file tools confined to it. Switchyard answers each tool
-            request under this project&apos;s policies; by default, file changes and shell commands ask you first.
+            The agent runs in this workspace&apos;s directory. Switchyard answers each tool request under this
+            project&apos;s policies; by default, file changes and shell commands ask you first. Codex reads files with
+            shell commands, so its reads ask too.
           </p>
-          <div className="form-actions start">
-            <Button variant="primary" onClick={() => void start()} disabled={busy !== null}>
-              {busy === "start" ? "Starting…" : "Start Claude session here"}
-            </Button>
+          <div className="form-actions start provider-choice">
+            {(agents.data ?? []).map((a, i) => {
+              const usable = !a.error && a.installed && supported(a.capabilities.permission_requests);
+              return (
+                <Button
+                  key={a.provider}
+                  variant={i === 0 ? "primary" : "default"}
+                  onClick={() => void start(a.provider as AgentProvider)}
+                  disabled={busy !== null || !usable}
+                  title={usable ? `Start a ${a.display_name} session in this workspace` : (a.error ?? `${a.display_name} is not available`)}
+                >
+                  {busy === "start" ? "Starting…" : `Start ${a.display_name} here`}
+                </Button>
+              );
+            })}
+            {agents.loading && !agents.data ? <span className="muted small">Checking agents…</span> : null}
           </div>
+          {(agents.data ?? []).filter((a) => a.error).map((a) => (
+            <p key={a.provider} className="muted small">
+              {a.display_name} is unavailable: {a.error}
+            </p>
+          ))}
         </div>
       ) : null}
 
@@ -400,7 +424,7 @@ function WorkspaceDetail({
             <li key={s.id}>
               <Badge tone={stateTone(s.state)}>{STATE_LABEL[s.state]}</Badge>
               <button type="button" className="link" onClick={() => navigate("agents", { sessionId: s.id })}>
-                Session from {formatRelative(s.started_at_ms, Date.now())}
+                {providerName(s.provider)} session from {formatRelative(s.started_at_ms, Date.now())}
               </button>
             </li>
           ))}

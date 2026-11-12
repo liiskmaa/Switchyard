@@ -19,8 +19,8 @@ use tokio::sync::{mpsc, oneshot};
 use super::launch::{LaunchSpec, build_args, build_env};
 use super::wire::Normalizer;
 use crate::event::{AdapterOutput, AgentEvent};
-use crate::model::PermissionDecision;
 use crate::process::{self, ExitInfo, Line, ProcessError, ProcessSpec, TailBuffer};
+use crate::session::{AgentSession, Command, ExitReport, SessionError, SessionUpdate};
 
 #[derive(Debug, Clone)]
 pub struct ClaudeConfig {
@@ -47,104 +47,12 @@ impl ClaudeConfig {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum SessionError {
-    #[error(transparent)]
-    Process(#[from] ProcessError),
-    #[error("the agent process is no longer running")]
-    Closed,
-    #[error("no pending permission request {0}")]
-    UnknownPermission(String),
-    #[error("cannot write to the agent: {0}")]
-    Write(String),
-}
-
-/// Final report when the process ends.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExitReport {
-    pub exit: ExitInfo,
-    /// Core asked for the stop (as opposed to the agent exiting on its own).
-    pub stop_requested: bool,
-    /// Last bytes of stderr, for diagnostics.
-    pub stderr_tail: String,
-    pub malformed_lines: u64,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum SessionUpdate {
-    Output(AdapterOutput),
-    /// Always the last update.
-    Exited(ExitReport),
-}
-
-enum Command {
-    Send {
-        text: String,
-        reply: oneshot::Sender<Result<(), SessionError>>,
-    },
-    Interrupt {
-        reply: oneshot::Sender<Result<(), SessionError>>,
-    },
-    Decide {
-        request_id: String,
-        decision: PermissionDecision,
-        reply: oneshot::Sender<Result<(), SessionError>>,
-    },
-    Stop {
-        reply: oneshot::Sender<ExitInfo>,
-    },
-}
-
-/// Handle to a running Claude process. Dropping every handle stops it.
-#[derive(Clone)]
-pub struct ClaudeSession {
-    commands: mpsc::Sender<Command>,
-    pid: u32,
-}
-
-impl ClaudeSession {
-    pub fn pid(&self) -> u32 {
-        self.pid
-    }
-
-    async fn request(
-        &self,
-        make: impl FnOnce(oneshot::Sender<Result<(), SessionError>>) -> Command,
-    ) -> Result<(), SessionError> {
-        let (tx, rx) = oneshot::channel();
-        self.commands.send(make(tx)).await.map_err(|_| SessionError::Closed)?;
-        rx.await.map_err(|_| SessionError::Closed)?
-    }
-
-    /// Sends a user message. If a turn is running, Claude queues it as the
-    /// next turn.
-    pub async fn send_message(&self, text: String) -> Result<(), SessionError> {
-        self.request(|reply| Command::Send { text, reply }).await
-    }
-
-    pub async fn interrupt(&self) -> Result<(), SessionError> {
-        self.request(|reply| Command::Interrupt { reply }).await
-    }
-
-    pub async fn decide(&self, request_id: String, decision: PermissionDecision) -> Result<(), SessionError> {
-        self.request(|reply| Command::Decide { request_id, decision, reply }).await
-    }
-
-    /// Closes stdin, then escalates to SIGTERM/SIGKILL after the configured
-    /// grace periods. Resolves when the process has exited.
-    pub async fn stop(&self) -> Result<ExitInfo, SessionError> {
-        let (tx, rx) = oneshot::channel();
-        self.commands.send(Command::Stop { reply: tx }).await.map_err(|_| SessionError::Closed)?;
-        rx.await.map_err(|_| SessionError::Closed)
-    }
-}
-
 /// Launches Claude for `spec`. Updates are delivered on the returned
 /// receiver until (and including) [`SessionUpdate::Exited`].
 pub fn spawn_session(
     config: &ClaudeConfig,
     spec: &LaunchSpec,
-) -> Result<(ClaudeSession, mpsc::Receiver<SessionUpdate>), SessionError> {
+) -> Result<(AgentSession, mpsc::Receiver<SessionUpdate>), SessionError> {
     let process_spec = ProcessSpec {
         program: config.executable.clone(),
         args: build_args(spec),
@@ -191,7 +99,7 @@ pub fn spawn_session(
         child,
         command_rx,
     ));
-    Ok((ClaudeSession { commands, pid }, update_rx))
+    Ok((AgentSession::new(commands, pid), update_rx))
 }
 
 struct Driver {
@@ -343,7 +251,8 @@ async fn drive(mut d: Driver, mut child: Child, mut commands: mpsc::Receiver<Com
 
     let stderr_tail = d.tail.lock().map(|t| t.contents()).unwrap_or_default();
     tracing::info!(exit = %exit.describe(), stop_requested, "Claude Code process exited");
-    let report = ExitReport { exit, stop_requested, stderr_tail, malformed_lines: d.malformed };
+    let report =
+        ExitReport { exit, stop_requested, stderr_tail, malformed_lines: d.malformed, failure: None };
     if d.updates.send(SessionUpdate::Exited(report)).await.is_err() {
         tracing::warn!("session update receiver dropped before exit report");
     }

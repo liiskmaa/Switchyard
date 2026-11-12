@@ -15,9 +15,9 @@ const RENDERED = ["command", "description", "file_path", "notebook_path", "conte
  * Every other input field, so a person deciding sees flags such as
  * `run_in_background` or `dangerouslyDisableSandbox` and not only the command.
  */
-export function otherInputFields(input: unknown): [string, string][] {
+export function otherInputFields(input: unknown, alsoRendered: string[] = []): [string, string][] {
   if (typeof input !== "object" || input === null || Array.isArray(input)) return [];
   return Object.entries(input as Record<string, unknown>)
-    .filter(([k]) => !RENDERED.includes(k))
+    .filter(([k]) => !RENDERED.includes(k) && !alsoRendered.includes(k))
     .map(([k, v]) => [k, typeof v === "string" ? v : JSON.stringify(v)]);
 }
