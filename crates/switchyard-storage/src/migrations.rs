@@ -12,6 +12,7 @@ use crate::error::StorageError;
 pub const MIGRATIONS: &[(u32, &str)] = &[
     (1, include_str!("../../../migrations/0001_initial.sql")),
     (2, include_str!("../../../migrations/0002_agent_sessions.sql")),
+    (3, include_str!("../../../migrations/0003_workspaces.sql")),
 ];
 
 pub const LATEST_SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -93,5 +94,62 @@ mod tests {
             c.pragma_update(None, "user_version", LATEST_SCHEMA_VERSION + 1).unwrap();
         }
         assert!(matches!(Storage::open(&path), Err(StorageError::UnsupportedSchema { .. })));
+    }
+
+    /// Milestone 2 sessions ran in the project checkout. After the upgrade
+    /// they keep their workspace link, which is now a legacy record that
+    /// cannot accept sessions; no session or approval is lost.
+    #[test]
+    fn upgrade_from_v2_keeps_sessions_attached_to_a_legacy_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.db");
+        {
+            let mut c = Connection::open(&path).unwrap();
+            c.pragma_update(None, "foreign_keys", true).unwrap();
+            for &(version, sql) in &MIGRATIONS[..2] {
+                let tx = c.transaction().unwrap();
+                tx.execute_batch(sql).unwrap();
+                tx.pragma_update(None, "user_version", version).unwrap();
+                tx.commit().unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO projects VALUES ('p1', 'demo', '/repo', 1, 1);
+                 INSERT INTO workspaces (id, project_id, kind, path, status, created_at, updated_at)
+                     VALUES ('w1', 'p1', 'primary', '/repo', 'active', 1, 2);
+                 INSERT INTO agents VALUES ('a1', 'claude_code', 'Claude Code', '/bin/claude', '2.1.322', 1, 1);
+                 INSERT INTO sessions (id, project_id, workspace_id, agent_id, provider, native_session_id, cwd,
+                     state, started_at, last_activity_at)
+                     VALUES ('s1', 'p1', 'w1', 'a1', 'claude_code', 'n1', '/repo', 'stopped', 1, 1);
+                 INSERT INTO approvals (id, project_id, session_id, kind, tool_name, native_request_id, request,
+                     status, requested_at, expires_at, decided_at, decision_source)
+                     VALUES ('ap1', 'p1', 's1', 'tool_use', 'Write', 'r1', '{}', 'approved', 1, 2, 2, 'operator');",
+            )
+            .unwrap();
+        }
+        let storage = Storage::open(&path).unwrap();
+        storage
+            .with_conn(|c| {
+                let (ws, kind, status, archived): (Option<String>, String, String, Option<i64>) = c
+                    .query_row(
+                        "SELECT s.workspace_id, w.kind, w.status, w.archived_at
+                     FROM sessions s JOIN workspaces w ON w.id = s.workspace_id WHERE s.id = 's1'",
+                        [],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                    )?;
+                assert_eq!(ws.as_deref(), Some("w1"));
+                assert_eq!((kind.as_str(), status.as_str()), ("legacy_checkout", "archived"));
+                assert!(archived.is_some());
+                let approvals: i64 = c.query_row("SELECT COUNT(*) FROM approvals", [], |r| r.get(0))?;
+                assert_eq!(approvals, 1);
+                // New sessions must name a workspace.
+                let err = c.execute(
+                    "INSERT INTO sessions (id, project_id, agent_id, provider, cwd, state, started_at,
+                         last_activity_at) VALUES ('s2', 'p1', 'a1', 'claude_code', '/x', 'starting', 1, 1)",
+                    [],
+                );
+                assert!(err.is_err());
+                Ok(())
+            })
+            .unwrap();
     }
 }

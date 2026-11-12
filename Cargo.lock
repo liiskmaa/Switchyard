@@ -3331,6 +3331,7 @@ dependencies = [
  "switchyard-git",
  "switchyard-protocol",
  "switchyard-storage",
+ "switchyard-workspaces",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -3387,6 +3388,7 @@ dependencies = [
  "serde_json",
  "switchyard-agents",
  "switchyard-events",
+ "switchyard-workspaces",
  "thiserror 2.0.21",
  "tokio",
  "uuid",
@@ -3400,10 +3402,21 @@ dependencies = [
  "serde_json",
  "switchyard-agents",
  "switchyard-events",
+ "switchyard-workspaces",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "switchyard-workspaces"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
  "uuid",
 ]
 

@@ -14,7 +14,6 @@ mod supervisor;
 mod watcher;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -25,8 +24,8 @@ use switchyard_git::Git;
 use switchyard_protocol::methods::Delivery;
 use switchyard_protocol::model::{AgentAuth, AgentAvailability, Session};
 use switchyard_protocol::{ErrorCode, ProtocolError};
-use switchyard_storage::sessions::{self, SessionChanges};
-use switchyard_storage::{SessionRecord, Storage, StorageError, Transaction, projects};
+use switchyard_storage::sessions::{self, SessionChanges, SessionFilter};
+use switchyard_storage::{SessionRecord, Storage, StorageError, Transaction};
 use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 
@@ -35,6 +34,7 @@ use watcher::WatcherHub;
 
 use crate::config::CoreConfig;
 use crate::handlers::errors;
+use crate::workspaces::{self, WorkspaceService};
 
 /// Longest user message accepted (bytes).
 const MAX_PROMPT_BYTES: usize = 100 * 1024;
@@ -52,6 +52,7 @@ pub(crate) enum StopReason {
 pub(crate) struct Attached {
     handle: claude::ClaudeSession,
     project_id: Uuid,
+    workspace_id: Option<Uuid>,
     state: SessionState,
     /// Messages sent while a turn was running; each starts a turn later.
     queued_turns: u32,
@@ -74,28 +75,33 @@ struct Inner {
     config: Arc<CoreConfig>,
     live: LiveHub,
     watchers: WatcherHub,
+    workspaces: WorkspaceService,
     attached: Mutex<HashMap<Uuid, Attached>>,
     /// Serializes starts/resumes so duplicate-process checks are atomic.
     start_lock: AsyncMutex<()>,
     detection: AsyncMutex<Option<Detection>>,
 }
 
-pub(crate) fn draft(event: DomainEvent, ctx: &EventContext) -> Result<EventDraft, StorageError> {
-    EventDraft::new(event, ctx.clone())
-        .map_err(|e| StorageError::Corrupt(format!("cannot encode event: {e}")))
-}
+pub(crate) use crate::journal::draft;
 
 fn invalid_state(message: impl Into<String>) -> ProtocolError {
     ProtocolError::new(ErrorCode::InvalidState, message)
 }
 
 impl AgentService {
-    pub fn new(storage: Storage, bus: EventBus, git: Git, config: Arc<CoreConfig>) -> Self {
-        let watchers = WatcherHub::new(bus.clone(), git, config.file_debounce);
+    pub fn new(
+        storage: Storage,
+        bus: EventBus,
+        git: Git,
+        workspaces: WorkspaceService,
+        config: Arc<CoreConfig>,
+    ) -> Self {
+        let watchers = WatcherHub::new(bus.clone(), git, config.file_debounce, workspaces.clone());
         Self {
             inner: Arc::new(Inner {
                 live: LiveHub::new(config.live_capacity),
                 watchers,
+                workspaces,
                 storage,
                 bus,
                 config,
@@ -134,32 +140,12 @@ impl AgentService {
         }
     }
 
-    /// Runs `work` in one transaction, appends the drafts it returns, commits
-    /// and publishes them in order.
     pub(crate) async fn commit<R, F>(&self, work: F) -> Result<R, ProtocolError>
     where
         F: FnOnce(&Transaction<'_>) -> Result<(R, Vec<EventDraft>), StorageError> + Send + 'static,
         R: Send + 'static,
     {
-        let storage = self.inner.storage.clone();
-        self.inner
-            .bus
-            .publish_batch_with(move || {
-                storage.with_conn(|conn| {
-                    let tx = conn.transaction()?;
-                    let (value, drafts) = work(&tx)?;
-                    let mut stored = Vec::with_capacity(drafts.len());
-                    for d in drafts {
-                        stored.push(switchyard_storage::events::append(&tx, d)?);
-                    }
-                    tx.commit()?;
-                    Ok((value, stored))
-                })
-            })
-            .await
-            .map_err(errors::publish)?
-            .map(|(value, _)| value)
-            .map_err(errors::storage)
+        crate::journal::commit(&self.inner.storage, &self.inner.bus, work).await
     }
 
     /// Validated state transition with `agent.state_changed` plus `extra`
@@ -232,25 +218,25 @@ impl AgentService {
 
     pub(crate) async fn to_wire(&self, record: SessionRecord) -> Result<Session, ProtocolError> {
         let id = record.id;
-        let pending = self
+        let (pending, workspace) = self
             .inner
             .storage
-            .call(move |c| switchyard_storage::approvals::count_pending(c, id))
+            .call(move |c| {
+                Ok((
+                    switchyard_storage::approvals::count_pending(c, id)?,
+                    switchyard_storage::workspaces::for_session(c, id)?,
+                ))
+            })
             .await
             .map_err(errors::storage)?;
-        Ok(convert::session(record, self.is_attached(id), pending))
+        Ok(convert::session(record, self.is_attached(id), pending, workspace.map(|(_, name)| name)))
     }
 
-    pub async fn list(
-        &self,
-        project_id: Option<Uuid>,
-        live_only: bool,
-        limit: u32,
-    ) -> Result<Vec<Session>, ProtocolError> {
+    pub async fn list(&self, filter: SessionFilter, limit: u32) -> Result<Vec<Session>, ProtocolError> {
         let records = self
             .inner
             .storage
-            .call(move |c| sessions::list(c, project_id, live_only, limit))
+            .call(move |c| sessions::list(c, filter, limit))
             .await
             .map_err(errors::storage)?;
         let mut out = Vec::with_capacity(records.len());
@@ -336,34 +322,14 @@ impl AgentService {
 
     // --- lifecycle operations -------------------------------------------------
 
-    async fn accessible_root(&self, project_id: Uuid) -> Result<PathBuf, ProtocolError> {
-        let project =
-            self.inner.storage.call(move |c| projects::get(c, project_id)).await.map_err(errors::storage)?;
-        let root = PathBuf::from(&project.root_path);
-        if !tokio::fs::metadata(&root).await.is_ok_and(|m| m.is_dir()) {
-            return Err(ProtocolError::new(
-                ErrorCode::RepositoryUnavailable,
-                format!("{} is not accessible", project.root_path),
-            ));
-        }
-        Ok(root)
-    }
-
-    fn ensure_project_free(&self, project_id: Uuid) -> Result<(), ProtocolError> {
-        match self.has_attached_for_project(project_id) {
-            Some(existing) => Err(ProtocolError::new(
-                ErrorCode::Conflict,
-                format!("project already has a running agent session ({existing}); stop it first"),
-            )
-            .with_data(serde_json::json!({ "session_id": existing }))),
-            None => Ok(()),
-        }
-    }
-
-    /// Starts a new Claude Code session in the project's registered checkout.
+    /// Starts a new Claude Code session in a workspace. The workspace must
+    /// belong to `project_id` (when given), accept a session and validate on
+    /// disk and in Git; the agent's working directory is exactly its path.
+    /// There is no fallback to the project checkout.
     pub async fn start(
         &self,
-        project_id: Uuid,
+        workspace_id: Uuid,
+        project_id: Option<Uuid>,
         prompt: Option<String>,
         model: Option<String>,
     ) -> Result<Session, ProtocolError> {
@@ -371,19 +337,24 @@ impl AgentService {
             validate_prompt(p)?;
         }
         let _guard = self.inner.start_lock.lock().await;
-        let root = self.accessible_root(project_id).await?;
-        self.ensure_project_free(project_id)?;
+        let workspace = self.inner.workspaces.validate_for_session(workspace_id, project_id).await?;
         let installation = self.installation().await?;
 
         let session_id = new_id();
         let native = new_id();
         let now = now_ms();
+        let cwd = workspace.path.clone();
         let record = {
-            let cwd = root.display().to_string();
+            let cwd = cwd.clone();
             let executable = installation.executable.display().to_string();
             let version = installation.version.clone();
             let model = model.clone();
-            self.commit(move |tx| {
+            let project_id = workspace.project_id;
+            crate::journal::commit_checked(&self.inner.storage, &self.inner.bus, move |tx| {
+                let ws_drafts = match workspaces::attach_in_tx(tx, workspace_id, now)? {
+                    Ok(d) => d,
+                    Err(e) => return Ok(Err(e)),
+                };
                 let agent_id = switchyard_storage::agents::upsert_agent(
                     tx,
                     AgentProvider::ClaudeCode,
@@ -392,7 +363,6 @@ impl AgentService {
                     &version,
                     now,
                 )?;
-                let workspace_id = switchyard_storage::agents::primary_workspace(tx, project_id, &cwd, now)?;
                 let record = SessionRecord {
                     id: session_id,
                     project_id,
@@ -414,11 +384,11 @@ impl AgentService {
                     resume_count: 0,
                 };
                 sessions::insert(tx, &record)?;
-                Ok((record, Vec::new()))
+                Ok(Ok((record, ws_drafts)))
             })
             .await?
         };
-        let spec = LaunchSpec { session: NativeSession::New(native), cwd: root.clone(), model };
+        let spec = LaunchSpec { session: NativeSession::New(native), cwd: cwd.into(), model };
         self.launch(record, &installation, spec, false).await?;
         drop(_guard);
         if let Some(prompt) = prompt {
@@ -427,8 +397,10 @@ impl AgentService {
         self.session(session_id).await
     }
 
-    /// Continues a finished session in a new process (`--resume`). The
-    /// Switchyard session id and the native session id stay the same.
+    /// Continues a finished session in a new process (`--resume`), in the
+    /// same workspace. The Switchyard session id and the native session id
+    /// stay the same. Sessions from before workspace isolation (which ran in
+    /// the project checkout) are not resumed.
     pub async fn resume(&self, session_id: Uuid, prompt: Option<String>) -> Result<Session, ProtocolError> {
         if let Some(p) = &prompt {
             validate_prompt(p)?;
@@ -455,8 +427,32 @@ impl AgentService {
             .native_session_id
             .clone()
             .ok_or_else(|| invalid_state("session has no native session id to resume"))?;
-        let root = self.accessible_root(record.project_id).await?;
-        self.ensure_project_free(record.project_id)?;
+        let workspace_id = record.workspace_id.ok_or_else(|| {
+            ProtocolError::new(ErrorCode::LegacyWorkspace, "session has no workspace; start a new session")
+        })?;
+        let workspace = self
+            .inner
+            .workspaces
+            .validate_for_session(workspace_id, Some(record.project_id))
+            .await
+            .map_err(|e| {
+                if e.code == ErrorCode::LegacyWorkspace {
+                    ProtocolError::new(
+                        ErrorCode::LegacyWorkspace,
+                        "this session ran in the project checkout before workspace isolation; Switchyard \
+                             will not resume it there. Start a new session in a workspace.",
+                    )
+                    .with_data(serde_json::json!({ "session_id": session_id, "workspace_id": workspace_id }))
+                } else {
+                    e
+                }
+            })?;
+        if workspace.path != record.cwd {
+            return Err(ProtocolError::new(
+                ErrorCode::WorktreeIdentityMismatch,
+                "the session's recorded working directory differs from its workspace path",
+            ));
+        }
         let installation = self.installation().await?;
 
         let changes = SessionChanges {
@@ -468,9 +464,29 @@ impl AgentService {
             increment_resume_count: true,
             ..Default::default()
         };
-        let record = self.transition(session_id, SessionState::Starting, changes, Vec::new()).await?;
-        let spec =
-            LaunchSpec { session: NativeSession::Resume(native), cwd: root, model: record.model.clone() };
+        let now = now_ms();
+        let record = crate::journal::commit_checked(&self.inner.storage, &self.inner.bus, move |tx| {
+            let mut drafts = match workspaces::attach_in_tx(tx, workspace_id, now)? {
+                Ok(d) => d,
+                Err(e) => return Ok(Err(e)),
+            };
+            let before = sessions::get(tx, session_id)?;
+            let after = sessions::transition(tx, session_id, SessionState::Starting, &changes, now)?;
+            drafts.push(draft(
+                DomainEvent::AgentStateChanged {
+                    from: before.state.as_str().into(),
+                    to: after.state.as_str().into(),
+                },
+                &Self::context(&after),
+            )?);
+            Ok(Ok((after, drafts)))
+        })
+        .await?;
+        let spec = LaunchSpec {
+            session: NativeSession::Resume(native),
+            cwd: workspace.path.into(),
+            model: record.model.clone(),
+        };
         self.launch(record, &installation, spec, true).await?;
         drop(_guard);
         if let Some(prompt) = prompt {
@@ -507,6 +523,9 @@ impl AgentService {
                     }],
                 )
                 .await?;
+                if let Some(ws) = record.workspace_id {
+                    self.inner.workspaces.release(ws).await;
+                }
                 return Err(ProtocolError::new(
                     ErrorCode::AgentFailed,
                     format!("cannot start Claude Code: {detail}"),
@@ -520,6 +539,7 @@ impl AgentService {
             Attached {
                 handle,
                 project_id: record.project_id,
+                workspace_id: record.workspace_id,
                 state: SessionState::Starting,
                 queued_turns: 0,
                 stopping: None,
@@ -527,12 +547,18 @@ impl AgentService {
         );
         let ctx = Self::context(&record);
         tokio::spawn(supervisor::run(self.clone(), session_id, ctx, updates));
-        self.inner.watchers.attach(
-            record.project_id,
-            std::path::Path::new(&record.cwd),
-            session_id,
-            record.workspace_id,
-        );
+        if let Some(workspace_id) = record.workspace_id {
+            self.inner.watchers.attach(
+                workspace_id,
+                std::path::Path::new(&record.cwd),
+                EventContext {
+                    project_id: Some(record.project_id),
+                    workspace_id: Some(workspace_id),
+                    session_id: Some(session_id),
+                    ..Default::default()
+                },
+            );
+        }
 
         let native = record.native_session_id.clone();
         let mut events = vec![DomainEvent::AgentStarted {
@@ -663,7 +689,13 @@ impl AgentService {
     /// close stdin, then escalate to SIGTERM/SIGKILL after grace periods.
     pub async fn stop(&self, session_id: Uuid) -> Result<Session, ProtocolError> {
         self.stop_with(session_id, StopReason::Operator).await?;
-        self.session(session_id).await
+        let session = self.session(session_id).await?;
+        // Settle the workspace before returning (idempotent with the
+        // supervisor's own release), so it is usable right away.
+        if let Some(ws) = session.workspace_id {
+            self.inner.workspaces.release(ws).await;
+        }
+        Ok(session)
     }
 
     async fn stop_with(&self, session_id: Uuid, reason: StopReason) -> Result<(), ProtocolError> {
@@ -703,7 +735,7 @@ impl AgentService {
         let stale = self
             .inner
             .storage
-            .call(|c| sessions::list(c, None, true, u32::MAX))
+            .call(|c| sessions::list(c, SessionFilter { live_only: true, ..Default::default() }, u32::MAX))
             .await
             .map_err(errors::storage)?;
         for record in &stale {

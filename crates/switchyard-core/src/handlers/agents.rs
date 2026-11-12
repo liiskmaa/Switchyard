@@ -6,6 +6,7 @@ use switchyard_protocol::methods::{
     SessionsListResult, SessionsResumeParams, SessionsSendParams, SessionsSendResult, SessionsStartParams,
 };
 use switchyard_protocol::{ErrorCode, ProtocolError};
+use switchyard_storage::sessions::SessionFilter;
 
 use crate::connection::Connection;
 use crate::state::CoreState;
@@ -13,7 +14,7 @@ use crate::state::CoreState;
 const DEFAULT_LIMIT: u32 = 100;
 const MAX_LIMIT: u32 = 1000;
 
-fn limit(requested: Option<u32>) -> Result<u32, ProtocolError> {
+pub(super) fn limit(requested: Option<u32>) -> Result<u32, ProtocolError> {
     match requested.unwrap_or(DEFAULT_LIMIT) {
         n @ 1..=MAX_LIMIT => Ok(n),
         _ => Err(ProtocolError::new(
@@ -31,7 +32,7 @@ pub(crate) async fn start(state: &CoreState, p: SessionsStartParams) -> Result<S
     if p.provider.as_deref().is_some_and(|v| v != "claude_code") {
         return Err(ProtocolError::new(ErrorCode::Unsupported, "only the claude_code provider is available"));
     }
-    let session = state.agents.start(p.project_id, p.prompt, p.model).await?;
+    let session = state.agents.start(p.workspace_id, p.project_id, p.prompt, p.model).await?;
     Ok(SessionResult { session })
 }
 
@@ -39,7 +40,9 @@ pub(crate) async fn sessions(
     state: &CoreState,
     p: SessionsListParams,
 ) -> Result<SessionsListResult, ProtocolError> {
-    Ok(SessionsListResult { sessions: state.agents.list(p.project_id, p.live_only, limit(p.limit)?).await? })
+    let filter =
+        SessionFilter { project_id: p.project_id, workspace_id: p.workspace_id, live_only: p.live_only };
+    Ok(SessionsListResult { sessions: state.agents.list(filter, limit(p.limit)?).await? })
 }
 
 pub(crate) async fn get(state: &CoreState, p: SessionIdParams) -> Result<SessionDetail, ProtocolError> {

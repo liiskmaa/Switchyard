@@ -1,4 +1,4 @@
-# Switchyard Core IPC protocol — version 1
+# Switchyard Core IPC protocol — version 2
 
 This is the protocol between Switchyard Core and its clients (the desktop app, tests, and future
 tools). The source of truth is `crates/switchyard-protocol`, and the TypeScript mirror is
@@ -65,6 +65,20 @@ Otherwise it fails with `unsupported_protocol_version`, and `data` contains
 
 Additive optional fields do not bump the version; any incompatible change does.
 
+Versions:
+- **Version 1:** milestones 1–2.
+- **Version 2 (current):** milestone 3; `sessions.start` requires `workspace_id`
+  ([ADR 0015](../decisions/0015-protocol-version-2.md)).
+
+The minimum is 2 on both sides:
+- **A client that offers 1** is refused with `unsupported_protocol_version`. `data` contains
+  `{min_supported, max_supported, client_protocol, client_name, client_version, core_version,
+  action: "update_client"}`. Its later requests get `not_initialized`.
+- **A Core that selects 1** (an older Core still running) is refused by the client.
+  `switchyard-client` reports `IncompatibleCore {core_protocol, required, core_version, core_pid,
+  client_version}`, closes the connection and sends nothing else. The desktop shows that message
+  and does not stop the old Core by itself.
+
 ### Reconnection
 
 The protocol is stateless across connections. To reconnect, a client opens a new connection and
@@ -83,19 +97,29 @@ client detect a restart. `seq` stays continuous across restarts because it lives
 | `projects.list` | — | `{projects: Project[]}`, sorted by name |
 | `projects.get` | `{project_id}` | `{project: Project}` |
 | `projects.add` | `{path: string}` (absolute) | `{project: Project}` |
-| `projects.remove` | `{project_id}` | `{project_id}`. Removes the registration only; files are untouched. |
+| `projects.remove` | `{project_id}` | `{project_id}`. Removes the registration only; files are untouched. `conflict` while a session is attached or while any worktree workspace is not `removed`. |
 | `projects.git_status` | `{project_id}` | `GitStatusReport` |
-| `events.list` | `{after_seq?, project_id?, event_types?: string[], limit?: 1..=1000 (default 100)}` | `{events: EventEnvelope[]}` in ascending `seq` order. Without any filter it returns the **latest** `limit` events; with filters it returns the first `limit` events after `after_seq`. |
+| `events.list` | `{after_seq?, project_id?, session_id?, event_types?: string[], limit?: 1..=1000 (default 100)}` | `{events: EventEnvelope[]}` in ascending `seq` order. Without any filter it returns the **latest** `limit` events; with filters it returns the first `limit` events after `after_seq`. |
 | `events.subscribe` | `{after_seq?, project_id?, event_types?}` | `{subscription_id}` |
 | `events.unsubscribe` | `{subscription_id}` | `{}` |
 | `agents.list` | `{refresh?: bool}` | `{agents: [AgentAvailability]}` (Claude Code: installed, version, tested version, executable, error, auth `{logged_in, method, provider}`, capabilities) |
-| `sessions.start` | `{project_id, prompt?, model?, provider?: "claude_code"}` | `{session: Session}`. Launches Claude in the project root. `conflict` if the project already has an attached session; `agent_unavailable` or `agent_failed` (with `data.session_id`) on failure. |
-| `sessions.list` | `{project_id?, live_only?, limit?}` | `{sessions: [Session]}`, newest first |
+| `workspaces.list` | `{project_id, include_archived?: bool}` | `{workspaces: [Workspace]}`, oldest first. Archived, removed and legacy records only with `include_archived`. `project_not_found`. |
+| `workspaces.get` | `{workspace_id}` | `{workspace, sessions: [Session]}` (the sessions that ran in it, newest first, up to 50) |
+| `workspaces.create` | `{project_id, name?, base_ref?}` | `{workspace}` in `ready`/`dirty`. Creates `switchyard/<id>` from `base_ref` (default `HEAD`) in `<data>/workspaces/<project>/<id>`. Errors: `project_not_found`, `invalid_params` (name, unknown or option-like revision, no commits), `repository_unavailable`, `branch_collision`, `worktree_creation_failed`, `worktree_identity_mismatch`; on failure after the record was written, `data.workspace_id` names the `failed` record. |
+| `workspaces.git_status` | `{workspace_id}` | `WorkspaceGitStatus`; records the observation, and `ready`/`dirty` follows it. `worktree_missing`, `legacy_workspace`. |
+| `workspaces.verify` | `{workspace_id}` | `{workspace}`. Re-validates; `failed` returns to `ready`/`dirty` when valid, a settled workspace becomes `failed` when not. |
+| `workspaces.archive` | `{workspace_id}` | `{workspace}`. Status only; files are kept. `invalid_workspace_state` when `active`, `provisioning`, …. |
+| `workspaces.restore` | `{workspace_id}` | `{workspace}`. `archived` → `ready`/`dirty` after validation. |
+| `workspaces.complete` | `{workspace_id}` | `{workspace}`. `ready`/`dirty` → `completed` (marker; can be reopened by starting a session). |
+| `workspaces.cleanup_check` | `{workspace_id}` | `{workspace, report: CleanupReport}`. Read-only safety evaluation. |
+| `workspaces.cleanup` | `{workspace_id, confirmation}` | `{workspace, report}` with status `removed`. The confirmation is bound to a full scan of every entry under the worktree, so any change after review refuses it; the scan is repeated immediately before `git worktree remove`. Refused with `dirty_workspace` (uncommitted or untracked changes) or `unsafe_cleanup` (any other blocker, a changed state, a change detected by the final scan, or a Git failure; the workspace is `archived` again and nothing is deleted). `data.report` holds the current report when available. The branch is always kept. |
+| `sessions.start` | `{workspace_id, project_id?, prompt?, model?, provider?: "claude_code"}` | `{session: Session}`. Launches Claude with the workspace path as its working directory, never the project root. Errors: `workspace_not_found`, `workspace_project_mismatch`, `legacy_workspace`, `workspace_occupied`, `invalid_workspace_state`, `worktree_missing`, `worktree_identity_mismatch`, `repository_unavailable`, `agent_unavailable`, `agent_failed` (with `data.session_id`). |
+| `sessions.list` | `{project_id?, workspace_id?, live_only?, limit?}` | `{sessions: [Session]}`, newest first |
 | `sessions.get` | `{session_id}` | `{session, live_text, live_seq}`. `live_text` is the message currently streaming (ephemeral). |
 | `sessions.send` | `{session_id, text, queue_if_busy?: bool}` | `{delivery: "started_turn" \| "queued_for_next_turn"}`. Without `queue_if_busy`, sending during a turn fails with `invalid_state`. |
 | `sessions.interrupt` | `{session_id}` | `{session}`. The state becomes `interrupted` when the agent confirms. |
 | `sessions.stop` | `{session_id}` | `{session}` once the process has exited (state `stopped`) |
-| `sessions.resume` | `{session_id, prompt?}` | `{session}`. Continues a terminal session in a new process with the same native ID; `conflict` if it is already attached. |
+| `sessions.resume` | `{session_id, prompt?}` | `{session}`. Continues a terminal session in a new process with the same native ID, in the same workspace, after the same validation as `sessions.start`. `conflict` if it is already attached; `legacy_workspace` for sessions from before workspace isolation. |
 | `approvals.list` | `{status?, session_id?, project_id?, limit?}` | `{approvals: [Approval]}`, newest first |
 | `approvals.decide` | `{approval_id, decision: "approve" \| "deny", note?}` | `{approval}` after the decision is durable. `conflict` if it is no longer pending. `note` is shown to the agent on deny. |
 | `live.subscribe` | `{session_id?}` | `{subscription_id}`. Delivers `live` frames. |
@@ -124,6 +148,18 @@ HealthReport     { status: "ok"|"degraded", core: CoreInfo, protocol_version, up
 Project          { id, name, root_path, created_at_ms, updated_at_ms, accessible }
 GitStatusReport  { project_id, branch?, head_oid?, detached, upstream?, ahead?, behind?,
                    staged, unstaged, untracked, conflicted, clean, checked_at_ms }
+Workspace        { id, project_id, kind: "worktree"|"legacy_checkout", name, path, branch?, base_ref?,
+                   base_commit?, status, status_reason?, dirty?, git_checked_at_ms?, created_at_ms,
+                   updated_at_ms, last_activity_at_ms, archived_at_ms?, active_session_id?, path_exists }
+WorkspaceGitStatus { workspace_id, branch?, expected_branch?, on_expected_branch, head_oid?, detached,
+                   base_commit?, commits_since_base?, staged, unstaged, untracked, conflicted, clean,
+                   checked_at_ms }
+Session / Approval  see crates/switchyard-protocol/src/model.rs; both carry workspace_id and
+                   workspace_name (additive, milestone 3) so clients can label them without lookups.
+CleanupReport    { allowed, blockers: [{code, message}], warnings: [{code, message}],
+                   will_remove_directory, branch, branch_kept: true, ignored_files: [string],
+                   ignored_total, unmerged_commits?, merged_into?, entries_total?, bytes_total?,
+                   tree_fingerprint?, confirmation }
 EventEnvelope    { seq, id: uuid, schema_version, event_type, occurred_at_ms,
                    project_id?, workspace_id?, session_id?, task_id?, agent_id?, causation_id?,
                    payload: object }
@@ -154,9 +190,14 @@ the registration is kept and `projects.git_status` returns `repository_unavailab
 | `agent.permission_requested` | `{approval_id, tool_name, tool_use_id, input, description, expires_at_ms}` |
 | `agent.permission_resolved` | `{approval_id, tool_name, status, source, decided_by, note}` |
 | `agent.interrupted`, `agent.session_resumed`, `agent.warning`, `agent.exited`, `agent.failed` | See `crates/switchyard-events/src/envelope.rs` |
-| `files.changed` | `{changes: [{path, kind: created\|modified\|deleted\|renamed, from?}], dropped}`: what the filesystem reported (debounced, `.git` and ignored paths excluded) |
+| `workspace.created` | `{name, path, branch, base_ref, base_commit}` (status `provisioning`) |
+| `workspace.state_changed` | `{from, to, reason}` |
+| `workspace.cleanup_requested` | `{allowed, blockers: [code], warnings: [code], will_remove_directory, tree_fingerprint, entries}` |
+| `workspace.removed` | `{path, branch, directory_removed, branch_kept: true}` |
+| `workspace.cleanup_failed` | `{reason, detail}`; the workspace was preserved |
+| `files.changed` | `{changes: [{path, kind: created\|modified\|deleted\|renamed, from?}], dropped}`: what the filesystem reported in one workspace (debounced, `.git` and ignored paths excluded). Paths are relative to the workspace root; the context carries project, workspace and session. |
 
-Agent events carry `project_id`, `workspace_id`, `session_id` and `agent_id` in the envelope. `events.list` also accepts `session_id`.
+Agent events carry `project_id`, `workspace_id`, `session_id` and `agent_id` in the envelope; workspace events carry `project_id` and `workspace_id`. `events.list` also accepts `session_id`.
 
 Clients must tolerate unknown event types and payload fields.
 
@@ -178,6 +219,15 @@ Clients must tolerate unknown event types and payload fields.
 | `invalid_state` | The operation does not fit the session state (for example, sending during a turn without `queue_if_busy`, or interrupting an idle session). |
 | `unsupported` | The agent or provider cannot do this. |
 | `agent_failed` | The agent process failed to start or to accept a command. |
+| `project_not_found`, `workspace_not_found` | The id names no project / workspace (workspace and session methods). |
+| `workspace_project_mismatch` | The workspace belongs to another project. |
+| `invalid_workspace_state` | The operation does not fit the workspace status (`data.status`, `data.reason`). |
+| `workspace_occupied` | Another session is attached to the workspace. |
+| `legacy_workspace` | A pre-isolation record of the project checkout (no sessions, no resume, no cleanup). |
+| `worktree_creation_failed`, `branch_collision` | `git worktree add` failed / the branch already exists (never reused). |
+| `worktree_identity_mismatch` | Wrong path, not a worktree, another repository, or another branch checked out (`data.reason`). |
+| `worktree_missing` | The workspace directory does not exist. |
+| `dirty_workspace`, `unsafe_cleanup` | Cleanup refused (see `workspaces.cleanup`). |
 | `shutting_down` | Core is stopping. |
 | `overloaded` | More than 32 concurrent requests, or too many subscriptions, on one connection. |
 | `internal` | An unexpected failure. Details are logged by Core. |
@@ -185,8 +235,8 @@ Clients must tolerate unknown event types and payload fields.
 ## Example session
 
 ```text
-→ {"type":"request","id":1,"method":"initialize","params":{"protocol_version":1,"client":{"name":"cli","version":"0.1.0"}}}
-← {"type":"response","id":1,"result":{"protocol_version":1,"core":{"version":"0.1.0","instance_id":"01a1…","started_at_ms":1794354584000,"pid":72726}}}
+→ {"type":"request","id":1,"method":"initialize","params":{"protocol_version":2,"client":{"name":"cli","version":"0.1.0"}}}
+← {"type":"response","id":1,"result":{"protocol_version":2,"core":{"version":"0.1.0","instance_id":"01a1…","started_at_ms":1794354584000,"pid":72726}}}
 → {"type":"request","id":2,"method":"events.subscribe","params":{"after_seq":0}}
 ← {"type":"response","id":2,"result":{"subscription_id":"01a1…"}}
 ← {"type":"event","subscription_id":"01a1…","event":{"seq":1,"event_type":"core.started",…}}

@@ -193,16 +193,30 @@ fn initialize(
     let params: InitializeParams = serde_json::from_value(params)
         .map_err(|e| ProtocolError::new(ErrorCode::InvalidParams, e.to_string()))?;
     if params.protocol_version < MIN_SUPPORTED_PROTOCOL_VERSION {
+        let core_version = &state.info.version;
+        tracing::warn!(
+            client = %params.client.name,
+            client_version = %params.client.version,
+            client_protocol = params.protocol_version,
+            "rejected client with an unsupported protocol version"
+        );
         return Err(ProtocolError::new(
             ErrorCode::UnsupportedProtocolVersion,
             format!(
-                "client speaks protocol {}, Core supports {MIN_SUPPORTED_PROTOCOL_VERSION}..={PROTOCOL_VERSION}",
-                params.protocol_version
+                "{} {} speaks Switchyard protocol {}, but Switchyard Core {core_version} requires protocol \
+                 {MIN_SUPPORTED_PROTOCOL_VERSION}..={PROTOCOL_VERSION}. Update the client so it matches this Core \
+                 (the desktop app and Core ship together; reinstall or rebuild Switchyard).",
+                params.client.name, params.client.version, params.protocol_version
             ),
         )
         .with_data(serde_json::json!({
             "min_supported": MIN_SUPPORTED_PROTOCOL_VERSION,
             "max_supported": PROTOCOL_VERSION,
+            "client_protocol": params.protocol_version,
+            "client_name": params.client.name,
+            "client_version": params.client.version,
+            "core_version": core_version,
+            "action": "update_client",
         })));
     }
     tracing::info!(client = %params.client.name, version = %params.client.version, "client initialized");

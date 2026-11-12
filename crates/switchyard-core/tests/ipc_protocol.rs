@@ -160,3 +160,97 @@ async fn remote_errors_surface_as_typed_client_errors() {
         other => panic!("unexpected {other:?}"),
     }
 }
+
+// --- protocol compatibility (ADR 0015) ---------------------------------------
+
+/// Desktops from before workspaces (protocol 1) connecting to this Core are
+/// refused during the handshake
+/// with an actionable error, and the connection stays unusable: their next
+/// request never reaches a handler.
+#[tokio::test]
+async fn old_client_is_refused_before_any_operation() {
+    let core = TestCore::start().await;
+    for (old, version) in [(1, "0.1.0-m2")] {
+        let mut raw = Raw::connect(&core).await;
+        raw.send(&format!(r#"{{"type":"request","id":1,"method":"initialize","params":{{"protocol_version":{old},"client":{{"name":"switchyard-desktop","version":"{version}"}}}}}}"#)).await;
+        let reply = raw.recv().await;
+        assert_eq!(reply["type"], "error");
+        assert_eq!(reply["error"]["code"], "unsupported_protocol_version");
+        let data = &reply["error"]["data"];
+        assert_eq!(
+            (data["min_supported"].clone(), data["max_supported"].clone()),
+            (json!(2), json!(PROTOCOL_VERSION))
+        );
+        assert_eq!(data["client_protocol"], old);
+        assert_eq!(data["client_version"], version);
+        assert_eq!(data["core_version"], switchyard_core::CORE_VERSION);
+        assert_eq!(data["action"], "update_client");
+        let message = reply["error"]["message"].as_str().unwrap();
+        assert!(message.contains(version) && message.contains("requires protocol 2"), "{message}");
+
+        // The old client's next step fails safely instead of reaching Core.
+        raw.send(r#"{"type":"request","id":2,"method":"approvals.decide","params":{"approval_id":"00000000-0000-0000-0000-000000000000","decision":"approve"}}"#).await;
+        assert_eq!(raw.recv().await["error"]["code"], "not_initialized");
+    }
+}
+
+/// This client connecting to an older Core (one that answers the handshake
+/// with protocol 1, as milestone-2 Cores do) gives up
+/// during the handshake with a typed, actionable error and sends nothing
+/// else.
+#[tokio::test]
+async fn new_client_refuses_an_older_core() {
+    for old in [1] {
+        refuses_core_speaking(old).await;
+    }
+}
+
+async fn refuses_core_speaking(old: u32) {
+    let dir = common::data_dir();
+    let socket = dir.path().join("old.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let old_core = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let (r, mut w) = stream.into_split();
+        let mut reader = BufReader::new(r);
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        let request: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(request["method"], "initialize");
+        assert_eq!(request["params"]["protocol_version"], PROTOCOL_VERSION);
+        // An old Core answers min(client, its own version).
+        let reply = json!({"type": "response", "id": request["id"], "result": {"protocol_version": old, "core": {
+            "version": "0.1.0-m2", "instance_id": "00000000-0000-0000-0000-000000000001",
+            "started_at_ms": 1, "pid": 4242}}});
+        w.write_all(format!("{reply}\n").as_bytes()).await.unwrap();
+        // Record anything the client sends afterwards.
+        let mut rest = String::new();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), reader.read_line(&mut rest)).await;
+        rest
+    });
+    let err = match common::try_connect(&socket).await {
+        Ok(_) => panic!("connected to an incompatible Core"),
+        Err(e) => e,
+    };
+    match &err {
+        ClientError::IncompatibleCore { core_protocol, required, core_version, core_pid, .. } => {
+            assert_eq!(
+                (*core_protocol, *required, core_version.as_str(), *core_pid),
+                (old, 2, "0.1.0-m2", 4242)
+            );
+        }
+        other => panic!("expected IncompatibleCore, got {other:?}"),
+    }
+    let message = err.to_string();
+    assert!(message.contains("Core 0.1.0-m2 (pid 4242)") && message.contains("Stop that Core"), "{message}");
+    assert!(!err.is_connection_error(), "not retried as if Core were missing");
+    assert_eq!(old_core.await.unwrap(), "", "no request after the failed handshake");
+}
+
+/// Matching versions still negotiate normally.
+#[tokio::test]
+async fn current_client_and_core_agree_on_protocol_2() {
+    let core = TestCore::start().await;
+    let (client, _rx) = core.connect().await;
+    assert_eq!(client.info().protocol_version, 2);
+}

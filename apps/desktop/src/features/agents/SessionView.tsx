@@ -8,6 +8,7 @@ import { useStore } from "../../stores/store";
 import { useCoreQuery } from "../../stores/useCoreQuery";
 import { TERMINAL_STATES, type EventEnvelope, type Session } from "../../types/protocol";
 import { ApprovalCard } from "../approvals/ApprovalCard";
+import { WORKSPACE_STATUS_LABEL, getWorkspace, workspaceTone } from "../workspaces/api";
 import {
   STATE_LABEL,
   getSession,
@@ -48,7 +49,12 @@ export function SessionView({ sessionId, projectName }: { sessionId: string; pro
     <div className="session">
       <SessionHeader session={session} projectName={projectName} onChanged={detail.refresh} />
       {(approvals.data ?? []).map((a) => (
-        <ApprovalCard key={a.id} approval={a} projectName={projectName} onDecided={approvals.refresh} />
+        <ApprovalCard
+          key={a.id}
+          approval={a}
+          projectName={[projectName, a.workspace_name].filter(Boolean).join(" · ") || undefined}
+          onDecided={approvals.refresh}
+        />
       ))}
       <Panel title="Activity">
         {visible.length === 0 ? (
@@ -76,6 +82,18 @@ export function SessionView({ sessionId, projectName }: { sessionId: string; pro
 function SessionHeader({ session, projectName, onChanged }: { session: Session; projectName?: string | undefined; onChanged: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<CoreRequestError | null>(null);
+  const workspaceId = session.workspace_id;
+  const forWorkspace = useCallback(
+    (e: EventEnvelope) => workspaceId !== null && e.workspace_id === workspaceId,
+    [workspaceId],
+  );
+  const workspace = useCoreQuery(
+    `session-workspace:${workspaceId ?? "none"}`,
+    async () => (workspaceId ? (await getWorkspace(workspaceId)).workspace : null),
+    { refreshOn: forWorkspace, enabled: workspaceId !== null },
+  );
+  const ws = workspace.data;
+  const legacy = workspaceId === null || ws?.kind === "legacy_checkout";
   const terminal = TERMINAL_STATES.includes(session.state);
   const running = session.state === "running" || session.state === "waiting_for_approval";
 
@@ -111,7 +129,7 @@ function SessionHeader({ session, projectName, onChanged }: { session: Session; 
                 {busy === "stop" ? "Stopping…" : "Stop session"}
               </Button>
             </>
-          ) : terminal && session.native_session_id && session.capabilities.resume_session ? (
+          ) : terminal && !legacy && session.native_session_id && session.capabilities.resume_session ? (
             <Button variant="primary" onClick={() => void act("resume", () => resumeSession(session.id))} disabled={busy !== null}>
               {busy === "resume" ? "Resuming…" : "Resume session"}
             </Button>
@@ -123,6 +141,17 @@ function SessionHeader({ session, projectName, onChanged }: { session: Session; 
         rows={[
           ["State", <Badge tone={stateTone(session.state)}>{STATE_LABEL[session.state]}</Badge>],
           ["Process", session.attached && session.pid ? `pid ${session.pid}` : <span className="muted">not running</span>],
+          [
+            "Workspace",
+            ws ? (
+              <span>
+                {ws.name} <Badge tone={workspaceTone(ws.status)}>{WORKSPACE_STATUS_LABEL[ws.status]}</Badge>
+              </span>
+            ) : (
+              <span className="muted">{workspaceId ? "loading…" : "none"}</span>
+            ),
+          ],
+          ["Branch", ws?.branch ? <code>{ws.branch}</code> : <span className="muted">{legacy ? "project checkout" : "—"}</span>],
           ["Working directory", <code className="path">{session.cwd}</code>],
           ["Claude session", <code>{session.native_session_id ?? "—"}</code>],
           ["Switchyard session", <code>{session.id}</code>],
@@ -133,6 +162,12 @@ function SessionHeader({ session, projectName, onChanged }: { session: Session; 
           ],
         ]}
       />
+      {legacy && terminal ? (
+        <p className="muted small">
+          This session ran in the project checkout before workspace isolation. It is kept as history and cannot be
+          resumed; start a new session in a workspace instead.
+        </p>
+      ) : null}
       {session.failure && session.state === "failed" ? (
         <ErrorNotice title="Session failed" message={session.failure} />
       ) : session.failure ? (

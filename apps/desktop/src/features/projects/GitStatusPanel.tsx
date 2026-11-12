@@ -13,7 +13,7 @@ export function GitStatusPanel({ project }: { project: Project }) {
 
   return (
     <Panel
-      title="Git status"
+      title="Git status · project checkout"
       actions={
         <Button variant="ghost" icon="refresh" onClick={status.refresh} disabled={status.loading}>
           {status.loading ? "Checking…" : "Refresh"}

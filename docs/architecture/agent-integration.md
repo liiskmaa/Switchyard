@@ -164,12 +164,18 @@ process exits without running the tool.
 
 ### 1.5 Filesystem scope
 
+- **The working directory is a workspace**, never the project checkout: a Core-owned Git worktree
+  on `switchyard/<workspace-id>` under `<data dir>/workspaces/` (see
+  [workspaces.md](workspaces.md)). Core validates it before every launch or resume and passes its
+  exact path as the child's `cwd`. The adapter gets only that path; it has no workspace logic.
+  Claude stores sessions per working directory, so `--resume` runs in the same workspace.
 - `--restricted` confines the file tools to the working directory (and `--add-dir`, which is never
   passed) [documented]. Reads inside the project are allowed without asking.
 - **Bash is not sandboxed by Claude by default** [documented: "the sandbox is off by default"].
   Switchyard compensates by requiring an operator decision for every Bash command (see above). It
   does *not* claim OS-level isolation. A command the operator approves runs with the user's
-  privileges.
+  privileges and can reach other workspaces and the original checkout: **worktrees isolate source
+  trees, not processes.**
 - Registering the Switchyard repository itself as a project grants nothing special. It gets the same
   confinement and approvals as any other project.
 
@@ -260,8 +266,8 @@ channel, so only the sandbox and approval policy decide.
 | Situation | Behaviour | Evidence |
 |-----------|-----------|----------|
 | Desktop closes or disconnects | Agents keep running. On reconnect the UI lists the same session (same pid) and its pending approvals. No new process is created. | `tests/agents.rs::reconnecting_client_…` |
-| Duplicate start | At most one attached session per project; resuming an attached session fails with `conflict`. | `one_live_session_per_project…`, `stop_then_resume…` |
+| Duplicate start | At most one live session per **workspace** (`workspace_occupied`); several per project, each in its own workspace. Resuming an attached session fails with `conflict`. | `one_live_session_per_workspace…`, `workspaces.rs::two_sessions_work_concurrently…`, `stop_then_resume…` |
 | Graceful Core shutdown (SIGTERM, SIGINT or `system.shutdown`) | Pending approvals are cancelled (`core_shutdown`) and the agent is told to deny. A running turn is interrupted. stdin is closed, followed by SIGTERM and then SIGKILL after grace periods (5 s + 5 s). The session ends `stopped` with failure `core_shutdown`. | `core_shutdown_stops_sessions…`, `process.rs` |
-| Core crash (SIGKILL) | The agent's stdin pipe closes, so the CLI exits by itself; no orphan remains. On restart, sessions left live are marked `failed` (`core_restarted`) and their pending approvals `cancelled` (`core_restart`). **The running process is not recovered.** | `process.rs::core_crash_leaves_no_orphan…` |
-| Recovery | Explicit only: `sessions.resume` starts a new process with `--resume <native id>`. It is never automatic, and is refused while a process is attached. | same |
+| Core crash (SIGKILL) | The agent's stdin pipe closes, so the CLI exits by itself; no orphan remains. On restart, sessions left live are marked `failed` (`core_restarted`) and their pending approvals `cancelled` (`core_restart`). **The running process is not recovered.** The workspace and all its changes are kept; it returns to `ready`/`dirty` (ADR 0014). | `process.rs::core_crash_leaves_no_orphan…`, `workspaces.rs::restart_reconciles…` |
+| Recovery | Explicit only: `sessions.resume` starts a new process with `--resume <native id>` in the session's workspace. It is never automatic, and is refused while a process is attached or for pre-workspace (legacy) sessions. | same, `workspaces.rs::legacy_sessions…` |
 | Agent crash | The session becomes `failed`, with the exit code or signal and the last 1 KB of stderr. Pending approvals are cancelled (`agent_exited`). | `crash_is_reported…` |

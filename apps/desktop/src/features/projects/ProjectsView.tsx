@@ -7,7 +7,7 @@ import { useCoreQuery } from "../../stores/useCoreQuery";
 import type { Project } from "../../types/protocol";
 import { AddProjectForm } from "./AddProjectForm";
 import { GitStatusPanel } from "./GitStatusPanel";
-import { ProjectAgentPanel } from "./ProjectAgentPanel";
+import { WorkspacesPanel } from "../workspaces/WorkspacesPanel";
 import { isProjectEvent, listProjects, removeProject } from "./api";
 
 export function ProjectsView() {
@@ -120,12 +120,13 @@ function ProjectDetail({ project, onRemoved }: { project: Project; onRemoved: ()
           ]}
         />
       </Panel>
-      <ProjectAgentPanel project={project} />
+      <WorkspacesPanel project={project} />
       <GitStatusPanel project={project} />
       <Panel title="Registration">
         <p className="muted small">
           Removing the registration deletes Switchyard&apos;s record of this project. The repository and its files stay
-          on disk untouched.
+          on disk untouched. A project with workspaces must have them archived and cleaned up first, so no worktree is
+          left behind unrecorded.
         </p>
         {error ? <ErrorNotice title="Could not remove registration" message={error.message} code={error.code} /> : null}
         <div className="form-actions start">

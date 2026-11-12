@@ -20,8 +20,8 @@ use switchyard_protocol::codec::{self, FrameError};
 use switchyard_protocol::methods::{Initialize, InitializeParams, InitializeResult};
 use switchyard_protocol::model::ClientInfo;
 use switchyard_protocol::{
-    ClientFrame, DEFAULT_MAX_FRAME_BYTES, EventEnvelope, Method, PROTOCOL_VERSION, ProtocolError, RequestId,
-    ServerFrame,
+    ClientFrame, DEFAULT_MAX_FRAME_BYTES, EventEnvelope, MIN_SUPPORTED_PROTOCOL_VERSION, Method,
+    PROTOCOL_VERSION, ProtocolError, RequestId, ServerFrame,
 };
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -74,6 +74,20 @@ pub enum ClientError {
     },
     #[error("Core selected protocol version {0}, which this client does not support")]
     IncompatibleProtocol(u32),
+    /// The running Core is older than this client: it accepted the
+    /// connection but can only speak an older protocol. No request was sent.
+    #[error(
+        "Switchyard Core {core_version} (pid {core_pid}) speaks protocol {core_protocol}, but this client \
+         ({client_version}) requires protocol {required}. Stop that Core (this also stops its agent sessions; \
+         workspaces and their files are kept) so the matching Core can start, or install a matching Switchyard."
+    )]
+    IncompatibleCore {
+        core_protocol: u32,
+        required: u32,
+        core_version: String,
+        core_pid: u32,
+        client_version: String,
+    },
 }
 
 impl ClientError {
@@ -148,6 +162,7 @@ impl CoreClient {
                 },
             }),
         };
+        let client_version = options.client.version.clone();
         let init = client
             .call::<Initialize>(InitializeParams {
                 protocol_version: PROTOCOL_VERSION,
@@ -157,6 +172,16 @@ impl CoreClient {
         if init.protocol_version > PROTOCOL_VERSION {
             client.close().await;
             return Err(ClientError::IncompatibleProtocol(init.protocol_version));
+        }
+        if init.protocol_version < MIN_SUPPORTED_PROTOCOL_VERSION {
+            client.close().await;
+            return Err(ClientError::IncompatibleCore {
+                core_protocol: init.protocol_version,
+                required: MIN_SUPPORTED_PROTOCOL_VERSION,
+                core_version: init.core.version.clone(),
+                core_pid: init.core.pid,
+                client_version,
+            });
         }
         client.info = Arc::new(init);
         Ok((client, notify_rx))

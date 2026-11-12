@@ -178,11 +178,13 @@ impl AgentService {
         // The session stays in the attached map until its final state is
         // committed, so callers waiting for detachment (stop, shutdown)
         // observe the finished record.
-        let (stopping, project_id) = match self.attached().get(&session_id) {
-            Some(a) => (a.stopping, a.project_id),
-            None => (None, ctx.project_id.unwrap_or_default()),
+        let (stopping, workspace_id) = match self.attached().get(&session_id) {
+            Some(a) => (a.stopping, a.workspace_id),
+            None => (None, ctx.workspace_id),
         };
-        self.inner.watchers.detach(project_id, session_id);
+        if let Some(ws) = workspace_id {
+            self.inner.watchers.detach(ws);
+        }
         self.live().clear(session_id);
 
         let source = if stopping == Some(StopReason::CoreShutdown) {
@@ -234,5 +236,10 @@ impl AgentService {
         }
         self.attached().remove(&session_id);
         tracing::info!(%session_id, state = %state, exit = %exit.describe(), "agent session ended");
+        // The workspace outlives the session: it returns to ready/dirty and
+        // is never deleted here.
+        if let Some(ws) = workspace_id {
+            self.inner.workspaces.release(ws).await;
+        }
     }
 }

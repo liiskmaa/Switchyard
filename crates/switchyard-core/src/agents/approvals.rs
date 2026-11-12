@@ -249,7 +249,14 @@ impl AgentService {
             .await?;
         self.refresh_cached_state(record.session_id).await;
         self.deliver(&record, handle, agent_decision).await;
-        Ok(convert::approval(record))
+        let session_id = record.session_id;
+        let workspace = self
+            .inner
+            .storage
+            .call(move |c| switchyard_storage::workspaces::for_session(c, session_id))
+            .await
+            .map_err(errors::storage)?;
+        Ok(convert::approval(record, workspace))
     }
 
     /// Default-deny when nobody decided in time.
@@ -367,12 +374,19 @@ impl AgentService {
         project_id: Option<Uuid>,
         limit: u32,
     ) -> Result<Vec<Approval>, ProtocolError> {
-        let records = self
-            .inner
+        self.inner
             .storage
-            .call(move |c| repo::list(c, status, session_id, project_id, limit))
+            .call(move |c| {
+                let records = repo::list(c, status, session_id, project_id, limit)?;
+                records
+                    .into_iter()
+                    .map(|r| {
+                        let ws = switchyard_storage::workspaces::for_session(c, r.session_id)?;
+                        Ok(convert::approval(r, ws))
+                    })
+                    .collect::<Result<Vec<_>, StorageError>>()
+            })
             .await
-            .map_err(errors::storage)?;
-        Ok(records.into_iter().map(convert::approval).collect())
+            .map_err(errors::storage)
     }
 }

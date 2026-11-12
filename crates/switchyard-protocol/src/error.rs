@@ -42,6 +42,33 @@ pub enum ErrorCode {
     Unsupported,
     /// The agent process failed to start or to accept the command.
     AgentFailed,
+    /// The project id does not name a registered project.
+    ProjectNotFound,
+    /// The workspace id does not name a workspace.
+    WorkspaceNotFound,
+    /// The workspace belongs to a different project than the one given.
+    WorkspaceProjectMismatch,
+    /// The operation is not valid in the workspace's current status.
+    InvalidWorkspaceState,
+    /// Another session is already attached to the workspace.
+    WorkspaceOccupied,
+    /// The workspace is a pre-isolation record of the project checkout; it
+    /// accepts no sessions and is never cleaned up.
+    LegacyWorkspace,
+    /// `git worktree add` (or preparing for it) failed.
+    WorktreeCreationFailed,
+    /// The workspace branch already exists in the repository.
+    BranchCollision,
+    /// The directory is not the expected worktree (wrong repository, wrong
+    /// path, or a different branch checked out).
+    WorktreeIdentityMismatch,
+    /// The worktree directory does not exist.
+    WorktreeMissing,
+    /// Cleanup refused: uncommitted or untracked changes would be lost.
+    DirtyWorkspace,
+    /// Cleanup refused: safety could not be established, or the state
+    /// changed since the operator confirmed.
+    UnsafeCleanup,
     /// Core is shutting down and will not accept new work.
     ShuttingDown,
     /// Core is temporarily unable to accept work.

@@ -2,11 +2,18 @@ import { coreRequest } from "../../lib/core";
 import type { EventEnvelope, SessionState } from "../../types/protocol";
 
 export const listAgents = async (refresh = false) => (await coreRequest("agents.list", { refresh })).agents;
-export const listSessions = async (params: { project_id?: string; live_only?: boolean; limit?: number } = {}) =>
-  (await coreRequest("sessions.list", params)).sessions;
+export const listSessions = async (
+  params: { project_id?: string; workspace_id?: string; live_only?: boolean; limit?: number } = {},
+) => (await coreRequest("sessions.list", params)).sessions;
 export const getSession = (sessionId: string) => coreRequest("sessions.get", { session_id: sessionId });
-export const startSession = async (projectId: string, prompt?: string) =>
-  (await coreRequest("sessions.start", prompt ? { project_id: projectId, prompt } : { project_id: projectId })).session;
+/** Starts a session in a workspace (never in the project checkout). */
+export const startSession = async (workspaceId: string, projectId: string, prompt?: string) =>
+  (
+    await coreRequest(
+      "sessions.start",
+      prompt ? { workspace_id: workspaceId, project_id: projectId, prompt } : { workspace_id: workspaceId, project_id: projectId },
+    )
+  ).session;
 export const sendMessage = (sessionId: string, text: string, queueIfBusy: boolean) =>
   coreRequest("sessions.send", { session_id: sessionId, text, queue_if_busy: queueIfBusy });
 export const interruptSession = (sessionId: string) => coreRequest("sessions.interrupt", { session_id: sessionId });

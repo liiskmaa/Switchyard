@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 pub use switchyard_agents::{ApprovalStatus, Capabilities, DecisionSource, SessionState};
+pub use switchyard_workspaces::{CleanupFinding, CleanupReport, WorkspaceKind, WorkspaceStatus};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,7 +116,11 @@ pub struct AgentAuth {
 pub struct Session {
     pub id: Uuid,
     pub project_id: Uuid,
+    /// `None` only for records that predate workspaces entirely.
     pub workspace_id: Option<Uuid>,
+    /// Display name of the workspace (for labels; additive in v1).
+    #[serde(default)]
+    pub workspace_name: Option<String>,
     pub agent_id: Uuid,
     pub provider: String,
     /// The agent's own session id (Claude `session_id`), used for resume.
@@ -143,6 +148,11 @@ pub struct Approval {
     pub id: Uuid,
     pub project_id: Uuid,
     pub session_id: Uuid,
+    /// Workspace of the requesting session (additive in v1).
+    #[serde(default)]
+    pub workspace_id: Option<Uuid>,
+    #[serde(default)]
+    pub workspace_name: Option<String>,
     pub agent_id: Option<Uuid>,
     pub tool_name: String,
     pub tool_use_id: Option<String>,
@@ -180,4 +190,56 @@ pub struct LiveOutput {
     pub text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub missed: Option<u64>,
+}
+
+/// An isolated working copy of a project (a Core-owned Git worktree), or a
+/// legacy record of the project checkout from before isolation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Workspace {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub kind: WorkspaceKind,
+    pub name: String,
+    /// Absolute working directory; the agent's cwd.
+    pub path: String,
+    /// `switchyard/<id>`; `None` for legacy records.
+    pub branch: Option<String>,
+    pub base_ref: Option<String>,
+    pub base_commit: Option<String>,
+    pub status: WorkspaceStatus,
+    /// Why the workspace is in its status (failure reason, legacy note).
+    pub status_reason: Option<String>,
+    /// Last observed Git status; `None` until first checked.
+    pub dirty: Option<bool>,
+    pub git_checked_at_ms: Option<i64>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub last_activity_at_ms: i64,
+    pub archived_at_ms: Option<i64>,
+    /// The live session attached to this workspace, if any.
+    pub active_session_id: Option<Uuid>,
+    /// Whether the directory existed when this record was produced.
+    pub path_exists: bool,
+}
+
+/// Git status of one workspace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceGitStatus {
+    pub workspace_id: Uuid,
+    /// Branch checked out, `None` when detached.
+    pub branch: Option<String>,
+    /// The branch the workspace record expects.
+    pub expected_branch: Option<String>,
+    pub on_expected_branch: bool,
+    pub head_oid: Option<String>,
+    pub detached: bool,
+    pub base_commit: Option<String>,
+    /// Commits on HEAD since the base commit.
+    pub commits_since_base: Option<u32>,
+    pub staged: u32,
+    pub unstaged: u32,
+    pub untracked: u32,
+    pub conflicted: u32,
+    pub clean: bool,
+    pub checked_at_ms: i64,
 }

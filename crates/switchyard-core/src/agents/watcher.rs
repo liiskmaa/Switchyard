@@ -1,4 +1,12 @@
-//! Filesystem observation for projects with live agent sessions.
+//! Filesystem observation for workspaces with a live agent session.
+//!
+//! One watcher per workspace (a workspace has at most one live session).
+//! Each workspace is a separate directory outside the project, so a shared
+//! project-level watcher could not cover them; per-workspace watchers also
+//! make attribution trivial: every change is reported with the project,
+//! workspace and session of the watcher that saw it, relative to that
+//! workspace's root. The user's home directory is never watched, only the
+//! workspace directory itself.
 //!
 //! What the filesystem reports is recorded as `files.changed`. That is a
 //! separate fact from an agent's tool call (intent) and from `git status`
@@ -21,7 +29,9 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
-/// Raw notification queue per project.
+use crate::workspaces::WorkspaceService;
+
+/// Raw notification queue per workspace.
 const RAW_QUEUE: usize = 4096;
 /// Changes reported per `files.changed` event; the rest are counted.
 const MAX_BATCH: usize = 200;
@@ -42,37 +52,34 @@ struct RawChange {
     from: Option<PathBuf>,
 }
 
-struct ProjectWatch {
+struct WorkspaceWatch {
     _watcher: RecommendedWatcher,
     task: JoinHandle<()>,
-    sessions: Vec<Uuid>,
-    context: Arc<Mutex<EventContext>>,
 }
 
-/// Starts and stops watchers as sessions come and go (reference counted per
-/// project).
+/// Starts and stops one watcher per workspace as sessions come and go.
 #[derive(Clone)]
 pub(crate) struct WatcherHub {
     bus: EventBus,
     git: Git,
     debounce: Duration,
-    projects: Arc<Mutex<HashMap<Uuid, ProjectWatch>>>,
+    workspaces: Arc<Mutex<HashMap<Uuid, WorkspaceWatch>>>,
+    /// Refreshes each workspace's Git observation when its files change.
+    service: WorkspaceService,
 }
 
 impl WatcherHub {
-    pub fn new(bus: EventBus, git: Git, debounce: Duration) -> Self {
-        Self { bus, git, debounce, projects: Arc::default() }
+    pub fn new(bus: EventBus, git: Git, debounce: Duration, service: WorkspaceService) -> Self {
+        Self { bus, git, debounce, workspaces: Arc::default(), service }
     }
 
-    /// Begins (or joins) watching `root` for `session`.
-    pub fn attach(&self, project_id: Uuid, root: &Path, session: Uuid, workspace_id: Option<Uuid>) {
-        let Ok(mut projects) = self.projects.lock() else { return };
-        if let Some(watch) = projects.get_mut(&project_id) {
-            watch.sessions.push(session);
-            if let Ok(mut ctx) = watch.context.lock() {
-                ctx.session_id = Some(session);
-            }
-            return;
+    /// Begins watching the workspace directory `root`; changes are reported
+    /// with `context` (project, workspace, session). Replaces an existing
+    /// watcher for the same workspace.
+    pub fn attach(&self, workspace_id: Uuid, root: &Path, context: EventContext) {
+        let Ok(mut workspaces) = self.workspaces.lock() else { return };
+        if let Some(old) = workspaces.remove(&workspace_id) {
+            stop(workspace_id, old);
         }
         let (tx, rx) = mpsc::channel(RAW_QUEUE);
         let dropped = Arc::new(Mutex::new(0u32));
@@ -92,54 +99,46 @@ impl WatcherHub {
         let mut watcher = match notify::recommended_watcher(handler) {
             Ok(w) => w,
             Err(err) => {
-                tracing::error!(%err, %project_id, "cannot create filesystem watcher");
+                tracing::error!(%err, %workspace_id, "cannot create filesystem watcher");
                 return;
             }
         };
         if let Err(err) = watcher.watch(root, RecursiveMode::Recursive) {
-            tracing::error!(%err, %project_id, "cannot watch project directory");
+            tracing::error!(%err, %workspace_id, "cannot watch workspace directory");
             return;
         }
-        let context = Arc::new(Mutex::new(EventContext {
-            project_id: Some(project_id),
-            workspace_id,
-            session_id: Some(session),
-            ..Default::default()
-        }));
-        let task = tokio::spawn(batch_loop(
-            rx,
-            root.to_path_buf(),
-            self.bus.clone(),
-            self.git.clone(),
-            self.debounce,
-            Arc::clone(&context),
+        let context = Arc::new(Mutex::new(context));
+        let sink = Sink {
+            bus: self.bus.clone(),
+            git: self.git.clone(),
+            context,
             dropped,
-        ));
-        tracing::info!(%project_id, root = %root.display(), "watching project files");
-        projects
-            .insert(project_id, ProjectWatch { _watcher: watcher, task, sessions: vec![session], context });
+            service: self.service.clone(),
+        };
+        let task = tokio::spawn(batch_loop(rx, root.to_path_buf(), self.debounce, sink));
+        tracing::info!(%workspace_id, root = %root.display(), "watching workspace files");
+        workspaces.insert(workspace_id, WorkspaceWatch { _watcher: watcher, task });
     }
 
-    /// Stops watching for `session`; the watcher ends with its last session.
-    /// The pending batch is flushed first.
-    pub fn detach(&self, project_id: Uuid, session: Uuid) {
-        let Ok(mut projects) = self.projects.lock() else { return };
-        let Some(watch) = projects.get_mut(&project_id) else { return };
-        watch.sessions.retain(|s| *s != session);
-        if watch.sessions.is_empty()
-            && let Some(watch) = projects.remove(&project_id)
-        {
-            // Dropping the watcher closes the raw channel; the batch loop
-            // flushes what it has and exits.
-            let ProjectWatch { _watcher, task, .. } = watch;
-            drop(_watcher);
-            tokio::spawn(async move {
-                if tokio::time::timeout(Duration::from_secs(5), task).await.is_err() {
-                    tracing::warn!(%project_id, "file batch task did not finish");
-                }
-            });
+    /// Stops watching the workspace. The pending batch is flushed first.
+    pub fn detach(&self, workspace_id: Uuid) {
+        let Ok(mut workspaces) = self.workspaces.lock() else { return };
+        if let Some(watch) = workspaces.remove(&workspace_id) {
+            stop(workspace_id, watch);
         }
     }
+}
+
+fn stop(workspace_id: Uuid, watch: WorkspaceWatch) {
+    // Dropping the watcher closes the raw channel; the batch loop flushes
+    // what it has and exits.
+    let WorkspaceWatch { _watcher, task } = watch;
+    drop(_watcher);
+    tokio::spawn(async move {
+        if tokio::time::timeout(Duration::from_secs(5), task).await.is_err() {
+            tracing::warn!(%workspace_id, "file batch task did not finish");
+        }
+    });
 }
 
 fn classify(event: &notify::Event) -> Vec<RawChange> {
@@ -167,15 +166,16 @@ fn relative(root: &Path, path: &Path) -> Option<String> {
     rel.to_str().map(str::to_owned)
 }
 
-async fn batch_loop(
-    mut rx: mpsc::Receiver<RawChange>,
-    root: PathBuf,
+/// Where a workspace's batches go.
+struct Sink {
     bus: EventBus,
     git: Git,
-    debounce: Duration,
     context: Arc<Mutex<EventContext>>,
     dropped: Arc<Mutex<u32>>,
-) {
+    service: WorkspaceService,
+}
+
+async fn batch_loop(mut rx: mpsc::Receiver<RawChange>, root: PathBuf, debounce: Duration, sink: Sink) {
     // macOS reports canonical paths (e.g. /private/var/...).
     let root = tokio::fs::canonicalize(&root).await.unwrap_or(root);
     loop {
@@ -207,21 +207,15 @@ async fn batch_loop(
                 Err(_) => break,
             }
         }
-        flush(&root, &bus, &git, &context, &dropped, batch).await;
+        flush(&root, &sink, batch).await;
         if closed {
             return;
         }
     }
 }
 
-async fn flush(
-    root: &Path,
-    bus: &EventBus,
-    git: &Git,
-    context: &Arc<Mutex<EventContext>>,
-    dropped: &Arc<Mutex<u32>>,
-    batch: BTreeMap<String, (Seen, Option<String>)>,
-) {
+async fn flush(root: &Path, sink: &Sink, batch: BTreeMap<String, (Seen, Option<String>)>) {
+    let Sink { bus, git, context, dropped, service } = sink;
     if batch.is_empty() {
         return;
     }
@@ -262,6 +256,11 @@ async fn flush(
         return;
     }
     let ctx = context.lock().map(|c| c.clone()).unwrap_or_default();
+    // Recorded before the event goes out, so clients refreshing on it read
+    // the new dirty/clean state.
+    if let Some(workspace_id) = ctx.workspace_id {
+        service.observe(workspace_id).await;
+    }
     if let Err(err) = bus.publish(DomainEvent::FilesChanged { changes, dropped: overflow }, ctx).await {
         tracing::error!(%err, "cannot record file changes");
     }

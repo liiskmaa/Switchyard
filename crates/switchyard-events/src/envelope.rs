@@ -120,14 +120,43 @@ pub enum DomainEvent {
     #[serde(rename = "agent.failed")]
     AgentFailed { reason: String, detail: Option<String> },
 
+    // --- workspaces (context carries project_id and workspace_id) ----------
+    /// A workspace record was created; provisioning of its worktree begins.
+    #[serde(rename = "workspace.created")]
+    WorkspaceCreated { name: String, path: String, branch: String, base_ref: String, base_commit: String },
+    #[serde(rename = "workspace.state_changed")]
+    WorkspaceStateChanged { from: String, to: String, reason: Option<String> },
+    /// The operator asked for cleanup. `allowed` is the safety verdict;
+    /// `blockers`/`warnings` are finding codes.
+    #[serde(rename = "workspace.cleanup_requested")]
+    WorkspaceCleanupRequested {
+        allowed: bool,
+        blockers: Vec<String>,
+        warnings: Vec<String>,
+        will_remove_directory: bool,
+        /// Scanned tree state the verdict was based on (audit).
+        #[serde(default)]
+        tree_fingerprint: Option<String>,
+        #[serde(default)]
+        entries: Option<u64>,
+    },
+    /// Cleanup finished: the worktree is gone; the branch is kept.
+    #[serde(rename = "workspace.removed")]
+    WorkspaceRemoved { path: String, branch: String, directory_removed: bool, branch_kept: bool },
+    /// Cleanup was attempted and failed; the workspace was preserved.
+    #[serde(rename = "workspace.cleanup_failed")]
+    WorkspaceCleanupFailed { reason: String, detail: Option<String> },
+
     // --- filesystem --------------------------------------------------------
-    /// Actual changes observed on disk in a project (debounced batch). This
-    /// records what the filesystem reported, independent of agent intent.
+    /// Actual changes observed on disk in one workspace (debounced batch).
+    /// This records what the filesystem reported, independent of agent
+    /// intent. Context: project, workspace and (when one is attached)
+    /// session; `occurred_at_ms` is the batch time.
     #[serde(rename = "files.changed")]
     FilesChanged { changes: Vec<FileChange>, dropped: u32 },
 }
 
-/// One observed filesystem change, relative to the project root.
+/// One observed filesystem change, relative to the workspace root.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileChange {
     pub path: String,
@@ -161,6 +190,11 @@ impl DomainEvent {
             Self::AgentWarning { .. } => "agent.warning",
             Self::AgentExited { .. } => "agent.exited",
             Self::AgentFailed { .. } => "agent.failed",
+            Self::WorkspaceCreated { .. } => "workspace.created",
+            Self::WorkspaceStateChanged { .. } => "workspace.state_changed",
+            Self::WorkspaceCleanupRequested { .. } => "workspace.cleanup_requested",
+            Self::WorkspaceRemoved { .. } => "workspace.removed",
+            Self::WorkspaceCleanupFailed { .. } => "workspace.cleanup_failed",
             Self::FilesChanged { .. } => "files.changed",
         }
     }
@@ -291,6 +325,13 @@ mod tests {
             DomainEvent::AgentInterrupted {},
             DomainEvent::AgentWarning { message: "m".into() },
             DomainEvent::AgentStateChanged { from: "idle".into(), to: "running".into() },
+            DomainEvent::WorkspaceStateChanged { from: "ready".into(), to: "active".into(), reason: None },
+            DomainEvent::WorkspaceRemoved {
+                path: "/w".into(),
+                branch: "switchyard/x".into(),
+                directory_removed: true,
+                branch_kept: true,
+            },
             DomainEvent::FilesChanged {
                 changes: vec![FileChange { path: "a".into(), kind: "created".into(), from: None }],
                 dropped: 0,

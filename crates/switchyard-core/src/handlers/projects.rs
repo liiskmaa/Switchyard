@@ -106,6 +106,15 @@ pub(crate) async fn remove(
         .bus
         .publish_with(move || {
             storage.with_conn(|c| {
+                // Removing the registration would orphan worktrees (and their
+                // uncommitted work) under the workspaces directory.
+                let remaining = switchyard_storage::workspaces::count_unremoved_worktrees(c, id)?;
+                if remaining > 0 {
+                    return Err(StorageError::Conflict(format!(
+                        "project has {remaining} workspace(s) whose worktrees may still exist; archive and clean \
+                         them up before removing the project"
+                    )));
+                }
                 projects::delete_with_event(c, id, |record| {
                     EventDraft::new(
                         DomainEvent::ProjectRemoved {

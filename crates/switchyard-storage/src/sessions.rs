@@ -115,21 +115,31 @@ pub fn get(conn: &Connection, id: Uuid) -> Result<SessionRecord, StorageError> {
     collect(&mut stmt, [id.to_string()])?.pop().ok_or_else(|| StorageError::NotFound(format!("session {id}")))
 }
 
-/// Sessions newest first, optionally for one project and/or only live ones.
+/// Which sessions [`list`] returns.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionFilter {
+    pub project_id: Option<Uuid>,
+    pub workspace_id: Option<Uuid>,
+    pub live_only: bool,
+}
+
+/// Sessions newest first.
 pub fn list(
     conn: &Connection,
-    project_id: Option<Uuid>,
-    live_only: bool,
+    filter: SessionFilter,
     limit: u32,
 ) -> Result<Vec<SessionRecord>, StorageError> {
     let live = crate::stats::ACTIVE_SESSION_STATUSES;
     let sql = format!(
-        "SELECT {COLUMNS} FROM sessions WHERE (?1 IS NULL OR project_id = ?1) {} \
-         ORDER BY started_at DESC, id DESC LIMIT ?2",
-        if live_only { format!("AND state IN ({live})") } else { String::new() }
+        "SELECT {COLUMNS} FROM sessions WHERE (?1 IS NULL OR project_id = ?1) \
+         AND (?2 IS NULL OR workspace_id = ?2) {} ORDER BY started_at DESC, id DESC LIMIT ?3",
+        if filter.live_only { format!("AND state IN ({live})") } else { String::new() }
     );
     let mut stmt = conn.prepare_cached(&sql)?;
-    collect(&mut stmt, params![project_id.map(|p| p.to_string()), limit])
+    collect(
+        &mut stmt,
+        params![filter.project_id.map(|p| p.to_string()), filter.workspace_id.map(|w| w.to_string()), limit],
+    )
 }
 
 /// Field updates applied together with a state change.
@@ -251,10 +261,13 @@ pub(crate) mod tests {
             1,
         )
         .unwrap();
+        let workspace =
+            crate::workspaces::tests::sample(project_id, switchyard_workspaces::WorkspaceStatus::Active);
+        crate::workspaces::insert(conn, &workspace).unwrap();
         SessionRecord {
             id: new_id(),
             project_id,
-            workspace_id: None,
+            workspace_id: Some(workspace.id),
             agent_id: agent,
             provider: AgentProvider::ClaudeCode,
             native_session_id: Some(new_id().to_string()),
@@ -312,8 +325,11 @@ pub(crate) mod tests {
                 )?;
                 assert_eq!((done.pid, done.exit_code), (None, Some(0)));
                 assert!(!exists_live_for_project(c, project)?);
-                assert_eq!(list(c, Some(project), false, 10)?.len(), 1);
-                assert!(list(c, Some(project), true, 10)?.is_empty());
+                let all = SessionFilter { project_id: Some(project), ..Default::default() };
+                assert_eq!(list(c, all, 10)?.len(), 1);
+                assert!(list(c, SessionFilter { live_only: true, ..all }, 10)?.is_empty());
+                let by_ws = SessionFilter { workspace_id: s.workspace_id, ..Default::default() };
+                assert_eq!(list(c, by_ws, 10)?.len(), 1);
                 assert_eq!(
                     find_by_native(
                         c,

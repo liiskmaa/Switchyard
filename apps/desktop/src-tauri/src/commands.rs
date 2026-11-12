@@ -11,7 +11,9 @@ use switchyard_protocol::Method;
 use switchyard_protocol::methods::{
     AgentsList, ApprovalsDecide, ApprovalsList, EventsList, ProjectsAdd, ProjectsGet, ProjectsGitStatus,
     ProjectsList, ProjectsRemove, SessionsGet, SessionsInterrupt, SessionsList, SessionsResume, SessionsSend,
-    SessionsStart, SessionsStop, SystemHealth,
+    SessionsStart, SessionsStop, SystemHealth, WorkspacesArchive, WorkspacesCleanup, WorkspacesCleanupCheck,
+    WorkspacesComplete, WorkspacesCreate, WorkspacesGet, WorkspacesGitStatus, WorkspacesList,
+    WorkspacesRestore, WorkspacesVerify,
 };
 use tauri::State;
 
@@ -29,6 +31,16 @@ const ALLOWED_METHODS: &[&str] = &[
     ProjectsGitStatus::NAME,
     EventsList::NAME,
     AgentsList::NAME,
+    WorkspacesList::NAME,
+    WorkspacesGet::NAME,
+    WorkspacesCreate::NAME,
+    WorkspacesGitStatus::NAME,
+    WorkspacesVerify::NAME,
+    WorkspacesArchive::NAME,
+    WorkspacesRestore::NAME,
+    WorkspacesComplete::NAME,
+    WorkspacesCleanupCheck::NAME,
+    WorkspacesCleanup::NAME,
     SessionsStart::NAME,
     SessionsList::NAME,
     SessionsGet::NAME,

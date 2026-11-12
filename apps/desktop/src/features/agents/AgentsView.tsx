@@ -47,12 +47,12 @@ export function AgentsView() {
               onClick={() => navigate("agents", { sessionId: s.id })}
             >
               <span className="list-item-title">
-                {name(s.project_id) ?? "project"}
+                {s.workspace_name ?? name(s.project_id) ?? "project"}
                 <Badge tone={stateTone(s.state)}>{STATE_LABEL[s.state]}</Badge>
                 {s.pending_approvals > 0 ? <Badge tone="warn">{s.pending_approvals} approval</Badge> : null}
               </span>
               <span className="list-item-sub">
-                Claude Code · {formatRelative(s.last_activity_at_ms, now)}
+                {name(s.project_id) ?? "project"} · {formatRelative(s.last_activity_at_ms, now)}
               </span>
             </button>
           ))}

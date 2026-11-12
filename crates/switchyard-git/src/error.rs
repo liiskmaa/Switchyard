@@ -24,6 +24,16 @@ pub enum GitError {
     Timeout { args: String, timeout_ms: u128 },
     #[error("git {args} failed ({status}): {stderr}")]
     Failed { args: String, status: String, stderr: String },
+    #[error("revision {0:?} does not name a commit in this repository")]
+    UnknownRevision(String),
+    #[error("branch {0} already exists")]
+    BranchExists(String),
+    #[error("path already exists: {0}")]
+    PathExists(PathBuf),
+    #[error("worktree {0} is locked")]
+    WorktreeLocked(PathBuf),
+    #[error("worktree {0} contains modified or untracked files")]
+    WorktreeNotClean(PathBuf),
     #[error("unexpected git output: {0}")]
     UnexpectedOutput(String),
     #[error("i/o error on {path}: {source}")]

@@ -102,6 +102,7 @@ async fn missing_git_binary_is_reported() {
     let git = Git::new(GitConfig {
         binary: PathBuf::from("/nonexistent/switchyard-git-binary"),
         timeout: Duration::from_secs(5),
+        ..GitConfig::default()
     });
     assert!(matches!(git.status(&root).await, Err(GitError::Unavailable { .. })));
 }

@@ -27,7 +27,9 @@ Every session is launched with:
   `ls` of paths outside the project) needs an operator decision in Switchyard. Verified.
 - `--permission-mode default`. Never `acceptEdits`, never bypass.
 - The working directory is the project's primary workspace, a new `workspaces` row of kind
-  `primary`, which is the anchor for future worktree isolation.
+  `primary`, which is the anchor for future worktree isolation. **Superseded by
+  [ADR 0012](0012-project-workspace-session.md):** sessions now run in a Core-owned Git worktree,
+  and the milestone-2 primary rows became `legacy_checkout` records.
 
 ## Consequences and limits
 

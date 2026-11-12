@@ -6,6 +6,7 @@ pub(crate) mod errors;
 mod events;
 mod projects;
 mod system;
+mod workspaces;
 
 use std::future::Future;
 use std::sync::Arc;
@@ -99,6 +100,37 @@ pub(crate) async fn dispatch(conn: &Connection, method: &str, params: Value) -> 
         }
         methods::ApprovalsDecide::NAME => {
             typed::<methods::ApprovalsDecide, _, _>(params, |p| agents::decide(conn, p)).await
+        }
+        methods::WorkspacesList::NAME => {
+            typed::<methods::WorkspacesList, _, _>(params, |p| workspaces::list(state, p)).await
+        }
+        methods::WorkspacesGet::NAME => {
+            typed::<methods::WorkspacesGet, _, _>(params, |p| workspaces::get(state, p)).await
+        }
+        methods::WorkspacesCreate::NAME => {
+            typed::<methods::WorkspacesCreate, _, _>(params, |p| workspaces::create(state, p)).await
+        }
+        methods::WorkspacesGitStatus::NAME => {
+            typed::<methods::WorkspacesGitStatus, _, _>(params, |p| workspaces::git_status(state, p)).await
+        }
+        methods::WorkspacesVerify::NAME => {
+            typed::<methods::WorkspacesVerify, _, _>(params, |p| workspaces::verify(state, p)).await
+        }
+        methods::WorkspacesArchive::NAME => {
+            typed::<methods::WorkspacesArchive, _, _>(params, |p| workspaces::archive(state, p)).await
+        }
+        methods::WorkspacesRestore::NAME => {
+            typed::<methods::WorkspacesRestore, _, _>(params, |p| workspaces::restore(state, p)).await
+        }
+        methods::WorkspacesComplete::NAME => {
+            typed::<methods::WorkspacesComplete, _, _>(params, |p| workspaces::complete(state, p)).await
+        }
+        methods::WorkspacesCleanupCheck::NAME => {
+            typed::<methods::WorkspacesCleanupCheck, _, _>(params, |p| workspaces::cleanup_check(state, p))
+                .await
+        }
+        methods::WorkspacesCleanup::NAME => {
+            typed::<methods::WorkspacesCleanup, _, _>(params, |p| workspaces::cleanup(state, p)).await
         }
         methods::LiveSubscribe::NAME => {
             events::live_subscribe(conn, parse::<methods::LiveSubscribe>(params)?).await

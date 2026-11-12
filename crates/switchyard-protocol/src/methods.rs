@@ -7,8 +7,8 @@ use switchyard_events::EventEnvelope;
 use uuid::Uuid;
 
 use crate::model::{
-    AgentAvailability, Approval, ApprovalStatus, ClientInfo, CoreInfo, GitStatusReport, HealthReport,
-    Project, Session,
+    AgentAvailability, Approval, ApprovalStatus, CleanupReport, ClientInfo, CoreInfo, GitStatusReport,
+    HealthReport, Project, Session, Workspace, WorkspaceGitStatus,
 };
 
 pub trait Method {
@@ -181,12 +181,94 @@ pub struct AgentsListResult {
 
 method!(AgentsList, "agents.list", AgentsListParams, AgentsListResult);
 
+// --- workspaces -------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspacesListParams {
+    pub project_id: Uuid,
+    /// Also return archived, cleaned-up and legacy records.
+    #[serde(default)]
+    pub include_archived: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspacesListResult {
+    pub workspaces: Vec<Workspace>,
+}
+
+method!(WorkspacesList, "workspaces.list", WorkspacesListParams, WorkspacesListResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceIdParams {
+    pub workspace_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceDetail {
+    pub workspace: Workspace,
+    /// Sessions that ran in this workspace, newest first.
+    pub sessions: Vec<Session>,
+}
+
+method!(WorkspacesGet, "workspaces.get", WorkspaceIdParams, WorkspaceDetail);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspacesCreateParams {
+    pub project_id: Uuid,
+    /// Display label; defaults to "Workspace N".
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Revision to branch from; defaults to the project's `HEAD`.
+    #[serde(default)]
+    pub base_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceResult {
+    pub workspace: Workspace,
+}
+
+method!(WorkspacesCreate, "workspaces.create", WorkspacesCreateParams, WorkspaceResult);
+method!(WorkspacesGitStatus, "workspaces.git_status", WorkspaceIdParams, WorkspaceGitStatus);
+method!(WorkspacesVerify, "workspaces.verify", WorkspaceIdParams, WorkspaceResult);
+method!(WorkspacesArchive, "workspaces.archive", WorkspaceIdParams, WorkspaceResult);
+method!(WorkspacesRestore, "workspaces.restore", WorkspaceIdParams, WorkspaceResult);
+method!(WorkspacesComplete, "workspaces.complete", WorkspaceIdParams, WorkspaceResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceCleanupResult {
+    pub workspace: Workspace,
+    pub report: CleanupReport,
+}
+
+method!(WorkspacesCleanupCheck, "workspaces.cleanup_check", WorkspaceIdParams, WorkspaceCleanupResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspacesCleanupParams {
+    pub workspace_id: Uuid,
+    /// `report.confirmation` from the `workspaces.cleanup_check` the
+    /// operator reviewed. Cleanup is refused if the state changed since.
+    pub confirmation: String,
+}
+
+method!(WorkspacesCleanup, "workspaces.cleanup", WorkspacesCleanupParams, WorkspaceCleanupResult);
+
 // --- sessions ---------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionsStartParams {
-    pub project_id: Uuid,
+    /// The workspace the agent runs in (its cwd). Required: sessions never
+    /// run in the project checkout.
+    pub workspace_id: Uuid,
+    /// Optional cross-check: fails with `workspace_project_mismatch` when the
+    /// workspace belongs to another project.
+    #[serde(default)]
+    pub project_id: Option<Uuid>,
     /// Only `claude_code` is supported in this version.
     #[serde(default)]
     pub provider: Option<String>,
@@ -209,6 +291,8 @@ method!(SessionsStart, "sessions.start", SessionsStartParams, SessionResult);
 pub struct SessionsListParams {
     #[serde(default)]
     pub project_id: Option<Uuid>,
+    #[serde(default)]
+    pub workspace_id: Option<Uuid>,
     #[serde(default)]
     pub live_only: bool,
     #[serde(default)]

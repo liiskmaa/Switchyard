@@ -1,4 +1,4 @@
-//! Agent installations and project workspaces.
+//! Agent installations.
 
 use rusqlite::{Connection, OptionalExtension, params};
 use switchyard_agents::AgentProvider;
@@ -40,43 +40,14 @@ pub fn upsert_agent(
     Ok(id)
 }
 
-/// Returns the project's primary workspace (its registered checkout),
-/// creating it on first use.
-pub fn primary_workspace(
-    conn: &Connection,
-    project_id: Uuid,
-    path: &str,
-    now_ms: i64,
-) -> Result<Uuid, StorageError> {
-    let existing: Option<String> = conn
-        .query_row(
-            "SELECT id FROM workspaces WHERE project_id = ?1 AND kind = 'primary'",
-            [project_id.to_string()],
-            |r| r.get(0),
-        )
-        .optional()?;
-    if let Some(id) = existing {
-        return parse_uuid(&id, "workspaces.id");
-    }
-    let id = new_id();
-    conn.execute(
-        "INSERT INTO workspaces (id, project_id, kind, path, status, created_at, updated_at) \
-         VALUES (?1, ?2, 'primary', ?3, 'active', ?4, ?4)",
-        params![id.to_string(), project_id.to_string(), path, now_ms],
-    )
-    .map_err(|e| StorageError::from_unique(e, || format!("workspace path {path} is already in use")))?;
-    Ok(id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{insert_project, temp_storage};
+    use crate::test_support::temp_storage;
 
     #[test]
-    fn agents_and_workspaces_are_upserted() {
+    fn agents_are_upserted() {
         let (_dir, storage) = temp_storage();
-        let project = insert_project(&storage, "/repo/a");
         storage
             .with_conn(|c| {
                 let a = upsert_agent(c, AgentProvider::ClaudeCode, "Claude Code", "/bin/claude", "1.0", 1)?;
@@ -84,9 +55,6 @@ mod tests {
                 assert_eq!(a, b);
                 let v: String = c.query_row("SELECT cli_version FROM agents", [], |r| r.get(0))?;
                 assert_eq!(v, "1.1");
-                let w1 = primary_workspace(c, project, "/repo/a", 1)?;
-                let w2 = primary_workspace(c, project, "/repo/a", 2)?;
-                assert_eq!(w1, w2);
                 Ok(())
             })
             .unwrap();

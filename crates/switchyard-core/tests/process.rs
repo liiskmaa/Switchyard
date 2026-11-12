@@ -146,9 +146,9 @@ fn pid_alive(pid: u32) -> bool {
 async fn core_crash_leaves_no_orphan_agent_and_restart_reports_lost_session() {
     use switchyard_protocol::methods::{
         SessionIdParams, SessionsGet, SessionsResume, SessionsResumeParams, SessionsStart,
-        SessionsStartParams,
+        SessionsStartParams, WorkspaceIdParams, WorkspacesCreate, WorkspacesCreateParams, WorkspacesGet,
     };
-    use switchyard_protocol::model::SessionState;
+    use switchyard_protocol::model::{SessionState, WorkspaceStatus};
 
     let dir = data_dir();
     let data = dir.path().join("data");
@@ -174,9 +174,19 @@ async fn core_crash_leaves_no_orphan_agent_and_restart_reports_lost_session() {
         .await
         .unwrap()
         .project;
+    let workspace = client
+        .call::<WorkspacesCreate>(WorkspacesCreateParams {
+            project_id: project.id,
+            name: None,
+            base_ref: None,
+        })
+        .await
+        .unwrap()
+        .workspace;
     let session = client
         .call::<SessionsStart>(SessionsStartParams {
-            project_id: project.id,
+            workspace_id: workspace.id,
+            project_id: None,
             provider: None,
             prompt: None,
             model: None,
@@ -184,6 +194,7 @@ async fn core_crash_leaves_no_orphan_agent_and_restart_reports_lost_session() {
         .await
         .unwrap()
         .session;
+    std::fs::write(std::path::Path::new(&workspace.path).join("unsaved.txt"), "agent work").unwrap();
     let agent_pid = session.pid.unwrap();
     assert!(pid_alive(agent_pid));
 
@@ -212,6 +223,14 @@ async fn core_crash_leaves_no_orphan_agent_and_restart_reports_lost_session() {
     assert_eq!(after.state, SessionState::Failed);
     assert!(after.failure.as_deref().unwrap_or_default().starts_with("core_restarted"));
     assert!(!after.attached);
+    // The workspace and its uncommitted work survive the crash; it is no
+    // longer marked active, and nothing was deleted or restarted.
+    let ws = client.call::<WorkspacesGet>(WorkspaceIdParams { workspace_id: workspace.id }).await.unwrap();
+    assert_eq!(ws.workspace.status, WorkspaceStatus::Dirty);
+    assert_eq!(
+        std::fs::read_to_string(std::path::Path::new(&workspace.path).join("unsaved.txt")).unwrap(),
+        "agent work"
+    );
     // Recovery is explicit: resume starts a new process for the same native session.
     let resumed = client
         .call::<SessionsResume>(SessionsResumeParams { session_id: session.id, prompt: None })

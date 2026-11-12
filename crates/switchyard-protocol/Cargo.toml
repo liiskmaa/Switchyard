@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 switchyard-events.workspace = true
 switchyard-agents.workspace = true
+switchyard-workspaces.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

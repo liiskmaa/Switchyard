@@ -90,6 +90,18 @@ export function describeEvent(event: EventEnvelope): string {
       return `Process exited (${p["exit_code"] !== null && p["exit_code"] !== undefined ? `code ${String(p["exit_code"])}` : `signal ${String(p["exit_signal"] ?? "?")}`}) → ${str(p, "final_state") ?? ""}`;
     case "agent.failed":
       return `Agent failed: ${str(p, "detail") ?? str(p, "reason") ?? ""}`;
+    case "workspace.created":
+      return `Workspace “${str(p, "name") ?? "?"}” created on ${str(p, "branch") ?? "?"}`;
+    case "workspace.state_changed":
+      return `Workspace ${str(p, "from") ?? "?"} → ${str(p, "to") ?? "?"}${str(p, "reason") ? ` (${str(p, "reason")})` : ""}`;
+    case "workspace.cleanup_requested":
+      return p["allowed"] === true
+        ? "Workspace cleanup confirmed"
+        : `Workspace cleanup refused: ${Array.isArray(p["blockers"]) ? (p["blockers"] as string[]).join(", ") : ""}`;
+    case "workspace.removed":
+      return `Workspace removed from disk; branch ${str(p, "branch") ?? "?"} kept`;
+    case "workspace.cleanup_failed":
+      return `Workspace cleanup failed (${str(p, "reason") ?? "?"}); files preserved`;
     case "files.changed": {
       const changes = Array.isArray(p["changes"]) ? (p["changes"] as { path?: string; kind?: string }[]) : [];
       const head = changes

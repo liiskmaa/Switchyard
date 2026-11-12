@@ -32,6 +32,8 @@ pub struct CorePaths {
     pub database: PathBuf,
     pub lock_file: PathBuf,
     pub log_dir: PathBuf,
+    /// Core-owned Git worktrees: `<workspaces_dir>/<project-id>/<workspace-id>`.
+    pub workspaces_dir: PathBuf,
 }
 
 impl CorePaths {
@@ -46,6 +48,7 @@ impl CorePaths {
             database: data_dir.join("switchyard.db"),
             lock_file: data_dir.join("core.lock"),
             log_dir: data_dir.join("logs"),
+            workspaces_dir: data_dir.join("workspaces"),
             socket,
             data_dir,
         })

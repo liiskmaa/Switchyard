@@ -15,6 +15,7 @@ mod migrations;
 pub mod projects;
 pub mod sessions;
 pub mod stats;
+pub mod workspaces;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -30,6 +31,7 @@ pub use projects::ProjectRecord;
 pub use rusqlite::{Connection, Transaction};
 pub use sessions::{SessionChanges, SessionRecord};
 pub use stats::DatabaseStats;
+pub use workspaces::{WorkspaceChanges, WorkspaceRecord};
 
 #[derive(Clone)]
 pub struct Storage {

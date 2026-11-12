@@ -7,6 +7,7 @@ members = [
     "crates/switchyard-git",
     "crates/switchyard-client",
     "crates/switchyard-agents",
+    "crates/switchyard-workspaces",
     "crates/switchyard-core",
     "apps/desktop/src-tauri",
 ]
@@ -25,6 +26,7 @@ switchyard-storage = { path = "crates/switchyard-storage" }
 switchyard-git = { path = "crates/switchyard-git" }
 switchyard-client = { path = "crates/switchyard-client" }
 switchyard-agents = { path = "crates/switchyard-agents" }
+switchyard-workspaces = { path = "crates/switchyard-workspaces" }
 
 tokio = { version = "1.54", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }

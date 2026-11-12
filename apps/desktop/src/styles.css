@@ -398,3 +398,43 @@ button { font: inherit; color: inherit; }
 
 .agent-live { display: flex; align-items: center; gap: 10px; }
 .agent-live .btn { margin-left: auto; }
+
+/* Workspaces ---------------------------------------------------------------- */
+.notice-warn { background: var(--warn-soft); color: var(--warn); border: 1px solid rgb(215 164 60 / 0.25); }
+.ws-table { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; }
+.ws-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.3fr) minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 0.7fr) minmax(0, 0.8fr);
+  gap: 10px;
+  align-items: center;
+  padding: 7px 10px;
+  border: 0;
+  background: none;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  min-width: 0;
+}
+.ws-row + .ws-row { border-top: 1px solid var(--border); }
+.ws-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ws-row:hover { background: var(--panel-raised); }
+.ws-row.active { background: var(--panel-raised); box-shadow: inset 2px 0 0 var(--accent); }
+.ws-head { cursor: default; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.ws-head:hover { background: none; }
+.ws-name { font-weight: 600; }
+.ws-branch { font-size: 12px; }
+.ws-detail { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--border); padding-top: 12px; }
+.ws-detail h3 { margin: 0; font-size: 14px; }
+.ws-git .git-summary { align-items: center; }
+.ws-git .git-summary .btn { margin-left: auto; }
+.ws-start { display: flex; flex-direction: column; gap: 6px; }
+.ws-actions { flex-wrap: wrap; align-items: center; }
+.ws-create { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; }
+.ws-cleanup { display: flex; flex-direction: column; gap: 8px; border: 1px solid rgb(239 107 98 / 0.35); border-radius: var(--radius-sm); padding: 12px; }
+.ws-cleanup h4 { margin: 0; font-size: 13px; }
+.findings { display: flex; flex-direction: column; gap: 4px; margin: 4px 0 0; padding-left: 16px; }
+span.findings { padding-left: 0; }
+.finding { display: block; }
+.check { display: flex; align-items: baseline; gap: 6px; cursor: pointer; }
+.ws-confirm { display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; }

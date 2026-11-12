@@ -14,13 +14,18 @@ Each significant decision is recorded as an ADR in [`docs/decisions/`](../decisi
 | [0009](../decisions/0009-durable-vs-live-output.md) | Durable journal for agent activity; a lossy, bounded live channel for token streams, with an in-progress snapshot for reconnecting clients. | Fragments streamed while disconnected are not replayed. |
 | [0010](../decisions/0010-agent-process-ownership.md) | Agents are children of Core only. Graceful shutdown stops them. After a crash the process is not re-adopted: the session is marked `failed` and must be resumed explicitly. | No hot recovery after a Core crash. |
 | [0011](../decisions/0011-agent-workspace-boundary.md) | `--restricted`, `--strict-mcp-config`, an explicit tool list, and an `ask` rule for every Bash command. | No OS-level sandbox is claimed. |
+| [0012](../decisions/0012-project-workspace-session.md) | Project (registered repo) → workspaces (Core-owned worktrees) → sessions; one live session per workspace, many per project; `sessions.start` requires a workspace; M2 checkout records become `legacy_checkout`. | One documented incompatible change inside protocol v1. |
+| [0013](../decisions/0013-worktree-location-and-branches.md) | Worktrees in `<data dir>/workspaces/<project>/<workspace>`, branch `switchyard/<workspace-id>`, identity verified before every use, branches never reused. | Moving the repository breaks the links until it is moved back or repaired. |
+| [0014](../decisions/0014-workspace-recovery-and-cleanup.md) | Nothing is deleted automatically; cleanup is archive → checked report → confirmation bound to the inspected state → `git worktree remove` without force; branches kept; reconciliation only changes statuses. | Disk use grows until the operator cleans up. |
+| [0015](../decisions/0015-protocol-version-2.md) | Protocol 2 with minimum 2 on both sides; old clients and old Cores are refused during `initialize` with actionable, structured errors. | A running old Core must be stopped during upgrades. |
 | [0007](../decisions/0007-toolchain-and-versions.md) | Tauri 2.12 (not 3-alpha), Rust 1.99.1 pinned, React 19.3, Vite 8, TS 5.9. | Conservative TypeScript choice. |
 
 ## Decisions deliberately deferred
 
 - **How Core is started at login** (LaunchAgent vs. on-demand from the desktop). It is currently on
   demand only.
-- **Workspace isolation strategy** (Git worktrees per agent vs. full clones). The schema supports
-  both (`workspaces.kind`). Until it is decided, each project has one attached session.
+- **Integration of workspace branches** back into the project (merge, rebase, review). Workspaces
+  have a reserved `integrating` status; nothing merges automatically.
+- **OS-level sandboxing** of agent commands. Worktrees isolate source trees only.
 - **Rule-based approval policy** (for example, "always allow `cargo test` in project X"). Today every
   request needs an operator decision.

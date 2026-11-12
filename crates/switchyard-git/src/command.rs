@@ -12,15 +12,21 @@ pub struct GitConfig {
     pub binary: PathBuf,
     /// Upper bound for any single git invocation.
     pub timeout: Duration,
+    /// Upper bound for invocations that check out a tree (`worktree add`).
+    pub checkout_timeout: Duration,
 }
 
 impl Default for GitConfig {
     fn default() -> Self {
-        Self { binary: PathBuf::from("git"), timeout: Duration::from_secs(15) }
+        Self {
+            binary: PathBuf::from("git"),
+            timeout: Duration::from_secs(15),
+            checkout_timeout: Duration::from_secs(300),
+        }
     }
 }
 
-/// Handle for running read-only git commands.
+/// Handle for running git commands (read-only, except worktree add/remove).
 #[derive(Debug, Clone, Default)]
 pub struct Git {
     config: GitConfig,
@@ -61,6 +67,22 @@ impl Git {
         args: &[&str],
         input: Option<Vec<u8>>,
     ) -> Result<Output, GitError> {
+        self.exec(dir, args, input, self.config.timeout).await
+    }
+
+    /// Like [`Self::run`] with a longer bound, for operations that check out
+    /// files (worktree creation scales with repository size).
+    pub(crate) async fn run_slow(&self, dir: &Path, args: &[&str]) -> Result<Output, GitError> {
+        self.exec(dir, args, None, self.config.checkout_timeout.max(self.config.timeout)).await
+    }
+
+    async fn exec(
+        &self,
+        dir: &Path,
+        args: &[&str],
+        input: Option<Vec<u8>>,
+        timeout: Duration,
+    ) -> Result<Output, GitError> {
         let mut cmd = Command::new(&self.config.binary);
         cmd.arg("--no-optional-locks")
             .arg("-C")
@@ -90,12 +112,9 @@ impl Git {
                 }
             });
         }
-        let output = tokio::time::timeout(self.config.timeout, child.wait_with_output())
+        let output = tokio::time::timeout(timeout, child.wait_with_output())
             .await
-            .map_err(|_| GitError::Timeout {
-                args: joined.clone(),
-                timeout_ms: self.config.timeout.as_millis(),
-            })?
+            .map_err(|_| GitError::Timeout { args: joined.clone(), timeout_ms: timeout.as_millis() })?
             .map_err(|source| GitError::Io { path: dir.to_path_buf(), source })?;
         tracing::debug!(args = %joined, dir = %dir.display(), status = %output.status, "git");
         Ok(Output {

@@ -95,9 +95,20 @@ async fn real_claude_session_end_to_end() {
         .await
         .unwrap()
         .project;
+    let workspace = client
+        .call::<WorkspacesCreate>(WorkspacesCreateParams {
+            project_id: project.id,
+            name: None,
+            base_ref: None,
+        })
+        .await
+        .unwrap()
+        .workspace;
+    let ws = std::path::PathBuf::from(&workspace.path);
     let session = client
         .call::<SessionsStart>(SessionsStartParams {
-            project_id: project.id,
+            workspace_id: workspace.id,
+            project_id: Some(project.id),
             provider: None,
             prompt: None,
             model: Some(model),
@@ -105,6 +116,7 @@ async fn real_claude_session_end_to_end() {
         .await
         .unwrap()
         .session;
+    assert_eq!(session.cwd, workspace.path);
     println!("session {} native {:?} pid {:?}", session.id, session.native_session_id, session.pid);
     client.call::<LiveSubscribe>(LiveSubscribeParams { session_id: Some(session.id) }).await.unwrap();
 
@@ -120,7 +132,8 @@ async fn real_claude_session_end_to_end() {
     let a = approve_or_deny_next(&client, session.id, ApprovalDecision::Approve).await;
     assert_eq!(a.status, ApprovalStatus::Approved);
     let evs = wait_turns(&client, session.id, 1).await;
-    assert_eq!(std::fs::read_to_string(repo.join("switchyard.txt")).unwrap().trim(), "approved");
+    assert_eq!(std::fs::read_to_string(ws.join("switchyard.txt")).unwrap().trim(), "approved");
+    assert!(!repo.join("switchyard.txt").exists(), "the project checkout is untouched");
     let ready = evs.iter().find(|e| e.event_type == "agent.ready").unwrap();
     assert_eq!(ready.payload["native_session_id"].as_str(), session.native_session_id.as_deref());
     let mut live_chunks = 0;
@@ -148,7 +161,7 @@ async fn real_claude_session_end_to_end() {
     let d = approve_or_deny_next(&client, session.id, ApprovalDecision::Deny).await;
     assert_eq!((d.tool_name.as_str(), d.status), ("Bash", ApprovalStatus::Denied));
     let evs = wait_turns(&client, session.id, 2).await;
-    assert!(!repo.join("denied.txt").exists());
+    assert!(!ws.join("denied.txt").exists() && !repo.join("denied.txt").exists());
     assert!(evs.iter().any(|e| e.event_type == "agent.tool_failed" && e.payload["rejected"] == true));
 
     // 3. Interrupt a long answer.
@@ -187,4 +200,68 @@ async fn real_claude_session_end_to_end() {
     println!("resumed answer: {}", answer.payload["text"]);
     assert!(answer.payload["text"].as_str().unwrap().contains("switchyard.txt"));
     client.call::<SessionsStop>(SessionIdParams { session_id: session.id }).await.unwrap();
+}
+
+/// Two real Claude Code sessions on one project at the same time, each in
+/// its own workspace.
+#[tokio::test]
+#[ignore = "uses the real Claude Code CLI and makes model requests; set SWITCHYARD_REAL_CLAUDE=1"]
+async fn real_claude_two_workspaces_concurrently() {
+    if std::env::var("SWITCHYARD_REAL_CLAUDE").as_deref() != Ok("1") {
+        eprintln!("skipped: set SWITCHYARD_REAL_CLAUDE=1");
+        return;
+    }
+    let model = std::env::var("SWITCHYARD_REAL_CLAUDE_MODEL").unwrap_or_else(|_| "haiku".into());
+    let core = TestCore::start_with(|c| c.claude_executable = None).await;
+    let (client, _rx) = core.connect().await;
+    let repo = git_repo(core.dir.path(), "real-claude-parallel");
+    let project = client
+        .call::<ProjectsAdd>(ProjectsAddParams { path: repo.display().to_string() })
+        .await
+        .unwrap()
+        .project;
+    let mut runs = Vec::new();
+    for name in ["alpha", "beta"] {
+        let w = client
+            .call::<WorkspacesCreate>(WorkspacesCreateParams {
+                project_id: project.id,
+                name: Some(name.into()),
+                base_ref: None,
+            })
+            .await
+            .unwrap()
+            .workspace;
+        let s = client
+            .call::<SessionsStart>(SessionsStartParams {
+                workspace_id: w.id,
+                project_id: None,
+                provider: None,
+                prompt: Some(format!(
+                    "Create a file named {name}.txt containing exactly the word {name}. Use the Write tool. \
+                     Then reply DONE."
+                )),
+                model: Some(model.clone()),
+            })
+            .await
+            .unwrap()
+            .session;
+        runs.push((name, w, s));
+    }
+    for (_, _, s) in &runs {
+        let a = approve_or_deny_next(&client, s.id, ApprovalDecision::Approve).await;
+        assert_eq!(a.session_id, s.id);
+    }
+    for (name, w, s) in &runs {
+        let evs = wait_turns(&client, s.id, 1).await;
+        let dir = std::path::PathBuf::from(&w.path);
+        assert_eq!(std::fs::read_to_string(dir.join(format!("{name}.txt"))).unwrap().trim(), *name);
+        assert!(evs.iter().all(|e| e.context.workspace_id == Some(w.id)), "events attributed to {name}");
+        println!("{name}: session {} in {}", s.id, w.path);
+    }
+    let (a, b) = (std::path::PathBuf::from(&runs[0].1.path), std::path::PathBuf::from(&runs[1].1.path));
+    assert!(!a.join("beta.txt").exists() && !b.join("alpha.txt").exists());
+    assert!(!repo.join("alpha.txt").exists() && !repo.join("beta.txt").exists());
+    for (_, _, s) in &runs {
+        client.call::<SessionsStop>(SessionIdParams { session_id: s.id }).await.unwrap();
+    }
 }

@@ -128,6 +128,7 @@ export interface Session {
   id: Uuid;
   project_id: Uuid;
   workspace_id: Uuid | null;
+  workspace_name?: string | null;
   agent_id: Uuid;
   provider: string;
   native_session_id: string | null;
@@ -154,6 +155,8 @@ export interface Approval {
   id: Uuid;
   project_id: Uuid;
   session_id: Uuid;
+  workspace_id?: Uuid | null;
+  workspace_name?: string | null;
   agent_id: Uuid | null;
   tool_name: string;
   tool_use_id: string | null;
@@ -181,6 +184,82 @@ export interface LiveOutput {
 
 export type Delivery = "started_turn" | "queued_for_next_turn";
 
+export type WorkspaceKind = "legacy_checkout" | "worktree";
+
+export type WorkspaceStatus =
+  | "provisioning"
+  | "ready"
+  | "active"
+  | "dirty"
+  | "integrating"
+  | "completed"
+  | "failed"
+  | "cleanup_pending"
+  | "archived"
+  | "removed";
+
+export interface Workspace {
+  id: Uuid;
+  project_id: Uuid;
+  kind: WorkspaceKind;
+  name: string;
+  /** Absolute working directory; the agent's cwd. */
+  path: string;
+  branch: string | null;
+  base_ref: string | null;
+  base_commit: string | null;
+  status: WorkspaceStatus;
+  status_reason: string | null;
+  dirty: boolean | null;
+  git_checked_at_ms: number | null;
+  created_at_ms: number;
+  updated_at_ms: number;
+  last_activity_at_ms: number;
+  archived_at_ms: number | null;
+  active_session_id: Uuid | null;
+  path_exists: boolean;
+}
+
+export interface WorkspaceGitStatus {
+  workspace_id: Uuid;
+  branch: string | null;
+  expected_branch: string | null;
+  on_expected_branch: boolean;
+  head_oid: string | null;
+  detached: boolean;
+  base_commit: string | null;
+  commits_since_base: number | null;
+  staged: number;
+  unstaged: number;
+  untracked: number;
+  conflicted: number;
+  clean: boolean;
+  checked_at_ms: number;
+}
+
+export interface CleanupFinding {
+  code: string;
+  message: string;
+}
+
+export interface CleanupReport {
+  allowed: boolean;
+  blockers: CleanupFinding[];
+  warnings: CleanupFinding[];
+  will_remove_directory: boolean;
+  branch: string;
+  branch_kept: boolean;
+  ignored_files: string[];
+  ignored_total: number;
+  unmerged_commits: number | null;
+  merged_into: string | null;
+  /** Everything under the worktree that removal would delete (full scan). */
+  entries_total: number | null;
+  bytes_total: number | null;
+  tree_fingerprint: string | null;
+  confirmation: string;
+}
+
 type NoParams = Record<string, never>;
 
 /** Methods the desktop bridge allows the UI to call. */
@@ -196,12 +275,34 @@ export interface CoreMethods {
     result: { events: EventEnvelope[] };
   };
   "agents.list": { params: { refresh?: boolean }; result: { agents: AgentAvailability[] } };
+  "workspaces.list": {
+    params: { project_id: Uuid; include_archived?: boolean };
+    result: { workspaces: Workspace[] };
+  };
+  "workspaces.get": { params: { workspace_id: Uuid }; result: { workspace: Workspace; sessions: Session[] } };
+  "workspaces.create": {
+    params: { project_id: Uuid; name?: string; base_ref?: string };
+    result: { workspace: Workspace };
+  };
+  "workspaces.git_status": { params: { workspace_id: Uuid }; result: WorkspaceGitStatus };
+  "workspaces.verify": { params: { workspace_id: Uuid }; result: { workspace: Workspace } };
+  "workspaces.archive": { params: { workspace_id: Uuid }; result: { workspace: Workspace } };
+  "workspaces.restore": { params: { workspace_id: Uuid }; result: { workspace: Workspace } };
+  "workspaces.complete": { params: { workspace_id: Uuid }; result: { workspace: Workspace } };
+  "workspaces.cleanup_check": {
+    params: { workspace_id: Uuid };
+    result: { workspace: Workspace; report: CleanupReport };
+  };
+  "workspaces.cleanup": {
+    params: { workspace_id: Uuid; confirmation: string };
+    result: { workspace: Workspace; report: CleanupReport };
+  };
   "sessions.start": {
-    params: { project_id: Uuid; prompt?: string; model?: string };
+    params: { workspace_id: Uuid; project_id?: Uuid; prompt?: string; model?: string };
     result: { session: Session };
   };
   "sessions.list": {
-    params: { project_id?: Uuid; live_only?: boolean; limit?: number };
+    params: { project_id?: Uuid; workspace_id?: Uuid; live_only?: boolean; limit?: number };
     result: { sessions: Session[] };
   };
   "sessions.get": { params: { session_id: Uuid }; result: { session: Session; live_text: string; live_seq: number } };

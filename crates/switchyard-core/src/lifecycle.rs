@@ -1,7 +1,7 @@
 //! Startup and shutdown sequencing.
 //!
 //! Startup: data dir → instance lock → database → event bus → `core.started`
-//! → socket. Shutdown: stop accepting → `core.stopping` → notify and drain
+//! → session and workspace reconciliation → socket. Shutdown: stop accepting → `core.stopping` → notify and drain
 //! clients → remove socket → release lock.
 
 use std::fs::{File, OpenOptions};
@@ -91,12 +91,30 @@ pub async fn start(config: CoreConfig) -> Result<RunningCore, CoreError> {
     .await?;
 
     let git = Git::new(config.git.clone());
+    create_private_dir(&paths.workspaces_dir)?;
+    let workspaces = crate::workspaces::WorkspaceService::new(
+        storage.clone(),
+        bus.clone(),
+        git.clone(),
+        &paths.workspaces_dir,
+        config.cleanup_test_pause,
+    )
+    .map_err(|source| CoreError::DataDir { path: paths.workspaces_dir.clone(), source })?;
     let config = Arc::new(config);
-    let agents =
-        crate::agents::AgentService::new(storage.clone(), bus.clone(), git.clone(), Arc::clone(&config));
-    match agents.reconcile_on_startup().await {
-        Ok(_) => {}
-        Err(err) => tracing::error!(?err, "cannot reconcile agent sessions from a previous run"),
+    let agents = crate::agents::AgentService::new(
+        storage.clone(),
+        bus.clone(),
+        git.clone(),
+        workspaces.clone(),
+        Arc::clone(&config),
+    );
+    // Sessions first (none survives a Core restart), then workspaces, which
+    // may still be marked active by those sessions.
+    if let Err(err) = agents.reconcile_on_startup().await {
+        tracing::error!(?err, "cannot reconcile agent sessions from a previous run");
+    }
+    if let Err(err) = workspaces.reconcile_on_startup().await {
+        tracing::error!(?err, "cannot reconcile workspaces from a previous run");
     }
 
     let paths = &config.paths;
@@ -111,6 +129,7 @@ pub async fn start(config: CoreConfig) -> Result<RunningCore, CoreError> {
         started: Instant::now(),
         git,
         agents,
+        workspaces,
         config,
         storage,
         bus,

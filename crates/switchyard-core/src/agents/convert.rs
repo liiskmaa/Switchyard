@@ -4,11 +4,17 @@ use switchyard_agents::claude;
 use switchyard_protocol::model::{AgentAvailability, Approval, Session};
 use switchyard_storage::{ApprovalRecord, SessionRecord};
 
-pub(super) fn session(r: SessionRecord, attached: bool, pending_approvals: u32) -> Session {
+pub(super) fn session(
+    r: SessionRecord,
+    attached: bool,
+    pending_approvals: u32,
+    workspace_name: Option<String>,
+) -> Session {
     Session {
         id: r.id,
         project_id: r.project_id,
         workspace_id: r.workspace_id,
+        workspace_name,
         agent_id: r.agent_id,
         provider: r.provider.as_str().into(),
         native_session_id: r.native_session_id,
@@ -30,11 +36,14 @@ pub(super) fn session(r: SessionRecord, attached: bool, pending_approvals: u32) 
     }
 }
 
-pub(super) fn approval(r: ApprovalRecord) -> Approval {
+pub(super) fn approval(r: ApprovalRecord, workspace: Option<(uuid::Uuid, String)>) -> Approval {
+    let (workspace_id, workspace_name) = workspace.map_or((None, None), |(id, name)| (Some(id), Some(name)));
     Approval {
         id: r.id,
         project_id: r.project_id,
         session_id: r.session_id,
+        workspace_id,
+        workspace_name,
         agent_id: r.agent_id,
         tool_name: r.tool_name,
         tool_use_id: r.tool_use_id,

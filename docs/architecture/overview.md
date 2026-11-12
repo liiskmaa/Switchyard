@@ -4,8 +4,8 @@ Switchyard is a local-first orchestration platform for native AI coding agents (
 Codex). It is not an agent itself. It supervises agent processes, coordinates their work, persists
 what happens, and gives a human operator control.
 
-This document describes what exists **today** (milestone 1: the foundation) and the boundaries that
-later milestones build on.
+This document describes what exists **today** (milestones 1–3: the foundation, native Claude Code
+sessions, and workspace isolation) and the boundaries that later milestones build on.
 
 ## Processes
 
@@ -40,18 +40,19 @@ later milestones build on.
 | `switchyard-events` | Event envelope and typed `DomainEvent` catalogue, the `EventJournal` persistence trait, and the in-process `EventBus` (bounded broadcast, persist-then-publish, lossless catch-up). | — |
 | `switchyard-protocol` | Wire frames, typed method definitions, error codes, bounded line codec, and shared path resolution (data dir and socket). | events |
 | `switchyard-storage` | SQLite connection (WAL, foreign keys, `synchronous=FULL`), embedded migrations, project repository, event journal implementation, health stats. | events |
-| `switchyard-git` | Read-only Git inspection through the `git` CLI: repository-root validation and `status --porcelain=v2` parsing. | — |
+| `switchyard-git` | Git through the `git` CLI: repository-root validation, `status --porcelain=v2` parsing, and worktree add/list/identity/remove for Core-owned workspaces (never forced, never pruning). | — |
 | `switchyard-client` | Async protocol client: handshake, request correlation, notifications, disconnect detection. Used by the desktop and the tests. | protocol |
 | `switchyard-agents` | Vendor-neutral agent model; process supervision (no shell, controlled environment, bounded lines, SIGTERM/SIGKILL escalation); Claude Code adapter. | — |
-| `switchyard-core` | The executable: config, lifecycle (lock, socket, signals), connection server, request handlers, agent sessions (`src/agents`), and the `switchyard-fake-claude` test binary. | all of the above |
+| `switchyard-workspaces` | Workspace domain rules without I/O: lifecycle and transitions, branch and path naming, cleanup safety evaluation. | — |
+| `switchyard-core` | The executable: config, lifecycle (lock, socket, signals), connection server, request handlers, workspaces (`src/workspaces`), agent sessions (`src/agents`), and the `switchyard-fake-claude` test binary. | all of the above |
 | `apps/desktop/src-tauri` | Desktop shell: Core bridge (connect, reconnect, replay, forward events), launcher, Tauri commands. | client, protocol |
 
 Dependency rule: **transport, persistence and domain stay separate.** `events` does not know about
 SQLite, `storage` does not know about sockets, and `protocol` does not know about handlers. Only
 `core` wires them together.
 
-`switchyard-agents`, `switchyard-workspaces` and `switchyard-permissions` from the initial proposal
-are not created yet. See [ADR 0006](../decisions/0006-crate-layout.md).
+`switchyard-permissions` from the initial proposal is not created yet. See
+[ADR 0006](../decisions/0006-crate-layout.md).
 
 ## Request path (example: `projects.add`)
 
@@ -88,7 +89,7 @@ are not created yet. See [ADR 0006](../decisions/0006-crate-layout.md).
 - Migrations live in `/migrations`, are embedded at compile time, and are tracked with
   `PRAGMA user_version`. Core refuses a database written by a newer schema.
 - The schema covers projects, workspaces, agents, sessions, tasks, messages, findings, approvals,
-  permissions, decisions and events. Only `projects` and `events` are written in this milestone.
+  permissions, decisions and events. See [database.md](database.md) for what is written today.
 - The `events` table is append-only (`UPDATE` and `DELETE` are blocked by triggers). Its context
   columns have no foreign keys: the journal outlives the entities it mentions.
 - Core holds a single connection behind a mutex, and async callers run on Tokio's blocking pool.
@@ -131,9 +132,10 @@ the OS. Both cases are covered by tests.
 React 19 with strict TypeScript and no router or state library. A small external store
 (`useSyncExternalStore`) holds connection state and the live event feed. `useCoreQuery` fetches data
 when Core (re)connects and refreshes on relevant events. Sections: Dashboard (live health, projects,
-recent events), Projects (register, inspect Git status, remove), Activity (journal), and Agents and
-Approvals, which are explicit not-yet-available states with no simulated data. Settings shows real
-runtime paths and versions.
+recent events, active sessions), Projects (register, project checkout Git status, workspaces:
+create, start a session, Git status, archive, restore, confirmed cleanup), Agents (session view with
+workspace, branch and path, live output, composer), Approvals, Activity (journal) and Settings (real
+runtime paths and versions). No simulated data anywhere.
 
 ## Agent sessions (milestone 2)
 
@@ -163,7 +165,25 @@ switchyard-agents::claude::spawn_session ── driver task owns child stdin/std
   stream (intent), and repository state from `projects.git_status`. The UI shows all three
   separately.
 
+## Workspaces (milestone 3)
+
+```text
+Project (registered repo, never an agent cwd)
+  └── Workspace  <data>/workspaces/<project>/<workspace>   branch switchyard/<workspace>
+        └── Session  (at most one live per workspace; cwd = workspace path)
+```
+
+- `WorkspaceService` (`core/src/workspaces`) creates worktrees (`provisioning → ready`), validates
+  them before every session start or resume, settles them after sessions (`active → ready/dirty`),
+  and handles archive, restore, verify, and explicit, confirmed cleanup. Startup reconciliation
+  runs after session reconciliation and never deletes anything.
+- Git mutations are serialized per repository. Status changes and their events commit together.
+- File watchers run per workspace; `files.changed` carries project, workspace and session.
+- Details: [workspaces.md](workspaces.md), ADRs 0012–0014. Worktrees isolate source trees, **not
+  processes**.
+
 ## What is intentionally absent
 
-There are no Codex adapter, Git worktrees or multi-agent workspaces, rule-based permission policy
-(the `permissions` table), task, message or finding workflows, or automated Git writes yet.
+There is no Codex adapter, no integration of workspace branches (merge, rebase, cherry-pick), no
+rule-based permission policy (the `permissions` table), no task, message or finding workflow, no
+automatic branch deletion or workspace pruning, and no OS-level sandbox yet.

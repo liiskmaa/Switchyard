@@ -16,9 +16,12 @@ use switchyard_protocol::methods::{
     ApprovalsListParams, Delivery, EventsList, EventsListParams, LiveSubscribe, LiveSubscribeParams,
     ProjectIdParams, ProjectsAdd, ProjectsAddParams, ProjectsRemove, SessionIdParams, SessionsGet,
     SessionsInterrupt, SessionsList, SessionsListParams, SessionsResume, SessionsResumeParams, SessionsSend,
-    SessionsSendParams, SessionsStart, SessionsStartParams, SessionsStop,
+    SessionsSendParams, SessionsStart, SessionsStartParams, SessionsStop, WorkspacesCreate,
+    WorkspacesCreateParams,
 };
-use switchyard_protocol::model::{Approval, ApprovalStatus, DecisionSource, LiveKind, Session, SessionState};
+use switchyard_protocol::model::{
+    Approval, ApprovalStatus, DecisionSource, LiveKind, Session, SessionState, Workspace,
+};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -30,6 +33,9 @@ struct Fixture {
     rx: mpsc::Receiver<Notification>,
     repo: PathBuf,
     project_id: Uuid,
+    /// The workspace sessions run in, and its directory (the agent's cwd).
+    workspace_id: Uuid,
+    ws: PathBuf,
 }
 
 async fn fixture_with(configure: impl FnOnce(&mut switchyard_core::CoreConfig)) -> Fixture {
@@ -41,7 +47,21 @@ async fn fixture_with(configure: impl FnOnce(&mut switchyard_core::CoreConfig)) 
         .await
         .unwrap()
         .project;
-    Fixture { core, client, rx, repo, project_id: project.id }
+    let workspace = create_workspace(&client, project.id).await;
+    let ws = PathBuf::from(&workspace.path);
+    Fixture { core, client, rx, repo, project_id: project.id, workspace_id: workspace.id, ws }
+}
+
+async fn create_workspace(client: &CoreClient, project_id: Uuid) -> Workspace {
+    client
+        .call::<WorkspacesCreate>(WorkspacesCreateParams { project_id, name: None, base_ref: None })
+        .await
+        .unwrap()
+        .workspace
+}
+
+fn start_params(workspace_id: Uuid) -> SessionsStartParams {
+    SessionsStartParams { workspace_id, project_id: None, provider: None, prompt: None, model: None }
 }
 
 async fn fixture() -> Fixture {
@@ -56,16 +76,7 @@ fn code(err: ClientError) -> ErrorCode {
 }
 
 async fn start(f: &Fixture) -> Session {
-    f.client
-        .call::<SessionsStart>(SessionsStartParams {
-            project_id: f.project_id,
-            provider: None,
-            prompt: None,
-            model: None,
-        })
-        .await
-        .unwrap()
-        .session
+    f.client.call::<SessionsStart>(start_params(f.workspace_id)).await.unwrap().session
 }
 
 async fn send(f: &Fixture, session: Uuid, text: &str) -> Result<Delivery, ClientError> {
@@ -203,16 +214,7 @@ async fn missing_cli_is_reported_and_start_refused() {
     let f = fixture_with(|c| c.claude_executable = Some(PathBuf::from("/nonexistent/claude"))).await;
     let agents = f.client.call::<AgentsList>(AgentsListParams { refresh: true }).await.unwrap().agents;
     assert!(agents[0].error.is_some());
-    let err = f
-        .client
-        .call::<SessionsStart>(SessionsStartParams {
-            project_id: f.project_id,
-            provider: None,
-            prompt: None,
-            model: None,
-        })
-        .await
-        .unwrap_err();
+    let err = f.client.call::<SessionsStart>(start_params(f.workspace_id)).await.unwrap_err();
     assert_eq!(code(err), ErrorCode::AgentUnavailable);
 }
 
@@ -222,7 +224,9 @@ async fn session_streams_live_output_and_journals_complete_messages_only() {
     let s = start(&f).await;
     assert_eq!(s.state, SessionState::Idle);
     assert!(s.attached && s.pid.is_some());
-    assert_eq!(s.cwd, f.repo.display().to_string());
+    assert_eq!(s.cwd, f.ws.display().to_string());
+    assert_eq!(s.workspace_id, Some(f.workspace_id));
+    assert_ne!(f.ws, f.repo, "sessions never run in the project checkout");
     let native = s.native_session_id.clone().unwrap();
     assert_ne!(native, s.id.to_string(), "Switchyard and native ids are distinct, mapped identities");
 
@@ -282,7 +286,7 @@ async fn approved_permission_runs_the_tool_and_file_change_is_observed() {
     assert_eq!(a.input["content"], "written by fake claude\n");
     assert!(a.expires_at_ms > a.requested_at_ms);
     assert_eq!(session(&f, s.id).await.state, SessionState::WaitingForApproval);
-    assert!(!f.repo.join("approved.txt").exists(), "nothing runs before the decision");
+    assert!(!f.ws.join("approved.txt").exists(), "nothing runs before the decision");
 
     let decided = decide(&f, a.id, ApprovalDecision::Approve, None).await.unwrap();
     assert_eq!(decided.status, ApprovalStatus::Approved);
@@ -295,7 +299,7 @@ async fn approved_permission_runs_the_tool_and_file_change_is_observed() {
         turns_done(e) == 1 && !of_type(e, "files.changed").is_empty()
     })
     .await;
-    assert!(f.repo.join("approved.txt").is_file());
+    assert!(f.ws.join("approved.txt").is_file());
     let tool = of_type(&evs, "agent.tool_completed")[0];
     let started = of_type(&evs, "agent.tool_started")[0];
     assert_eq!(tool.context.causation_id, Some(started.id));
@@ -318,7 +322,7 @@ async fn denied_permission_reaches_the_agent_and_nothing_is_written() {
     let a = wait_pending(&f, s.id, 1).await.remove(0);
     decide(&f, a.id, ApprovalDecision::Deny, Some("not in this repo")).await.unwrap();
     let evs = wait_events(&f, s.id, "turn", |e| turns_done(e) == 1).await;
-    assert!(!f.repo.join("denied.txt").exists());
+    assert!(!f.ws.join("denied.txt").exists());
     let failed = of_type(&evs, "agent.tool_failed")[0];
     assert_eq!(failed.payload["rejected"], true);
     assert_eq!(failed.payload["output"], "not in this repo", "the agent received the operator's message");
@@ -335,7 +339,7 @@ async fn concurrent_requests_keep_waiting_until_all_are_decided() {
     assert_eq!(session(&f, s.id).await.state, SessionState::WaitingForApproval);
     decide(&f, approvals[1].id, ApprovalDecision::Deny, None).await.unwrap();
     wait_events(&f, s.id, "turn", |e| turns_done(e) == 1).await;
-    let written = ["a.txt", "b.txt"].iter().filter(|n| f.repo.join(n).exists()).count();
+    let written = ["a.txt", "b.txt"].iter().filter(|n| f.ws.join(n).exists()).count();
     assert_eq!(written, 1);
 }
 
@@ -378,7 +382,7 @@ async fn interrupt_while_waiting_for_approval_cancels_the_request() {
         .approvals;
     assert_eq!(all[0].status, ApprovalStatus::Cancelled);
     assert_eq!(all[0].decision_source, Some(DecisionSource::AgentCancelled));
-    assert!(!f.repo.join("never.txt").exists());
+    assert!(!f.ws.join("never.txt").exists());
     let late = decide(&f, a.id, ApprovalDecision::Approve, None).await.unwrap_err();
     assert_eq!(code(late), ErrorCode::Conflict, "cancelled requests cannot be approved");
 }
@@ -429,17 +433,8 @@ async fn crash_is_reported_with_exit_code_and_stderr() {
 #[tokio::test]
 async fn startup_failure_is_reported_accurately() {
     let f = fixture().await;
-    std::fs::write(f.repo.join(".fake-claude-fail"), "").unwrap();
-    let err = f
-        .client
-        .call::<SessionsStart>(SessionsStartParams {
-            project_id: f.project_id,
-            provider: None,
-            prompt: None,
-            model: None,
-        })
-        .await
-        .unwrap_err();
+    std::fs::write(f.ws.join(".fake-claude-fail"), "").unwrap();
+    let err = f.client.call::<SessionsStart>(start_params(f.workspace_id)).await.unwrap_err();
     let ClientError::Remote(e) = err else { panic!("expected remote error") };
     assert_eq!(e.code, ErrorCode::AgentFailed);
     let id: Uuid = serde_json::from_value(e.data.unwrap()["session_id"].clone()).unwrap();
@@ -459,29 +454,22 @@ async fn malformed_output_is_tolerated_and_reported() {
 }
 
 #[tokio::test]
-async fn one_live_session_per_project_and_project_removal_is_guarded() {
+async fn one_live_session_per_workspace_and_project_removal_is_guarded() {
     let f = fixture().await;
     let s = start(&f).await;
-    let dup = f
-        .client
-        .call::<SessionsStart>(SessionsStartParams {
-            project_id: f.project_id,
-            provider: None,
-            prompt: None,
-            model: None,
-        })
-        .await
-        .unwrap_err();
-    assert_eq!(code(dup), ErrorCode::Conflict);
+    let dup = f.client.call::<SessionsStart>(start_params(f.workspace_id)).await.unwrap_err();
+    assert_eq!(code(dup), ErrorCode::WorkspaceOccupied);
+    // The same project can run another session in another workspace.
+    let other_ws = create_workspace(&f.client, f.project_id).await;
+    let second = f.client.call::<SessionsStart>(start_params(other_ws.id)).await.unwrap().session;
+    assert_eq!(second.workspace_id, Some(other_ws.id));
     let rm = f.client.call::<ProjectsRemove>(ProjectIdParams { project_id: f.project_id }).await.unwrap_err();
     assert_eq!(code(rm), ErrorCode::Conflict);
     let other = f
         .client
         .call::<SessionsStart>(SessionsStartParams {
-            project_id: f.project_id,
             provider: Some("codex".into()),
-            prompt: None,
-            model: None,
+            ..start_params(f.workspace_id)
         })
         .await
         .unwrap_err();
@@ -533,14 +521,14 @@ async fn reconnecting_client_sees_the_same_live_session_and_pending_approval() {
     let s = start(&f).await;
     send(&f, s.id, "[fake:write:after-reconnect.txt]").await.unwrap();
     wait_pending(&f, s.id, 1).await;
-    let Fixture { core, client, rx, repo, project_id } = f;
+    let Fixture { core, client, rx, repo, project_id, workspace_id, ws } = f;
     drop(rx);
     client.close().await;
     drop(client);
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     let (client, rx) = core.connect().await;
-    let f = Fixture { core, client, rx, repo, project_id };
+    let f = Fixture { core, client, rx, repo, project_id, workspace_id, ws };
     let sessions = f
         .client
         .call::<SessionsList>(SessionsListParams { live_only: true, ..Default::default() })
@@ -554,7 +542,7 @@ async fn reconnecting_client_sees_the_same_live_session_and_pending_approval() {
     let a = pending(&f, s.id).await.remove(0);
     decide(&f, a.id, ApprovalDecision::Approve, None).await.unwrap();
     wait_events(&f, s.id, "turn", |e| turns_done(e) == 1).await;
-    assert!(f.repo.join("after-reconnect.txt").is_file());
+    assert!(f.ws.join("after-reconnect.txt").is_file());
 }
 
 #[tokio::test]
@@ -569,7 +557,7 @@ async fn unanswered_requests_expire_as_denials() {
         (Some("expired"), Some("timeout"))
     );
     assert_eq!(of_type(&evs, "agent.tool_failed")[0].payload["rejected"], true);
-    assert!(!f.repo.join("expired.txt").exists());
+    assert!(!f.ws.join("expired.txt").exists());
 }
 
 #[tokio::test]
@@ -596,5 +584,5 @@ async fn core_shutdown_stops_sessions_and_cancels_approvals_durably() {
         (all[0].status, all[0].decision_source),
         (ApprovalStatus::Cancelled, Some(DecisionSource::CoreShutdown))
     );
-    assert!(!f.repo.join("shutdown.txt").exists());
+    assert!(!f.ws.join("shutdown.txt").exists());
 }

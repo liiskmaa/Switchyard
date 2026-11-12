@@ -97,6 +97,13 @@ The draft names map onto these:
 - **Sessions per project.** One attached session per project until workspace isolation (worktrees)
   exists.
 
+## Working directory
+
+The adapter receives a `cwd` in `LaunchSpec` and runs the agent there. It never chooses, creates or
+validates a directory. Core passes the path of a validated workspace (a Core-owned Git worktree; see
+`docs/architecture/workspaces.md`) and refuses to launch instead of falling back to the project
+checkout.
+
 ## Conformance harness
 
 `switchyard-fake-claude` (`crates/switchyard-core/src/bin/fake_claude.rs`) implements the same

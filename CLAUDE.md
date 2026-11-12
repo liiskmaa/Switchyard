@@ -9,6 +9,9 @@ Rust process, **Switchyard Core**. The Tauri desktop app is only a client.
 
 - Milestone 1: Core, IPC, SQLite, the event engine, projects, and the desktop shell.
 - Milestone 2: Claude Code sessions (`crates/switchyard-agents` and `crates/switchyard-core/src/agents`).
+- Milestone 3: workspace isolation: Git worktrees per workspace (`crates/switchyard-workspaces`,
+  `crates/switchyard-git/src/worktree.rs`, `crates/switchyard-core/src/workspaces`). See
+  `docs/architecture/workspaces.md` and ADRs 0012–0014.
 - Codex is not implemented.
 
 The verified Claude CLI behaviour is in `docs/architecture/agent-integration.md`, and the contract in
@@ -29,6 +32,8 @@ cargo test -p switchyard-storage projects::tests        # one module's unit test
 npm run test:web                                        # vitest only (apps/desktop/src/**/*.test.ts)
 cargo test -p switchyard-core --test agents             # agent sessions via the fake CLI
 cargo test -p switchyard-agents claude::wire            # parser against recorded real transcripts
+cargo test -p switchyard-core --test workspaces         # worktrees, concurrent sessions, cleanup, recovery
+cargo test -p switchyard-git --test worktrees           # git worktree operations on temp repos
 SWITCHYARD_REAL_CLAUDE=1 cargo test -p switchyard-core --test real_claude -- --ignored   # real CLI, paid
 ```
 
@@ -49,7 +54,9 @@ When running Core or the app manually, set `SWITCHYARD_DATA_DIR` (and, if that p
 - **Adding a protocol method** touches: `crates/switchyard-protocol/src/methods.rs` (the `method!`
   macro: name + params + result), the dispatch match in `crates/switchyard-core/src/handlers/mod.rs`,
   a handler module, the TS mirror, and `docs/protocols/core-ipc.md`. Keep all of them in sync.
-  Incompatible changes bump `PROTOCOL_VERSION`.
+  Incompatible changes bump `PROTOCOL_VERSION` (currently 2) and, if the old contract can no longer
+  be served, `MIN_SUPPORTED_PROTOCOL_VERSION`; both sides refuse an unsupported version during
+  `initialize` (ADR 0015). Never ship an incompatible change under the same version.
 - **Events:** add a variant to `DomainEvent` (`crates/switchyard-events/src/envelope.rs`, with a
   `#[serde(rename = "x.y")]` that matches `event_type()`). Domain writes must go through
   `EventBus::publish_with`, with the state change and `events::append` in **one SQLite transaction**
@@ -68,9 +75,26 @@ When running Core or the app manually, set `SWITCHYARD_DATA_DIR` (and, if that p
 - `tokio::sync::watch::Ref` is not `Send`. Use the `wait_shutdown` / `wait_closing` helpers in
   `state.rs` inside `select!`.
 
+- **Workspaces.** Project (registered repo, never an agent cwd) → workspaces (Core-owned worktrees
+  at `<data>/workspaces/<project>/<id>`, branch `switchyard/<id>`) → sessions (at most one live per
+  workspace).
+  - Status changes go through `WorkspaceService::set_status` (validated against
+    `WorkspaceStatus::can_transition` inside the transaction, with `workspace.state_changed`).
+    Session start/resume attach the workspace with `workspaces::attach_in_tx` in the same
+    transaction that writes the session.
+  - Before any agent runs, `validate_for_session` checks the path/identity/branch; never fall back
+    to the project root.
+  - Cleanup confirmations are bound to a full `lstat` scan of the worktree
+    (`workspaces/fingerprint.rs`), repeated right before `git worktree remove`; Git's view alone
+    is not enough (it lists ignored directories as one entry).
+  - Never delete, prune, force-remove or discard anything automatically. Cleanup only via
+    `workspaces.cleanup` with the confirmation from `cleanup_check`; branches are always kept.
+    Reconciliation only changes statuses.
+  - Git mutations hold the per-project `repo_lock`; never hold the storage mutex across Git calls.
 - **Agents.**
-  - Every session state change goes through `AgentService::transition`/`commit` (state, events and
-    approvals in one transaction). Never update `sessions` rows elsewhere.
+  - Every session state change goes through `AgentService::transition`/`commit` or
+    `journal::commit_checked` (state, events, approvals and the workspace attachment in one
+    transaction). Never update `sessions` rows elsewhere.
   - Claude wire JSON stays inside `switchyard_agents::claude::wire`. Core sees only `AdapterOutput`.
   - Token deltas go to `LiveHub` only, never the journal.
   - Approvals are settled through `approvals::decide` (SQL-guarded `pending → final`), committed
