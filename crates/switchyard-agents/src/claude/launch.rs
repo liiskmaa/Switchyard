@@ -12,10 +12,13 @@ use crate::process::{EnvPolicy, prepend_path};
 /// deliberately excluded until Switchyard supervises them.
 pub const TOOLS: &str = "Read,Write,Edit,Glob,Grep,Bash,NotebookEdit";
 
-/// Settings layered on top of `--restricted`. The `ask` rule routes *every*
-/// Bash command — including Claude's built-in read-only commands such as
-/// `cat` — to Switchyard (verified with CLI 2.1.322).
-pub const SETTINGS: &str = r#"{"permissions":{"ask":["Bash"],"defaultMode":"default"}}"#;
+/// Settings layered on top of `--restricted`. An `ask` rule for every
+/// enabled tool routes *each* tool use to Switchyard's policy evaluation:
+/// every Bash command (including built-in read-only ones such as `cat`) and
+/// Read/Glob/Grep inside the working directory, which Claude would
+/// otherwise allow by itself (both verified with CLI 2.1.322). Must name
+/// exactly the tools in [`TOOLS`].
+pub const SETTINGS: &str = r#"{"permissions":{"ask":["Read","Write","Edit","Glob","Grep","Bash","NotebookEdit"],"defaultMode":"default"}}"#;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativeSession {
@@ -158,9 +161,13 @@ mod tests {
     }
 
     #[test]
-    fn settings_are_valid_json_with_bash_ask_rule() {
+    fn settings_ask_for_every_enabled_tool() {
         let v: serde_json::Value = serde_json::from_str(SETTINGS).unwrap();
-        assert_eq!(v["permissions"]["ask"][0], "Bash");
+        let ask: Vec<&str> =
+            v["permissions"]["ask"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
+        assert_eq!(ask, TOOLS.split(',').collect::<Vec<_>>(), "every enabled tool must reach Switchyard");
+        assert!(v["permissions"].get("allow").is_none(), "no allow rules are passed to Claude");
+        assert_eq!(v["permissions"]["defaultMode"], "default");
     }
 
     #[test]

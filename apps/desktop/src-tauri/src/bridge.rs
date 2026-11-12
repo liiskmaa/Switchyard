@@ -161,7 +161,12 @@ async fn serve_connection(
         Err(err) => return err,
     };
     *bridge.client.write().await = Some(client.clone());
-    tracing::info!(core = %info.core.version, instance = %info.core.instance_id, "connected to Switchyard Core");
+    tracing::info!(
+        core = %info.core.version,
+        instance = %info.core.instance_id,
+        after_seq = ?*last_seq,
+        "connected to Switchyard Core; events after `after_seq` are replayed"
+    );
     bridge.set_state(
         app,
         ConnectionState::Connected { core: info.core.clone(), protocol_version: info.protocol_version },
@@ -171,6 +176,7 @@ async fn serve_connection(
     while let Some(notification) = notifications.recv().await {
         match notification {
             Notification::Event { subscription_id, event } if subscription_id == subscription => {
+                tracing::debug!(seq = event.seq, event_type = %event.event_type, "forwarding event");
                 *last_seq = Some(event.seq);
                 if let Err(err) = app.emit(EVENT_CORE_EVENT, &event) {
                     tracing::warn!(%err, "cannot forward event to the webview");

@@ -1,4 +1,4 @@
-# Switchyard Core IPC protocol — version 2
+# Switchyard Core IPC protocol — version 3
 
 This is the protocol between Switchyard Core and its clients (the desktop app, tests, and future
 tools). The source of truth is `crates/switchyard-protocol`, and the TypeScript mirror is
@@ -67,14 +67,20 @@ Additive optional fields do not bump the version; any incompatible change does.
 
 Versions:
 - **Version 1:** milestones 1–2.
-- **Version 2 (current):** milestone 3; `sessions.start` requires `workspace_id`
+- **Version 2:** milestone 3; `sessions.start` requires `workspace_id`
   ([ADR 0015](../decisions/0015-protocol-version-2.md)).
+- **Version 3 (current):** milestone 4 approval policies
+  ([ADR 0016](../decisions/0016-approval-policy-model.md)). It is incompatible with version 2:
+  - a permission request may be allowed or denied by policy without creating an approval;
+  - `Approval.decision_source` gains `policy`;
+  - `approvals.decide {approve}` can fail with `policy_denied`;
+  - `policies.*` methods are added.
 
-The minimum is 2 on both sides:
-- **A client that offers 1** is refused with `unsupported_protocol_version`. `data` contains
+The minimum is 3 on both sides:
+- **A client that offers 1 or 2** is refused with `unsupported_protocol_version`. `data` contains
   `{min_supported, max_supported, client_protocol, client_name, client_version, core_version,
   action: "update_client"}`. Its later requests get `not_initialized`.
-- **A Core that selects 1** (an older Core still running) is refused by the client.
+- **A Core that selects 1 or 2** (an older Core still running) is refused by the client.
   `switchyard-client` reports `IncompatibleCore {core_protocol, required, core_version, core_pid,
   client_version}`, closes the connection and sends nothing else. The desktop shows that message
   and does not stop the old Core by itself.
@@ -115,13 +121,21 @@ client detect a restart. `seq` stays continuous across restarts because it lives
 | `workspaces.cleanup` | `{workspace_id, confirmation}` | `{workspace, report}` with status `removed`. The confirmation is bound to a full scan of every entry under the worktree, so any change after review refuses it; the scan is repeated immediately before `git worktree remove`. Refused with `dirty_workspace` (uncommitted or untracked changes) or `unsafe_cleanup` (any other blocker, a changed state, a change detected by the final scan, or a Git failure; the workspace is `archived` again and nothing is deleted). `data.report` holds the current report when available. The branch is always kept. |
 | `sessions.start` | `{workspace_id, project_id?, prompt?, model?, provider?: "claude_code"}` | `{session: Session}`. Launches Claude with the workspace path as its working directory, never the project root. Errors: `workspace_not_found`, `workspace_project_mismatch`, `legacy_workspace`, `workspace_occupied`, `invalid_workspace_state`, `worktree_missing`, `worktree_identity_mismatch`, `repository_unavailable`, `agent_unavailable`, `agent_failed` (with `data.session_id`). |
 | `sessions.list` | `{project_id?, workspace_id?, live_only?, limit?}` | `{sessions: [Session]}`, newest first |
-| `sessions.get` | `{session_id}` | `{session, live_text, live_seq}`. `live_text` is the message currently streaming (ephemeral). |
+| `sessions.get` | `{session_id}` | `{session, live_text, live_seq}`. `live_text` is the message currently streaming (ephemeral); it is empty between `message_stop` and the next `message_start`, because the complete message is journaled before `message_stop` (for example while a permission request waits). |
 | `sessions.send` | `{session_id, text, queue_if_busy?: bool}` | `{delivery: "started_turn" \| "queued_for_next_turn"}`. Without `queue_if_busy`, sending during a turn fails with `invalid_state`. |
 | `sessions.interrupt` | `{session_id}` | `{session}`. The state becomes `interrupted` when the agent confirms. |
 | `sessions.stop` | `{session_id}` | `{session}` once the process has exited (state `stopped`) |
 | `sessions.resume` | `{session_id, prompt?}` | `{session}`. Continues a terminal session in a new process with the same native ID, in the same workspace, after the same validation as `sessions.start`. `conflict` if it is already attached; `legacy_workspace` for sessions from before workspace isolation. |
 | `approvals.list` | `{status?, session_id?, project_id?, limit?}` | `{approvals: [Approval]}`, newest first |
-| `approvals.decide` | `{approval_id, decision: "approve" \| "deny", note?}` | `{approval}` after the decision is durable. `conflict` if it is no longer pending. `note` is shown to the agent on deny. |
+| `approvals.decide` | `{approval_id, decision: "approve" \| "deny", note?}` | `{approval}` after the decision is durable. `conflict` if it is no longer pending. `note` is shown to the agent on deny. An approval is re-checked against the current policy in the same transaction: if the policy now blocks the request, it is settled `denied` (source `policy`), the agent is told, and the call fails with `policy_denied`. A deny is always accepted. |
+| `policies.list` | `{project_id, include_archived?}` | `{rules: [PolicyRule], policy_revision}`: project and workspace rules of the project, oldest first |
+| `policies.get` | `{rule_id}` | `{rule, history: [PolicyRuleRevision]}`: every revision, oldest first. `policy_rule_not_found`. |
+| `policies.create` | `{project_id, workspace_id?, category, decision: "allow"\|"ask"\|"deny", conditions?: {path_prefix?, command?}, description, enabled?}` | `{rule, policy_revision}`. Errors: `project_not_found`, `workspace_not_found`, `workspace_project_mismatch`, `invalid_policy_scope` (legacy or removed workspace), `invalid_rule`, `unsupported_operation` (for example `allow` for shell without an exact command, or for network), `policy_conflict` (an active rule with the same scope, category and conditions; `data.rule_id`). Unknown condition fields are `invalid_params`. |
+| `policies.update` | `{rule_id, expected_revision, decision?, conditions?, description?}` | `{rule, policy_revision}`. Scope and category cannot change. `stale_revision` (`data.current_revision`) if the rule changed since it was read; `invalid_rule` for an archived rule. |
+| `policies.set_enabled` | `{rule_id, expected_revision, enabled}` | `{rule, policy_revision}` |
+| `policies.archive` | `{rule_id, expected_revision}` | `{rule, policy_revision}`. The rule stops applying; its history remains. |
+| `policies.effective` | `{project_id, workspace_id?}` | `EffectivePolicy`: system restrictions, per-category defaults and capabilities, active project rules and (with a workspace) that workspace's rules |
+| `policies.evaluations` | `{project_id?, workspace_id?, session_id?, rule_id?, decision?, limit?}` | `{evaluations: [PolicyEvaluation]}`, newest first. `rule_id` matches evaluations the rule decided or matched. |
 | `live.subscribe` | `{session_id?}` | `{subscription_id}`. Delivers `live` frames. |
 | `live.unsubscribe` | `{subscription_id}` | `{}` |
 
@@ -156,6 +170,28 @@ WorkspaceGitStatus { workspace_id, branch?, expected_branch?, on_expected_branch
                    checked_at_ms }
 Session / Approval  see crates/switchyard-protocol/src/model.rs; both carry workspace_id and
                    workspace_name (additive, milestone 3) so clients can label them without lookups.
+                   Approval.policy (v3): { evaluation_id, category, reason, explanation,
+                   deciding_rule?: PolicyRuleRef, policy_revision }; null for approvals recorded
+                   before policies. decision_source adds "policy" (always a denial).
+PolicyRule       { id, project_id, workspace_id?, workspace_name?, scope: "project"|"workspace",
+                   category, decision, conditions: {path_prefix?, command?}, description, enabled,
+                   archived, revision, created_at_ms, updated_at_ms, archived_at_ms? }
+PolicyRuleRevision { revision, policy_revision, change: "created"|"updated"|"enabled"|"disabled"|
+                   "archived", rule: PolicyRule (as it was), changed_at_ms, changed_by? }
+PolicyRuleRef    { id, revision, scope, workspace_id?, decision, description }  (as evaluated)
+EffectivePolicy  { project_id, workspace_id?, policy_revision, system_version,
+                   system_restrictions: [{code, message}], categories: [{category,
+                   default_decision, configurable, allow_supported, path_condition,
+                   command_condition}], project_rules: [PolicyRule], workspace_rules: [PolicyRule] }
+PolicyEvaluation { id, evaluated_at_ms, trigger: "request"|"reevaluation"|"decision_check",
+                   project_id, workspace_id?, workspace_name?, session_id, adapter, tool_name,
+                   category, input: {operation, paths}, decision, reason: "system_restriction"|
+                   "rule"|"default"|"capped", explanation, deciding_rule?, matched_rules,
+                   restrictions: [{code, message}], policy_revision, system_version, approval_id?,
+                   approval_status? }
+
+category: file_read | file_write | file_edit | file_delete | directory_list | search | shell |
+          network | external_tool | unknown
 CleanupReport    { allowed, blockers: [{code, message}], warnings: [{code, message}],
                    will_remove_directory, branch, branch_kept: true, ignored_files: [string],
                    ignored_total, unmerged_commits?, merged_into?, entries_total?, bytes_total?,
@@ -187,8 +223,10 @@ the registration is kept and `projects.git_status` returns `repository_unavailab
 | `agent.tool_started` | `{tool_use_id, tool_name, input, input_truncated}` |
 | `agent.tool_completed` / `agent.tool_failed` | `{tool_use_id, tool_name, output, output_truncated[, rejected]}`; `causation_id` is the matching `tool_started` |
 | `agent.turn_completed` | `{success, interrupted, reason, stop_reason, duration_ms, cost_usd, result}` |
-| `agent.permission_requested` | `{approval_id, tool_name, tool_use_id, input, description, expires_at_ms}` |
-| `agent.permission_resolved` | `{approval_id, tool_name, status, source, decided_by, note}` |
+| `agent.permission_evaluated` | `{evaluation_id, trigger, tool_name, category, decision, reason, explanation, rule_id, rule_revision, policy_revision, approval_id, target}`: every evaluation. For `allow`/`deny` it is the final, automatic decision; for `ask` an `agent.permission_requested` follows. `target` is the path or command (at most 512 bytes). |
+| `agent.permission_requested` | `{approval_id, tool_name, tool_use_id, input, description, expires_at_ms, evaluation_id, explanation}` (only for `ask`) |
+| `agent.permission_resolved` | `{approval_id, tool_name, status, source, decided_by, note}`; `source` `policy` means a policy change denied the pending request (`note` explains) |
+| `policy.rule_changed` | `{rule_id, change, revision, policy_revision, scope, category, decision, enabled, archived, description, conditions}`; context carries `project_id` (and `workspace_id` for workspace rules) |
 | `agent.interrupted`, `agent.session_resumed`, `agent.warning`, `agent.exited`, `agent.failed` | See `crates/switchyard-events/src/envelope.rs` |
 | `workspace.created` | `{name, path, branch, base_ref, base_commit}` (status `provisioning`) |
 | `workspace.state_changed` | `{from, to, reason}` |
@@ -228,6 +266,14 @@ Clients must tolerate unknown event types and payload fields.
 | `worktree_identity_mismatch` | Wrong path, not a worktree, another repository, or another branch checked out (`data.reason`). |
 | `worktree_missing` | The workspace directory does not exist. |
 | `dirty_workspace`, `unsafe_cleanup` | Cleanup refused (see `workspaces.cleanup`). |
+| `policy_rule_not_found` | The rule id names no rule. |
+| `invalid_rule` | The rule is malformed (bad path or command condition, condition not applicable to the category, missing description) or archived. There is no separate "policy" entity: a project's or workspace's policy is its set of rules. |
+| `invalid_policy_scope` | The workspace cannot carry rules (legacy checkout or removed). |
+| `unsupported_operation` | The category/decision combination is not supported (any rule for `unknown`; `allow` for network or external tools; `allow` for shell without an exact command). |
+| `policy_conflict` | An active rule with the same scope, category and conditions exists. |
+| `stale_revision` | `expected_revision` is not the rule's current revision. |
+| `policy_evaluation_failed` | Reserved: a request could not be evaluated. Agents are denied in that case; no client call returns it today. |
+| `policy_denied` | The current policy blocks the request, so it cannot be approved. |
 | `shutting_down` | Core is stopping. |
 | `overloaded` | More than 32 concurrent requests, or too many subscriptions, on one connection. |
 | `internal` | An unexpected failure. Details are logged by Core. |
@@ -235,8 +281,8 @@ Clients must tolerate unknown event types and payload fields.
 ## Example session
 
 ```text
-→ {"type":"request","id":1,"method":"initialize","params":{"protocol_version":2,"client":{"name":"cli","version":"0.1.0"}}}
-← {"type":"response","id":1,"result":{"protocol_version":2,"core":{"version":"0.1.0","instance_id":"01a1…","started_at_ms":1794354584000,"pid":72726}}}
+→ {"type":"request","id":1,"method":"initialize","params":{"protocol_version":3,"client":{"name":"cli","version":"0.1.0"}}}
+← {"type":"response","id":1,"result":{"protocol_version":3,"core":{"version":"0.1.0","instance_id":"01a1…","started_at_ms":1794354584000,"pid":72726}}}
 → {"type":"request","id":2,"method":"events.subscribe","params":{"after_seq":0}}
 ← {"type":"response","id":2,"result":{"subscription_id":"01a1…"}}
 ← {"type":"event","subscription_id":"01a1…","event":{"seq":1,"event_type":"core.started",…}}
@@ -252,5 +298,7 @@ Clients must tolerate unknown event types and payload fields.
 - `ipc_protocol.rs`: raw wire behaviour (handshake, negotiation, errors, frame limits, health).
 - `projects.rs`: project registration end to end.
 - `events.rs`: delivery, replay, filters and shutdown notification.
+- `policies.rs`: policy evaluation of every permission request, rule management, revisions,
+  pending approvals and policy changes, failure handling.
 - `process.rs`: the real binary, covering disconnect and reconnect, the single-instance lock,
   stale-socket recovery and signals.

@@ -19,6 +19,10 @@
 //! | `malformed`   | emits invalid lines, then a normal reply |
 //! | `whoami`      | replies with its session id |
 //! | `exit`        | completes the turn, then exits 0 on its own |
+//! | `tool:NAME\|JSON` | requests permission for tool NAME with input JSON (`$CWD` is replaced by the working directory; NAME `-` omits the tool name; invalid JSON is sent as a string). On allow, `Write` writes its file; other tools report success. |
+//!
+//! With `SWITCHYARD_FAKE_CLAUDE_LOG=FILE`, every permission answer it receives
+//! is appended to FILE as a JSON line (end-to-end test evidence).
 //!
 //! A `.fake-claude-fail` file in the working directory makes it fail at
 //! start-up like an unauthenticated CLI.
@@ -85,12 +89,22 @@ fn main() {
     let session_id = flag("--session-id").or_else(|| flag("--resume")).unwrap_or_else(|| "missing".into());
 
     let (tx, rx) = mpsc::channel();
+    // Test evidence: with SWITCHYARD_FAKE_CLAUDE_LOG set, every permission
+    // answer the agent receives is appended there as one JSON line.
+    let answer_log = std::env::var_os("SWITCHYARD_FAKE_CLAUDE_LOG").filter(|v| !v.is_empty());
+    let (log_session, log_cwd) = (session_id.clone(), cwd.clone());
     std::thread::spawn(move || {
         for line in std::io::stdin().lock().lines() {
             let Ok(line) = line else { break };
-            if let Ok(v) = serde_json::from_str::<Value>(&line)
-                && tx.send(v).is_err()
+            let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+            if let Some(path) = &answer_log
+                && v["type"] == "control_response"
+                && let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path)
             {
+                let entry = json!({"session_id": log_session, "cwd": log_cwd, "response": v["response"]});
+                let _ = writeln!(f, "{entry}");
+            }
+            if tx.send(v).is_err() {
                 break;
             }
         }
@@ -299,6 +313,68 @@ impl Fake {
         Ok(())
     }
 
+    /// One permission-gated call of an arbitrary tool (policy tests).
+    fn gated_tool(&mut self, spec: &str) -> Result<(), String> {
+        let (name, raw) = spec.split_once('|').unwrap_or((spec, "{}"));
+        let text = raw.replace("$CWD", &self.cwd);
+        let input: Value = serde_json::from_str(&text).unwrap_or(Value::String(text));
+        self.request_seq += 1;
+        let tool_use_id = format!("toolu_fake_{}", self.request_seq);
+        let request_id = uuid::Uuid::now_v7().to_string();
+        out(&self.base(json!({"type": "assistant", "parent_tool_use_id": null, "message": {
+            "id": "msg_fake_tool", "type": "message", "role": "assistant", "model": "fake-model",
+            "content": [{"type": "tool_use", "id": tool_use_id, "name": name, "input": input}]}})));
+        let mut request = json!({"subtype": "can_use_tool", "input": input, "tool_use_id": tool_use_id,
+            "description": name});
+        if name != "-" {
+            request["tool_name"] = json!(name);
+            request["display_name"] = json!(name);
+        }
+        out(&json!({"type": "control_request", "request_id": request_id, "request": request}));
+        loop {
+            match self.wait(None) {
+                Some(Wait::Message(m)) if m["type"] == "control_response" => {
+                    if m["response"]["request_id"].as_str() != Some(request_id.as_str()) {
+                        continue;
+                    }
+                    let decision = &m["response"]["response"];
+                    if decision["behavior"] == "allow" {
+                        let path = input.get("file_path").and_then(Value::as_str);
+                        let result = match (name, path) {
+                            // Like Claude Code's Write, parent directories are created.
+                            ("Write", Some(path)) => std::path::Path::new(path)
+                                .parent()
+                                .map_or(Ok(()), std::fs::create_dir_all)
+                                .and_then(|()| std::fs::write(path, "written by fake claude\n"))
+                                .map(|()| format!("File created successfully at: {path}"))
+                                .map_err(|e| format!("write failed: {e}")),
+                            _ => Ok(format!("{name} ran")),
+                        };
+                        match result {
+                            Ok(text) => self.tool_result(&tool_use_id, &text, false),
+                            Err(text) => self.tool_result(&tool_use_id, &text, true),
+                        }
+                    } else {
+                        let message = decision["message"].as_str().unwrap_or("denied");
+                        self.tool_result(&tool_use_id, message, true);
+                    }
+                    return Ok(());
+                }
+                Some(Wait::Interrupted) => {
+                    out(&json!({"type": "control_cancel_request", "request_id": request_id}));
+                    self.tool_result(
+                        &tool_use_id,
+                        "The user doesn't want to proceed with this tool use.",
+                        true,
+                    );
+                    return Err("aborted_tools".into());
+                }
+                Some(Wait::Closed) | None => return Err("aborted_tools".into()),
+                Some(Wait::Message(_)) => {}
+            }
+        }
+    }
+
     /// One turn. Returns false when the process should exit.
     fn turn(&mut self, text: &str) -> bool {
         let (name, arg) = marker(text);
@@ -309,6 +385,7 @@ impl Fake {
         let outcome = match name {
             "write" => self.gated_writes(&[arg.unwrap_or("fake-output.txt")]),
             "multi" => self.gated_writes(&["a.txt", "b.txt"]),
+            "tool" => self.gated_tool(arg.unwrap_or("-")),
             "slow" => {
                 let long = (1..=60).map(|i| format!("chunk{i} ")).collect::<String>();
                 self.say(long.trim_end(), Some(Duration::from_millis(50)))
@@ -336,7 +413,7 @@ impl Fake {
         }
         let reply = match name {
             "whoami" => format!("session {}", self.session_id),
-            "write" | "multi" => "DONE".to_owned(),
+            "write" | "multi" | "tool" => "DONE".to_owned(),
             "slow" => "finished slow output".to_owned(),
             _ => "Hello from fake claude.".to_owned(),
         };

@@ -14,6 +14,12 @@ describe("applyLive", () => {
     expect(state["s1"]?.text).toBe("");
   });
 
+  it("clears text at message_stop so a finished message is not shown as streaming", () => {
+    let state: Record<string, LiveState> = {};
+    for (const o of [out(1, "message_start"), out(2, "text", "I'll edit it."), out(3, "message_stop")]) state = applyLive(state, o);
+    expect(state["s1"]).toMatchObject({ text: "", thinking: false, seq: 3 });
+  });
+
   it("ignores duplicate or out-of-order chunks", () => {
     let state = applyLive({}, out(5, "text", "a"));
     state = applyLive(state, out(5, "text", "a"));

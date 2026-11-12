@@ -3,6 +3,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 pub use switchyard_agents::{ApprovalStatus, Capabilities, DecisionSource, SessionState};
+pub use switchyard_policy::{
+    Conditions as PolicyConditions, Decision as PolicyDecision, OperationCategory,
+    ReasonCode as PolicyReason, Restriction as PolicyRestriction, RuleRef as PolicyRuleRef, RuleScope,
+};
 pub use switchyard_workspaces::{CleanupFinding, CleanupReport, WorkspaceKind, WorkspaceStatus};
 use uuid::Uuid;
 
@@ -167,6 +171,116 @@ pub struct Approval {
     pub decision_source: Option<DecisionSource>,
     pub decided_by: Option<String>,
     pub decision_note: Option<String>,
+    /// The policy evaluation that asked for this decision. `None` for
+    /// approvals recorded before policies existed.
+    #[serde(default)]
+    pub policy: Option<ApprovalPolicy>,
+}
+
+/// Why an approval was created (an `ask` evaluation).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApprovalPolicy {
+    pub evaluation_id: Uuid,
+    pub category: OperationCategory,
+    pub reason: PolicyReason,
+    pub explanation: String,
+    pub deciding_rule: Option<PolicyRuleRef>,
+    pub policy_revision: i64,
+}
+
+/// A configured policy rule.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyRule {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    /// `None`: applies to every workspace of the project.
+    pub workspace_id: Option<Uuid>,
+    pub workspace_name: Option<String>,
+    pub scope: RuleScope,
+    pub category: OperationCategory,
+    pub decision: PolicyDecision,
+    pub conditions: PolicyConditions,
+    pub description: String,
+    pub enabled: bool,
+    pub archived: bool,
+    /// Increments on every change; pass it back as `expected_revision`.
+    pub revision: u32,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub archived_at_ms: Option<i64>,
+}
+
+/// One entry of a rule's append-only history.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyRuleRevision {
+    pub revision: u32,
+    /// Global policy revision this change created.
+    pub policy_revision: i64,
+    /// `created`, `updated`, `enabled`, `disabled` or `archived`.
+    pub change: String,
+    /// The rule as it was after this change.
+    pub rule: PolicyRule,
+    pub changed_at_ms: i64,
+    pub changed_by: Option<String>,
+}
+
+/// What policies can do with one operation category.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyCategoryInfo {
+    pub category: OperationCategory,
+    /// Built-in default when no rule matches (before system caps).
+    pub default_decision: PolicyDecision,
+    pub configurable: bool,
+    pub allow_supported: bool,
+    pub path_condition: bool,
+    pub command_condition: bool,
+}
+
+/// Everything that applies to requests in a project or one workspace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectivePolicy {
+    pub project_id: Uuid,
+    pub workspace_id: Option<Uuid>,
+    pub policy_revision: i64,
+    pub system_version: u32,
+    /// Always enforced; not configurable.
+    pub system_restrictions: Vec<PolicyRestriction>,
+    pub categories: Vec<PolicyCategoryInfo>,
+    /// Active project rules (inherited by every workspace).
+    pub project_rules: Vec<PolicyRule>,
+    /// Active rules of `workspace_id` only (empty without a workspace).
+    pub workspace_rules: Vec<PolicyRule>,
+}
+
+/// One recorded policy evaluation (audit trail).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PolicyEvaluation {
+    pub id: Uuid,
+    pub evaluated_at_ms: i64,
+    /// `request`, `reevaluation` or `decision_check`.
+    pub trigger: String,
+    pub project_id: Uuid,
+    pub workspace_id: Option<Uuid>,
+    pub workspace_name: Option<String>,
+    pub session_id: Uuid,
+    pub adapter: String,
+    pub tool_name: String,
+    pub category: OperationCategory,
+    /// What was evaluated: `{operation: {...}, paths: [...]}` (never file
+    /// contents).
+    pub input: Value,
+    pub decision: PolicyDecision,
+    pub reason: PolicyReason,
+    pub explanation: String,
+    pub deciding_rule: Option<PolicyRuleRef>,
+    pub matched_rules: Vec<PolicyRuleRef>,
+    pub restrictions: Vec<PolicyRestriction>,
+    pub policy_revision: i64,
+    pub system_version: u32,
+    /// The approval created (ask) or settled (policy denial).
+    pub approval_id: Option<Uuid>,
+    /// Current status of that approval.
+    pub approval_status: Option<ApprovalStatus>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

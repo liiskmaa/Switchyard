@@ -11,6 +11,7 @@
 | 1 | `0001_initial.sql` | All tables; only `projects` and `events` written |
 | 2 | `0002_agent_sessions.sql` | `sessions` and `approvals` rebuilt for the agent lifecycle; agent/workspace indexes |
 | 3 | `0003_workspaces.sql` | `workspaces` rebuilt for isolation; legacy records; session/workspace guards |
+| 4 | `0004_policies.sql` | Approval policies: `policy_rules`, `policy_rule_revisions`, `policy_evaluations`; `approvals` rebuilt (`evaluation_id`, source `policy`); the never-written `permissions` table dropped |
 
 ## Tables in use
 
@@ -46,9 +47,44 @@ Constraints: a `worktree` row must have `branch` and `base_commit`. Indexes:
     live state (`starting`, `initializing`, `idle`, `running`, `waiting_for_approval`,
     `interrupted`).
 
-### `approvals` (v2)
-Permission requests and their decisions, settled exactly once (`status = 'pending'` guard). Each
-records its source: operator, timeout, agent cancelled or exited, Core shutdown or restart.
+### `approvals` (v4)
+- Permission requests that a policy evaluation answered with `ask`. Each is settled exactly once
+  (`status = 'pending'` guard) and records its source:
+  - operator, timeout, agent cancelled or exited, Core shutdown or restart;
+  - or `policy`, when a policy change denied it (a `CHECK` allows `policy` only with `denied`).
+- `evaluation_id` links to the evaluation that created the approval. It is `NULL` for approvals
+  recorded before v4; those were carried over unchanged, pending ones included.
+
+### `policy_rules` (v4)
+- Current state of each configured rule: `project_id`; `workspace_id` (`NULL` = project rule);
+  `category`; `decision`; `conditions` JSON (`path_prefix`, `command`); `description`; `enabled`;
+  `status` (`active` or `archived`); and `revision`.
+- `CHECK`s forbid `unknown`, a shell `allow` without a command, and `allow` for network or
+  external tools.
+- Triggers:
+  - a workspace rule's workspace must belong to the rule's project;
+  - scope and category never change.
+
+### `policy_rule_revisions` (v4)
+- Append-only (triggers): one full rule snapshot per change (`created`, `updated`, `enabled`,
+  `disabled`, `archived`).
+- `policy_revision` is the global policy revision (`UNIQUE`, `MAX + 1` inside the changing
+  transaction).
+- No foreign keys: history survives a project's removal.
+
+### `policy_evaluations` (v4)
+- Append-only (triggers); no foreign keys.
+- One row per evaluation (trigger `request`, `reevaluation` or `decision_check`), recording:
+  - project, workspace, session and agent;
+  - adapter, tool and native request id;
+  - category;
+  - `input`: the normalized operation and path facts, with no file contents;
+  - decision, reason and explanation;
+  - the deciding rule and its revision;
+  - the matched rules as evaluated;
+  - restrictions;
+  - the global policy revision and system policy version;
+  - the approval it created or settled.
 
 ### `agents`
 One row per detected executable and vendor.
@@ -60,4 +96,4 @@ One row per detected executable and vendor.
 - Indexes per project, type and session.
 
 ### Reserved, not written yet
-`tasks`, `messages`, `findings`, `permissions`, `decisions`.
+`tasks`, `messages`, `findings`, `decisions`.

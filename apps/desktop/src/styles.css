@@ -387,6 +387,10 @@ button { font: inherit; color: inherit; }
 .diff-old { border-left: 3px solid var(--error); }
 .diff-new { border-left: 3px solid var(--ok); }
 .tool-input { display: flex; flex-direction: column; gap: 6px; }
+.tool-extra { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 6px 0 0; padding: 6px 10px; border: 1px solid var(--warn-soft); border-radius: var(--radius); background: var(--warn-soft); }
+.tool-extra div { display: flex; gap: 6px; }
+.tool-extra dt { color: var(--warn); }
+.tool-extra dd { margin: 0; color: var(--text-strong); word-break: break-all; }
 
 .approval { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); }
 .approval + .approval { margin-top: 10px; }
@@ -438,3 +442,47 @@ span.findings { padding-left: 0; }
 .finding { display: block; }
 .check { display: flex; align-items: baseline; gap: 6px; cursor: pointer; }
 .ws-confirm { display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; }
+
+/* Policies ------------------------------------------------------------------ */
+.policy-limit { margin-bottom: 4px; }
+.policy-scope { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.policy-scope label { font-weight: 600; font-size: 12px; }
+.policy-scope .select { min-width: 200px; }
+.policy-section { margin: 14px 0 6px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.policy-section:first-of-type { margin-top: 4px; }
+.policy-default { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.rules { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.rule { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; min-width: 0; }
+.rule + .rule { border-top: 1px solid var(--border); }
+.rule-disabled .rule-what, .rule-disabled .rule-description { opacity: 0.6; }
+.rule-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.rule-what { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+.rule-scope { margin-left: auto; }
+.rule-description { margin: 0; }
+.rule-actions { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.rule-detail { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--border); padding-top: 8px; }
+.rule-detail h4 { margin: 0; font-size: 12px; }
+.rule-form { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px; margin-bottom: 10px; }
+.rule-form-grid { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 12px; align-items: center; }
+.rule-form-grid label, .rule-form-label { font-weight: 600; font-size: 12px; }
+.segmented { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); overflow: hidden; width: fit-content; max-width: 100%; flex-wrap: wrap; }
+.segment { display: inline-flex; align-items: center; padding: 5px 10px; font-size: 12px; font-weight: 500; cursor: pointer; }
+.segment + .segment { border-left: 1px solid var(--border-strong); }
+.segment input { position: absolute; opacity: 0; pointer-events: none; }
+.segment.active { background: var(--accent-soft); color: var(--text-strong); box-shadow: inset 0 -2px 0 var(--accent); }
+.segment.disabled { opacity: 0.45; cursor: not-allowed; }
+.segment:focus-within { outline: 2px solid var(--focus); outline-offset: -2px; }
+.evaluations { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.evaluation { display: flex; flex-direction: column; gap: 4px; padding: 8px 0; min-width: 0; }
+.evaluation + .evaluation { border-top: 1px solid var(--border); }
+.evaluation p { margin: 0; }
+.evaluation-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.evaluation-what { font-weight: 600; }
+.evaluation-where { margin-left: auto; }
+.evaluation-target { font-size: 12px; overflow-wrap: anywhere; }
+.approval-policy { display: flex; flex-direction: column; gap: 2px; margin: 0; }
+.approval-policy p { margin: 0; }
+@media (max-width: 720px) {
+  .rule-form-grid { grid-template-columns: minmax(0, 1fr); }
+  .rule-scope, .evaluation-where { margin-left: 0; }
+}

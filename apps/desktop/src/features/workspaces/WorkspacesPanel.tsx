@@ -74,8 +74,8 @@ export function WorkspacesPanel({ project }: { project: Project }) {
       <p className="muted small">
         Each workspace is a separate Git worktree on its own <code>switchyard/…</code> branch, stored by Switchyard
         outside <code>{project.root_path}</code>. Agents run in a workspace, never in the project checkout, so several
-        sessions can work on this project at once. This isolates source trees only: an approved shell command still runs
-        with your user&apos;s permissions and can reach files elsewhere.
+        sessions can work on this project at once. This isolates source trees only: an allowed or approved shell command
+        still runs with your user&apos;s permissions and can reach files elsewhere.
       </p>
       {creating ? (
         <CreateWorkspaceForm
@@ -383,8 +383,8 @@ function WorkspaceDetail({
             disabled={busy !== null}
           />
           <p className="muted small">
-            Claude runs in this workspace&apos;s directory with its file tools confined to it. Every shell command and file
-            change needs your approval in Switchyard.
+            Claude runs in this workspace&apos;s directory with its file tools confined to it. Switchyard answers each tool
+            request under this project&apos;s policies; by default, file changes and shell commands ask you first.
           </p>
           <div className="form-actions start">
             <Button variant="primary" onClick={() => void start()} disabled={busy !== null}>

@@ -13,8 +13,12 @@ vendor-neutral types below. Background: [agent-integration.md](../architecture/a
 3. **Explicit capabilities.** Operations an agent lacks fail with `unsupported` or `invalid_state`.
    They are never emulated, for example by silently restarting a process.
 4. **Important activity is durable; token streams are not.**
-5. **Switchyard owns every permission decision.** There is no auto-approval, and every
-   non-operator path denies.
+5. **Switchyard owns every permission decision.** Every request is evaluated by Core's policy engine
+   (ADRs 0016–0018). Only an explicit rule or a documented built-in default allows without a
+   person. Every failure path, and every non-operator settlement of an approval, denies.
+6. **Adapters classify, Core decides.** An adapter maps its vendor requests to
+   `switchyard_policy::Operation` (category, targets, command, unknown fields). Anything it cannot
+   classify carries a `problem` and is denied. Vendor JSON never reaches the policy engine.
 
 ## Vendor-neutral model (`switchyard_agents::model`)
 
@@ -42,7 +46,7 @@ the integration notes).
 | `Event(InterruptAcknowledged)` | The agent confirmed an interrupt request. | yes |
 | `Event(Warning { message })` | A malformed line, an API retry and similar. | yes (at most 25 per session) |
 | `Live(LiveChunk { kind: Text \| Thinking \| MessageStart \| MessageStop })` | A streaming fragment. | **no** |
-| `PermissionRequested(PermissionRequest)` | The agent waits for a decision. | yes (approval row) |
+| `PermissionRequested(PermissionRequest)` | The agent waits for a decision. | yes (evaluation row; approval row only for `ask`) |
 | `PermissionCancelled { native_request_id }` | The agent withdrew the request. | yes |
 
 The session driver (`claude::spawn_session`) delivers these on a bounded channel (256 entries). The
@@ -78,8 +82,12 @@ The draft names map onto these:
 
 ## Approvals
 
-- Every request becomes an `approvals` row (status `pending`, with `expires_at`) **in the same
-  transaction** as `agent.permission_requested` and the transition to `waiting_for_approval`.
+- Every request is classified (`claude::classify`) and evaluated. The evaluation is recorded in the
+  same transaction as its outcome:
+  - **`allow` and `deny`:** a `policy_evaluations` row and `agent.permission_evaluated`. The answer
+    is delivered after the commit.
+  - **`ask`:** additionally an `approvals` row (status `pending`, with `expires_at`,
+    `evaluation_id`), `agent.permission_requested`, and the transition to `waiting_for_approval`.
 - A decision is committed with a SQL guard (`… WHERE status = 'pending'`), so at most one decision
   ever wins. Only after the commit is the decision delivered to the agent. A failed delivery is
   journaled as `agent.warning` and never reported as success.
@@ -95,7 +103,11 @@ The draft names map onto these:
 - **Approve-with-modifications.** `Approve { scope: Session }` and approving with modified input are
   not offered yet. Every approval covers one tool call, with the agent's original input.
 - **Sessions per project.** One attached session per project until workspace isolation (worktrees)
-  exists.
+  existed; since milestone 3, one per workspace.
+- **Codex.** Its approval requests (`item/commandExecution/requestApproval`,
+  `item/fileChange/requestApproval`) map to `shell` and `file_write`/`file_edit`/`file_delete`
+  operations. `acceptForSession` and execpolicy amendments are never sent, because human decisions
+  do not become rules.
 
 ## Working directory
 

@@ -9,11 +9,12 @@ use serde_json::Value;
 use switchyard_client::ClientError;
 use switchyard_protocol::Method;
 use switchyard_protocol::methods::{
-    AgentsList, ApprovalsDecide, ApprovalsList, EventsList, ProjectsAdd, ProjectsGet, ProjectsGitStatus,
-    ProjectsList, ProjectsRemove, SessionsGet, SessionsInterrupt, SessionsList, SessionsResume, SessionsSend,
-    SessionsStart, SessionsStop, SystemHealth, WorkspacesArchive, WorkspacesCleanup, WorkspacesCleanupCheck,
-    WorkspacesComplete, WorkspacesCreate, WorkspacesGet, WorkspacesGitStatus, WorkspacesList,
-    WorkspacesRestore, WorkspacesVerify,
+    AgentsList, ApprovalsDecide, ApprovalsList, EventsList, PoliciesArchive, PoliciesCreate,
+    PoliciesEffective, PoliciesEvaluations, PoliciesGet, PoliciesList, PoliciesSetEnabled, PoliciesUpdate,
+    ProjectsAdd, ProjectsGet, ProjectsGitStatus, ProjectsList, ProjectsRemove, SessionsGet,
+    SessionsInterrupt, SessionsList, SessionsResume, SessionsSend, SessionsStart, SessionsStop, SystemHealth,
+    WorkspacesArchive, WorkspacesCleanup, WorkspacesCleanupCheck, WorkspacesComplete, WorkspacesCreate,
+    WorkspacesGet, WorkspacesGitStatus, WorkspacesList, WorkspacesRestore, WorkspacesVerify,
 };
 use tauri::State;
 
@@ -50,6 +51,14 @@ const ALLOWED_METHODS: &[&str] = &[
     SessionsResume::NAME,
     ApprovalsList::NAME,
     ApprovalsDecide::NAME,
+    PoliciesList::NAME,
+    PoliciesGet::NAME,
+    PoliciesCreate::NAME,
+    PoliciesUpdate::NAME,
+    PoliciesSetEnabled::NAME,
+    PoliciesArchive::NAME,
+    PoliciesEffective::NAME,
+    PoliciesEvaluations::NAME,
 ];
 
 #[derive(Debug, Serialize)]

@@ -7,8 +7,9 @@ use switchyard_events::EventEnvelope;
 use uuid::Uuid;
 
 use crate::model::{
-    AgentAvailability, Approval, ApprovalStatus, CleanupReport, ClientInfo, CoreInfo, GitStatusReport,
-    HealthReport, Project, Session, Workspace, WorkspaceGitStatus,
+    AgentAvailability, Approval, ApprovalStatus, CleanupReport, ClientInfo, CoreInfo, EffectivePolicy,
+    GitStatusReport, HealthReport, OperationCategory, PolicyConditions, PolicyDecision, PolicyEvaluation,
+    PolicyRule, PolicyRuleRevision, Project, Session, Workspace, WorkspaceGitStatus,
 };
 
 pub trait Method {
@@ -409,6 +410,138 @@ pub struct ApprovalResult {
 }
 
 method!(ApprovalsDecide, "approvals.decide", ApprovalsDecideParams, ApprovalResult);
+
+// --- policies ---------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoliciesListParams {
+    pub project_id: Uuid,
+    #[serde(default)]
+    pub include_archived: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PoliciesListResult {
+    /// Project and workspace rules of the project, oldest first.
+    pub rules: Vec<PolicyRule>,
+    pub policy_revision: i64,
+}
+
+method!(PoliciesList, "policies.list", PoliciesListParams, PoliciesListResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyRuleIdParams {
+    pub rule_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PoliciesGetResult {
+    pub rule: PolicyRule,
+    /// Every revision, oldest first.
+    pub history: Vec<PolicyRuleRevision>,
+}
+
+method!(PoliciesGet, "policies.get", PolicyRuleIdParams, PoliciesGetResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoliciesCreateParams {
+    pub project_id: Uuid,
+    /// Omit for a project rule.
+    #[serde(default)]
+    pub workspace_id: Option<Uuid>,
+    pub category: OperationCategory,
+    pub decision: PolicyDecision,
+    #[serde(default)]
+    pub conditions: PolicyConditions,
+    pub description: String,
+    /// Defaults to `true`.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyRuleResult {
+    pub rule: PolicyRule,
+    /// Global policy revision created by this change.
+    pub policy_revision: i64,
+}
+
+method!(PoliciesCreate, "policies.create", PoliciesCreateParams, PolicyRuleResult);
+
+/// Changes a rule's effect. Scope and category are fixed for a rule's life;
+/// create a new rule (and archive this one) to change them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoliciesUpdateParams {
+    pub rule_id: Uuid,
+    pub expected_revision: u32,
+    #[serde(default)]
+    pub decision: Option<PolicyDecision>,
+    #[serde(default)]
+    pub conditions: Option<PolicyConditions>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+method!(PoliciesUpdate, "policies.update", PoliciesUpdateParams, PolicyRuleResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoliciesSetEnabledParams {
+    pub rule_id: Uuid,
+    pub expected_revision: u32,
+    pub enabled: bool,
+}
+
+method!(PoliciesSetEnabled, "policies.set_enabled", PoliciesSetEnabledParams, PolicyRuleResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoliciesArchiveParams {
+    pub rule_id: Uuid,
+    pub expected_revision: u32,
+}
+
+method!(PoliciesArchive, "policies.archive", PoliciesArchiveParams, PolicyRuleResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoliciesEffectiveParams {
+    pub project_id: Uuid,
+    #[serde(default)]
+    pub workspace_id: Option<Uuid>,
+}
+
+method!(PoliciesEffective, "policies.effective", PoliciesEffectiveParams, EffectivePolicy);
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoliciesEvaluationsParams {
+    #[serde(default)]
+    pub project_id: Option<Uuid>,
+    #[serde(default)]
+    pub workspace_id: Option<Uuid>,
+    #[serde(default)]
+    pub session_id: Option<Uuid>,
+    /// Evaluations this rule decided or matched.
+    #[serde(default)]
+    pub rule_id: Option<Uuid>,
+    #[serde(default)]
+    pub decision: Option<PolicyDecision>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PoliciesEvaluationsResult {
+    /// Newest first.
+    pub evaluations: Vec<PolicyEvaluation>,
+}
+
+method!(PoliciesEvaluations, "policies.evaluations", PoliciesEvaluationsParams, PoliciesEvaluationsResult);
 
 // --- live output ------------------------------------------------------------
 

@@ -69,6 +69,25 @@ pub enum ErrorCode {
     /// Cleanup refused: safety could not be established, or the state
     /// changed since the operator confirmed.
     UnsafeCleanup,
+    /// The policy rule id does not name a rule.
+    PolicyRuleNotFound,
+    /// The rule is malformed (bad condition, missing description, …).
+    InvalidRule,
+    /// The rule's scope is invalid (e.g. the workspace is not usable for
+    /// rules). A workspace of another project is `workspace_project_mismatch`.
+    InvalidPolicyScope,
+    /// The operation category or decision is not supported by policies
+    /// (e.g. automatic approval of network access or of arbitrary shell
+    /// commands).
+    UnsupportedOperation,
+    /// An active rule with the same scope, category and conditions exists.
+    PolicyConflict,
+    /// The rule changed since the client read it (`expected_revision`).
+    StaleRevision,
+    /// A request could not be evaluated; it was denied.
+    PolicyEvaluationFailed,
+    /// The current policy blocks the operation; it cannot be approved.
+    PolicyDenied,
     /// Core is shutting down and will not accept new work.
     ShuttingDown,
     /// Core is temporarily unable to accept work.

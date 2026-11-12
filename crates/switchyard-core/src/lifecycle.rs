@@ -130,6 +130,7 @@ pub async fn start(config: CoreConfig) -> Result<RunningCore, CoreError> {
         git,
         agents,
         workspaces,
+        policies: crate::policy::PolicyService::new(storage.clone(), bus.clone()),
         config,
         storage,
         bus,

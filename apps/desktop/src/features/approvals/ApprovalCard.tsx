@@ -5,6 +5,8 @@ import { toCoreError, type CoreRequestError } from "../../lib/core";
 import { formatRelative } from "../../lib/format";
 import type { Approval } from "../../types/protocol";
 import { decideApproval } from "../agents/api";
+import { approvalIsStale, otherInputFields } from "./decision";
+import { CATEGORY_LABEL, ruleRefLabel } from "../policies/labels";
 
 function field(input: unknown, key: string): string | undefined {
   if (typeof input !== "object" || input === null) return undefined;
@@ -13,7 +15,36 @@ function field(input: unknown, key: string): string | undefined {
 }
 
 /** Renders the parts of a tool input an operator needs to judge it. */
+function OtherFields({ input }: { input: unknown }) {
+  const extra = otherInputFields(input);
+  if (extra.length === 0) return null;
+  return (
+    <dl className="tool-extra small">
+      {extra.map(([k, v]) => (
+        <div key={k}>
+          <dt className="mono">{k}</dt>
+          <dd className="mono">{v}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 export function ToolInput({ tool, input }: { tool: string; input: unknown }) {
+  // The JSON fallback already shows every field.
+  const special =
+    (tool === "Bash" && field(input, "command") !== undefined) ||
+    field(input, "file_path") !== undefined ||
+    field(input, "notebook_path") !== undefined;
+  return (
+    <>
+      <MainInput tool={tool} input={input} />
+      {special ? <OtherFields input={input} /> : null}
+    </>
+  );
+}
+
+function MainInput({ tool, input }: { tool: string; input: unknown }) {
   const command = field(input, "command");
   const path = field(input, "file_path") ?? field(input, "notebook_path");
   const content = field(input, "content");
@@ -40,6 +71,7 @@ export function ToolInput({ tool, input }: { tool: string; input: unknown }) {
   return <pre className="code-block">{JSON.stringify(input, null, 2)}</pre>;
 }
 
+
 export function ApprovalCard({
   approval,
   projectName,
@@ -52,6 +84,10 @@ export function ApprovalCard({
   const [busy, setBusy] = useState<"approve" | "deny" | null>(null);
   const [error, setError] = useState<CoreRequestError | null>(null);
   const [note, setNote] = useState("");
+  // Core refused the decision because the request was already settled
+  // (elsewhere, by expiry or by policy). Keep the explanation visible here and
+  // stop offering a decision; reloading moves the card to the decided list.
+  const [stale, setStale] = useState(false);
   const pending = approval.status === "pending";
 
   async function decide(decision: "approve" | "deny") {
@@ -62,32 +98,60 @@ export function ApprovalCard({
       await decideApproval(approval.id, decision, decision === "deny" && note.trim() ? note.trim() : undefined);
       onDecided?.();
     } catch (e) {
-      setError(toCoreError(e));
+      const err = toCoreError(e);
+      setError(err);
+      if (approvalIsStale(err.code)) setStale(true);
     } finally {
       setBusy(null);
     }
   }
 
   const expiresIn = Math.max(0, Math.round((approval.expires_at_ms - Date.now()) / 1000));
+  const policy = approval.policy;
+  const byPolicy = approval.decision_source === "policy";
   return (
     <div className={`approval${pending ? " approval-pending" : ""}`}>
       <div className="approval-head">
         <Badge tone="accent">{approval.tool_name}</Badge>
-        {projectName ? <span className="muted small">{projectName}</span> : null}
-        <span className="muted small">Claude Code · requested {formatRelative(approval.requested_at_ms, Date.now())}</span>
-        {pending ? (
-          <span className="muted small approval-expiry">auto-denied in {Math.ceil(expiresIn / 60)} min</span>
+        {policy ? <span className="small">{CATEGORY_LABEL[policy.category]}</span> : null}
+        <span className="muted small">
+          {projectName ? `${projectName} · ` : ""}session {approval.session_id.slice(-6)} · Claude Code · requested{" "}
+          {formatRelative(approval.requested_at_ms, Date.now())}
+        </span>
+        {pending && stale ? (
+          <Badge>no longer waiting</Badge>
+        ) : pending ? (
+          <span className="small approval-expiry">
+            <strong>Awaiting your decision</strong>
+            <span className="muted"> · auto-denied in {Math.ceil(expiresIn / 60)} min</span>
+          </span>
         ) : (
           <Badge tone={approval.status === "approved" ? "ok" : approval.status === "denied" ? "error" : "neutral"}>
-            {approval.status}
-            {approval.decision_source && approval.decision_source !== "operator" ? ` · ${approval.decision_source}` : ""}
+            {byPolicy ? "denied by policy" : approval.status}
+            {approval.decision_source && approval.decision_source !== "operator" && !byPolicy ? ` · ${approval.decision_source}` : ""}
           </Badge>
         )}
       </div>
+      {policy ? (
+        <div className="approval-policy small">
+          <p>
+            <span className="muted">{pending ? "Policy result: ask every time." : "Policy result when requested: ask every time."}</span>{" "}
+            {policy.explanation}
+          </p>
+          {policy.deciding_rule ? <p className="muted">Matching rule: {ruleRefLabel(policy.deciding_rule)}</p> : null}
+        </div>
+      ) : (
+        <p className="muted small">Recorded before approval policies existed.</p>
+      )}
       {approval.description ? <p className="small">{approval.description}</p> : null}
       <ToolInput tool={approval.tool_name} input={approval.input} />
       {error ? <ErrorNotice title="Decision not recorded" message={error.message} code={error.code} /> : null}
-      {pending ? (
+      {pending && stale ? (
+        <div className="approval-actions">
+          <span className="muted small">This request is no longer waiting for a decision.</span>
+          <Button onClick={() => onDecided?.()}>Reload approvals</Button>
+        </div>
+      ) : pending ? (
         <div className="approval-actions">
           <input
             className="input"
@@ -104,7 +168,7 @@ export function ApprovalCard({
           </Button>
         </div>
       ) : approval.decision_note ? (
-        <p className="muted small">Note: {approval.decision_note}</p>
+        <p className="muted small">{byPolicy ? "Why" : "Note"}: {approval.decision_note}</p>
       ) : null}
     </div>
   );

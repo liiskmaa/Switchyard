@@ -6,11 +6,11 @@
 
 <p align="center">
   A local-first desktop app for running native AI coding agents side by side on your repositories.<br>
-  Each agent works in its own Git worktree, and every shell command and file change waits for your approval.
+  Each agent works in its own Git worktree, and every tool request is checked against your policies: shell commands and file changes ask you unless a rule says otherwise.
 </p>
 
 <p align="center">
-  <img alt="Status: milestone 3" src="https://img.shields.io/badge/status-milestone%203-orange">
+  <img alt="Status: milestone 4" src="https://img.shields.io/badge/status-milestone%204-orange">
   <img alt="Platform: macOS" src="https://img.shields.io/badge/platform-macOS-lightgrey">
   <img alt="Rust 1.99" src="https://img.shields.io/badge/rust-1.99-b7410e">
   <img alt="Tauri 2" src="https://img.shields.io/badge/tauri-2-24c8db">
@@ -30,10 +30,14 @@ every action that matters. The desktop app is a client: closing it never stops y
   - live output and tool activity;
   - interrupt, stop and resume;
   - verified against `claude` 2.1.322.
-- **Central approvals.** Every Bash command and file edit is a pending request in Switchyard.
-  - Approve or deny from the UI.
-  - Requests expire as **denials**, never approvals.
-  - Nothing is ever auto-approved.
+- **Central approvals and policies.** Every tool request from an agent goes through Switchyard:
+  - **By default:** reads and searches inside the workspace run without asking; every shell
+    command and file change is a pending request you approve or deny; unknown tools are blocked.
+  - **Per project or workspace,** you can allow a path ("edits under `docs/`") or one exact command
+    (`cargo test`), make reads ask, or block things. When rules disagree, the most restrictive one
+    wins.
+  - Requests expire as **denials**, never approvals. Approving one request never creates a rule.
+  - Every decision is recorded with the rule revision and the reason.
 - **Workspace isolation:**
   - Each session runs in its own Git worktree on its own `switchyard/<id>` branch, stored outside
     your repository.
@@ -51,11 +55,11 @@ every action that matters. The desktop app is a client: closing it never stops y
 - **Observed file changes:** real filesystem events per workspace, kept separate from what the
   agent says it did.
 
-> **Isolation is about source trees, not security.** Worktrees keep agents' working files apart.
-> They don't sandbox processes: an approved shell command runs with your user's permissions and
-> can reach files outside its workspace. Approve accordingly.
+> **Isolation is about source trees, and policies are about what Switchyard answers; neither is a
+> sandbox.** An allowed or approved shell command runs with your user's permissions and can reach
+> files outside its workspace. Approve, and write rules, accordingly.
 
-Not yet: Codex, merging workspace branches back, rule-based approval policies, OS-level sandboxing.
+Not yet: Codex, merging workspace branches back, OS-level sandboxing.
 See the [architecture overview](docs/architecture/overview.md).
 
 ## How it fits together
@@ -97,6 +101,7 @@ Then:
 2. **New workspace.** Switchyard creates a worktree and branch for it, leaving your checkout alone.
 3. **Start Claude session here,** optionally with a first task.
 4. Watch it work under **Agents**, and answer permission requests under **Approvals** or inline.
+   Under **Policies**, decide what may run without asking.
 5. When you're done: **Archive** the workspace, then **Clean up…** once its work is committed.
 
 To try it without touching your real data, use a separate data directory:
@@ -146,6 +151,7 @@ Core CLI: `switchyard-core [--data-dir PATH] [--socket PATH] [--log-format text|
 apps/desktop/                Tauri 2 app: React UI (src/) and the Rust bridge to Core (src-tauri/)
 crates/switchyard-core/      Core executable: lifecycle, IPC server, workspaces, agent sessions
 crates/switchyard-workspaces/ Workspace lifecycle, naming and cleanup-safety rules (no I/O)
+crates/switchyard-policy/    Approval policy: operations, rules, deterministic evaluation (no I/O)
 crates/switchyard-agents/    Agent model, process supervision, Claude Code adapter
 crates/switchyard-git/       Git CLI: inspection and worktree management
 crates/switchyard-protocol/  Versioned wire protocol (Rust); mirrored in apps/desktop/src/types
@@ -160,6 +166,7 @@ docs/                        Architecture, ADRs, protocol specs
 
 - [Architecture overview](docs/architecture/overview.md)
 - [Workspaces: lifecycle, isolation, cleanup](docs/architecture/workspaces.md)
+- [Approval policies](docs/architecture/policies.md)
 - [Database schema](docs/architecture/database.md)
 - [Core IPC protocol](docs/protocols/core-ipc.md)
 - [Claude Code integration (verified CLI behaviour)](docs/architecture/agent-integration.md)
@@ -169,9 +176,26 @@ docs/                        Architecture, ADRs, protocol specs
 ## Status and verification
 
 This is early, milestone-based work. Milestone 1 built the foundation, milestone 2 added native
-Claude Code sessions, and milestone 3 added workspace isolation. Every milestone is checked with
-automated tests against real Git repositories and the real Claude CLI (opt-in). The desktop UI has
-had limited manual click-through so far; please report anything that looks off.
+Claude Code sessions, milestone 3 added workspace isolation, and milestone 4 added approval
+policies.
+
+What each kind of check covers:
+
+- **Automated tests** (`npm test`): Core, the IPC protocol, storage, the policy engine and
+  workspaces, against real Git repositories and a deterministic fake Claude CLI that speaks the
+  recorded stream-json protocol. The fake CLI never decides policy; Core does.
+- **Real Claude Code tests** (opt-in, paid): sessions, two concurrent workspaces and policy
+  decisions against `claude` 2.1.322.
+- **Browser end-to-end tests** (a development harness kept outside the repository): the real React
+  UI against a real Core, through a stand-in for the Tauri bridge, with the fake CLI.
+- **Native app** (macOS, bundled `Switchyard.app`): Core auto-launch and reuse, the native IPC
+  bridge with reconnection and event replay, protocol-mismatch handling and the native folder
+  picker, plus a real Claude Code session driven from the native window (an allowed read, an
+  approved and a denied write, a denied shell command, interrupt, stop and resume). These were
+  manual checks on one macOS machine, not an automated suite.
+
+Policies decide what Switchyard answers, approvals are per-request human decisions, and workspaces
+separate source trees. None of them is an OS-level sandbox; that is not implemented.
 
 ## License
 

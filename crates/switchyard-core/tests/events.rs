@@ -10,6 +10,9 @@ use switchyard_protocol::methods::{
 };
 
 use common::{TestCore, git_repo, next_notification};
+use switchyard_client::CoreClient;
+use switchyard_protocol::EventEnvelope;
+use tokio::sync::mpsc;
 
 #[tokio::test]
 async fn live_subscription_receives_persisted_events_in_order() {
@@ -128,4 +131,116 @@ async fn subscribers_see_core_stopping_on_shutdown() {
     assert!(saw_stopping && saw_shutdown);
     client.closed().await;
     core.core.take().unwrap().wait().await.unwrap();
+}
+
+async fn recv_events(rx: &mut mpsc::Receiver<Notification>, n: usize) -> Vec<EventEnvelope> {
+    let mut out = Vec::new();
+    while out.len() < n {
+        if let Notification::Event { event, .. } = next_notification(rx).await {
+            out.push(event);
+        }
+    }
+    out
+}
+
+async fn journal_after(client: &CoreClient, seq: i64) -> Vec<EventEnvelope> {
+    client
+        .call::<EventsList>(EventsListParams {
+            after_seq: Some(seq),
+            limit: Some(1000),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .events
+}
+
+/// The desktop bridge's reconnect contract: remember the last delivered
+/// `seq`, and after a lost connection subscribe with `after_seq` set to it.
+/// Every durable event journaled while disconnected arrives exactly once, in
+/// order, and live delivery continues after the replay without duplicates.
+#[tokio::test]
+async fn reconnecting_with_last_seen_seq_recovers_missed_events_exactly_once() {
+    let core = TestCore::start().await;
+    let (writer, _wrx) = core.connect().await;
+
+    let (ui, mut ui_rx) = core.connect().await;
+    ui.call::<EventsSubscribe>(EventsSubscribeParams::default()).await.unwrap();
+    let first = git_repo(core.dir.path(), "before");
+    writer.call::<ProjectsAdd>(ProjectsAddParams { path: first.display().to_string() }).await.unwrap();
+    let seen = recv_events(&mut ui_rx, 1).await;
+    let last_seen = seen[0].seq;
+    drop(ui);
+    drop(ui_rx);
+
+    // Durable events while the UI is disconnected.
+    let mut missed_projects = Vec::new();
+    for name in ["gap-a", "gap-b", "gap-c"] {
+        let repo = git_repo(core.dir.path(), name);
+        let p = writer
+            .call::<ProjectsAdd>(ProjectsAddParams { path: repo.display().to_string() })
+            .await
+            .unwrap()
+            .project;
+        missed_projects.push(p.id);
+    }
+    writer.call::<ProjectsRemove>(ProjectIdParams { project_id: missed_projects[1] }).await.unwrap();
+    let missed = journal_after(&writer, last_seen).await;
+    assert_eq!(missed.len(), 4);
+
+    let (ui, mut ui_rx) = core.connect().await;
+    ui.call::<EventsSubscribe>(EventsSubscribeParams { after_seq: Some(last_seen), ..Default::default() })
+        .await
+        .unwrap();
+    let replayed = recv_events(&mut ui_rx, missed.len()).await;
+    assert_eq!(replayed, missed, "exactly the missed events, in journal order");
+
+    // Live delivery continues with the next event only (no duplicate replay).
+    let after = git_repo(core.dir.path(), "after");
+    writer.call::<ProjectsAdd>(ProjectsAddParams { path: after.display().to_string() }).await.unwrap();
+    let live = recv_events(&mut ui_rx, 1).await;
+    assert_eq!(live[0].event_type, "project.registered");
+    assert_eq!(live[0].seq, journal_after(&writer, missed.last().unwrap().seq).await[0].seq);
+    let mut seqs: Vec<_> = replayed.iter().chain(&live).map(|e| e.seq).collect();
+    let n = seqs.len();
+    seqs.dedup();
+    assert_eq!(seqs.len(), n, "no event delivered twice");
+    assert!(tokio::time::timeout(std::time::Duration::from_millis(300), ui_rx.recv()).await.is_err());
+}
+
+/// The same contract across a Core restart: the journal survives, so a
+/// client that remembers its last `seq` recovers what the previous Core
+/// journaled after it (including `core.stopping`) and the new `core.started`.
+#[tokio::test]
+async fn replay_after_seq_spans_a_core_restart() {
+    let mut core = TestCore::start().await;
+    let (client, mut rx) = core.connect().await;
+    client.call::<EventsSubscribe>(EventsSubscribeParams::default()).await.unwrap();
+    let repo = git_repo(core.dir.path(), "restart");
+    let project = client
+        .call::<ProjectsAdd>(ProjectsAddParams { path: repo.display().to_string() })
+        .await
+        .unwrap()
+        .project;
+    let last_seen = recv_events(&mut rx, 1).await[0].seq;
+    drop(client);
+    drop(rx);
+    core.restart().await;
+
+    let (writer, _wrx) = core.connect().await;
+    writer.call::<ProjectsRemove>(ProjectIdParams { project_id: project.id }).await.unwrap();
+    let missed = journal_after(&writer, last_seen).await;
+    let types: Vec<_> = missed.iter().map(|e| e.event_type.as_str()).collect();
+    assert!(
+        types.contains(&"core.stopping")
+            && types.contains(&"core.started")
+            && types.contains(&"project.removed"),
+        "{types:?}"
+    );
+
+    let (ui, mut ui_rx) = core.connect().await;
+    ui.call::<EventsSubscribe>(EventsSubscribeParams { after_seq: Some(last_seen), ..Default::default() })
+        .await
+        .unwrap();
+    assert_eq!(recv_events(&mut ui_rx, missed.len()).await, missed);
 }

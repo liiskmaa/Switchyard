@@ -4,6 +4,7 @@
 mod agents;
 pub(crate) mod errors;
 mod events;
+mod policies;
 mod projects;
 mod system;
 mod workspaces;
@@ -131,6 +132,30 @@ pub(crate) async fn dispatch(conn: &Connection, method: &str, params: Value) -> 
         }
         methods::WorkspacesCleanup::NAME => {
             typed::<methods::WorkspacesCleanup, _, _>(params, |p| workspaces::cleanup(state, p)).await
+        }
+        methods::PoliciesList::NAME => {
+            typed::<methods::PoliciesList, _, _>(params, |p| policies::list(state, p)).await
+        }
+        methods::PoliciesGet::NAME => {
+            typed::<methods::PoliciesGet, _, _>(params, |p| policies::get(state, p)).await
+        }
+        methods::PoliciesCreate::NAME => {
+            typed::<methods::PoliciesCreate, _, _>(params, |p| policies::create(conn, p)).await
+        }
+        methods::PoliciesUpdate::NAME => {
+            typed::<methods::PoliciesUpdate, _, _>(params, |p| policies::update(conn, p)).await
+        }
+        methods::PoliciesSetEnabled::NAME => {
+            typed::<methods::PoliciesSetEnabled, _, _>(params, |p| policies::set_enabled(conn, p)).await
+        }
+        methods::PoliciesArchive::NAME => {
+            typed::<methods::PoliciesArchive, _, _>(params, |p| policies::archive(conn, p)).await
+        }
+        methods::PoliciesEffective::NAME => {
+            typed::<methods::PoliciesEffective, _, _>(params, |p| policies::effective(state, p)).await
+        }
+        methods::PoliciesEvaluations::NAME => {
+            typed::<methods::PoliciesEvaluations, _, _>(params, |p| policies::evaluations(state, p)).await
         }
         methods::LiveSubscribe::NAME => {
             events::live_subscribe(conn, parse::<methods::LiveSubscribe>(params)?).await

@@ -12,6 +12,7 @@ pub mod approvals;
 mod error;
 pub mod events;
 mod migrations;
+pub mod policies;
 pub mod projects;
 pub mod sessions;
 pub mod stats;

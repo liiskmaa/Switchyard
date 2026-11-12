@@ -13,6 +13,7 @@ pub const MIGRATIONS: &[(u32, &str)] = &[
     (1, include_str!("../../../migrations/0001_initial.sql")),
     (2, include_str!("../../../migrations/0002_agent_sessions.sql")),
     (3, include_str!("../../../migrations/0003_workspaces.sql")),
+    (4, include_str!("../../../migrations/0004_policies.sql")),
 ];
 
 pub const LATEST_SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -74,7 +75,9 @@ mod tests {
                 "events",
                 "findings",
                 "messages",
-                "permissions",
+                "policy_evaluations",
+                "policy_rule_revisions",
+                "policy_rules",
                 "projects",
                 "sessions",
                 "tasks",
@@ -151,5 +154,96 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    fn apply_up_to(c: &mut Connection, last: u32) {
+        c.pragma_update(None, "foreign_keys", true).unwrap();
+        for &(version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v <= last) {
+            let tx = c.transaction().unwrap();
+            tx.execute_batch(sql).unwrap();
+            tx.pragma_update(None, "user_version", version).unwrap();
+            tx.commit().unwrap();
+        }
+    }
+
+    const V3_FIXTURE: &str = "INSERT INTO projects VALUES ('p1', 'demo', '/repo', 1, 1);
+         INSERT INTO workspaces (id, project_id, kind, name, path, branch, base_commit, status, created_at,
+             updated_at, last_activity_at)
+             VALUES ('w1', 'p1', 'worktree', 'one', '/data/w1', 'switchyard/w1', 'abc', 'active', 1, 1, 1);
+         INSERT INTO agents VALUES ('a1', 'claude_code', 'Claude Code', '/bin/claude', '2.1.322', 1, 1);
+         INSERT INTO sessions (id, project_id, workspace_id, agent_id, provider, native_session_id, cwd,
+             state, started_at, last_activity_at)
+             VALUES ('s1', 'p1', 'w1', 'a1', 'claude_code', 'n1', '/data/w1', 'waiting_for_approval', 1, 1);
+         INSERT INTO approvals (id, project_id, session_id, kind, tool_name, native_request_id, request,
+             status, requested_at, expires_at, decided_at, decision_source, decided_by)
+             VALUES ('ap1', 'p1', 's1', 'tool_use', 'Write', 'r1', '{\"input\":{}}', 'approved', 1, 2, 2,
+                     'operator', 'desktop');
+         INSERT INTO approvals (id, project_id, session_id, kind, tool_name, native_request_id, request,
+             status, requested_at, expires_at)
+             VALUES ('ap2', 'p1', 's1', 'tool_use', 'Bash', 'r2', '{\"input\":{\"command\":\"ls\"}}',
+                     'pending', 3, 4);";
+
+    /// Upgrading keeps every approval exactly as it was (a pending one stays
+    /// pending), creates no policy rule and drops the never-used
+    /// `permissions` table.
+    #[test]
+    fn upgrade_from_v3_keeps_approvals_and_creates_no_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.db");
+        {
+            let mut c = Connection::open(&path).unwrap();
+            apply_up_to(&mut c, 3);
+            c.execute_batch(V3_FIXTURE).unwrap();
+        }
+        let storage = Storage::open(&path).unwrap();
+        storage
+            .with_conn(|c| {
+                #[allow(clippy::type_complexity)]
+                let rows: Vec<(String, String, Option<String>, Option<String>, Option<String>)> = c
+                    .prepare("SELECT id, status, decision_source, decided_by, evaluation_id FROM approvals ORDER BY id")?
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?
+                    .collect::<Result<_, _>>()?;
+                assert_eq!(
+                    rows,
+                    [
+                        ("ap1".into(), "approved".into(), Some("operator".into()), Some("desktop".into()), None),
+                        ("ap2".into(), "pending".into(), None, None, None),
+                    ]
+                );
+                let count = |sql: &str| c.query_row(sql, [], |r| r.get::<_, i64>(0));
+                assert_eq!(count("SELECT COUNT(*) FROM policy_rules")?, 0, "no permissive (or any) rule is created");
+                assert_eq!(count("SELECT COUNT(*) FROM policy_rule_revisions")?, 0);
+                assert_eq!(count("SELECT COUNT(*) FROM policy_evaluations")?, 0);
+                assert_eq!(count("SELECT COUNT(*) FROM sqlite_master WHERE name = 'permissions'")?, 0);
+                assert_eq!(count("SELECT COUNT(*) FROM sessions WHERE workspace_id = 'w1'")?, 1);
+                assert_eq!(count("SELECT COUNT(*) FROM workspaces WHERE status = 'active'")?, 1);
+                // `policy` can only ever deny.
+                assert!(c.execute("UPDATE approvals SET status = 'approved', decided_at = 5, decision_source = 'policy' WHERE id = 'ap2'", []).is_err());
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    /// The reserved `permissions` table was never written by Core; if
+    /// something put rows there, the migration refuses (atomically) instead
+    /// of dropping them.
+    #[test]
+    fn upgrade_refuses_to_drop_a_non_empty_permissions_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.db");
+        {
+            let mut c = Connection::open(&path).unwrap();
+            apply_up_to(&mut c, 3);
+            c.execute_batch(V3_FIXTURE).unwrap();
+            c.execute_batch("INSERT INTO permissions VALUES ('x', 'p1', NULL, 'Bash(*)', 'allow', 1);")
+                .unwrap();
+        }
+        assert!(matches!(Storage::open(&path), Err(StorageError::Migration { version: 4, .. })));
+        let c = Connection::open(&path).unwrap();
+        let version: u32 = c.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, 3, "the failed migration left nothing half-applied");
+        let kept: i64 = c.query_row("SELECT COUNT(*) FROM permissions", [], |r| r.get(0)).unwrap();
+        let approvals: i64 = c.query_row("SELECT COUNT(*) FROM approvals", [], |r| r.get(0)).unwrap();
+        assert_eq!((kept, approvals), (1, 2));
     }
 }

@@ -139,6 +139,7 @@ string_enum!(
         AgentExited => "agent_exited",
         CoreShutdown => "core_shutdown",
         CoreRestart => "core_restart",
+        Policy => "policy",
     }
 );
 

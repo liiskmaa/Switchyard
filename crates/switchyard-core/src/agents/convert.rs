@@ -1,7 +1,7 @@
 //! Storage records → protocol types.
 
 use switchyard_agents::claude;
-use switchyard_protocol::model::{AgentAvailability, Approval, Session};
+use switchyard_protocol::model::{AgentAvailability, Approval, ApprovalPolicy, Session};
 use switchyard_storage::{ApprovalRecord, SessionRecord};
 
 pub(super) fn session(
@@ -36,7 +36,11 @@ pub(super) fn session(
     }
 }
 
-pub(super) fn approval(r: ApprovalRecord, workspace: Option<(uuid::Uuid, String)>) -> Approval {
+pub(super) fn approval(
+    r: ApprovalRecord,
+    workspace: Option<(uuid::Uuid, String)>,
+    policy: Option<ApprovalPolicy>,
+) -> Approval {
     let (workspace_id, workspace_name) = workspace.map_or((None, None), |(id, name)| (Some(id), Some(name)));
     Approval {
         id: r.id,
@@ -57,6 +61,7 @@ pub(super) fn approval(r: ApprovalRecord, workspace: Option<(uuid::Uuid, String)
         decision_source: r.decision_source,
         decided_by: r.decided_by,
         decision_note: r.decision_note,
+        policy,
     }
 }
 

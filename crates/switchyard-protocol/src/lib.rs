@@ -31,13 +31,19 @@ pub use switchyard_events::EventEnvelope;
 /// - 1: milestones 1–2 (`sessions.start {project_id}` ran in the checkout).
 /// - 2: milestone 3 workspaces; `sessions.start` requires `workspace_id`
 ///   (ADR 0015).
-pub const PROTOCOL_VERSION: u32 = 2;
+/// - 3: milestone 4 approval policies: requests may be allowed or denied by
+///   policy without an approval; approvals carry their policy evaluation;
+///   decision source `policy`; `approvals.decide` can fail with
+///   `policy_denied`; `policies.*` methods (ADR 0016).
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Oldest protocol version this build can serve or use. Core rejects older
 /// clients during `initialize`; the client rejects a Core that selects an
 /// older version. Version 1 is not served: its `sessions.start` contract
-/// (agent in the project checkout) no longer exists.
-pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 2;
+/// (agent in the project checkout) no longer exists. Version 2 is not
+/// served: a v2 client would assume every permission request becomes an
+/// approval a person decides, and cannot parse the `policy` decision source.
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 3;
 
 /// Default upper bound for a single frame, in bytes.
 pub const DEFAULT_MAX_FRAME_BYTES: usize = 1024 * 1024;

@@ -25,6 +25,9 @@ Every session is launched with:
   harness-specific tools are not offered.
 - `--settings '{"permissions":{"ask":["Bash"]}}'`, so **every** shell command (including `cat` and
   `ls` of paths outside the project) needs an operator decision in Switchyard. Verified.
+  **Extended by [ADR 0017](0017-normalized-operations.md):** the `ask` rule now names every enabled
+  tool, and each request is decided by Switchyard's policy engine (ADR 0016) before any operator
+  is asked.
 - `--permission-mode default`. Never `acceptEdits`, never bypass.
 - The working directory is the project's primary workspace, a new `workspaces` row of kind
   `primary`, which is the anchor for future worktree isolation. **Superseded by

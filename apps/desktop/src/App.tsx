@@ -3,6 +3,7 @@ import { ActivityView } from "./features/activity/ActivityView";
 import { AgentsView } from "./features/agents/AgentsView";
 import { ApprovalsView } from "./features/approvals/ApprovalsView";
 import { DashboardView } from "./features/dashboard/DashboardView";
+import { PoliciesView } from "./features/policies/PoliciesView";
 import { ProjectsView } from "./features/projects/ProjectsView";
 import { SettingsView } from "./features/settings/SettingsView";
 import { AppShell } from "./layouts/AppShell";
@@ -18,6 +19,7 @@ export function App() {
       {section === "agents" ? <AgentsView /> : null}
       {section === "activity" ? <ActivityView /> : null}
       {section === "approvals" ? <ApprovalsView /> : null}
+      {section === "policies" ? <PoliciesView /> : null}
       {section === "settings" ? <SettingsView /> : null}
     </AppShell>
   );

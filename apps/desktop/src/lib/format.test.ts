@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { EventEnvelope } from "../types/protocol";
-import { describeEvent, formatDuration, formatRelative, mergeEvents } from "./format";
+import { describeEvent, formatClock, formatDuration, formatRelative, formatTimestamp, mergeEvents } from "./format";
 import { toCoreError } from "./core";
 
 const event = (seq: number, event_type = "project.registered", payload: Record<string, unknown> = {}): EventEnvelope => ({
@@ -71,5 +71,41 @@ describe("agent events", () => {
     expect(describeEvent(event(2, "agent.tool_failed", { tool_name: "Write", rejected: true, output: "no" }))).toBe(
       "Write not run: no",
     );
+  });
+});
+
+describe("policy events", () => {
+  it("say whether a request was decided automatically and why", () => {
+    const allowed = event(1, "agent.permission_evaluated", {
+      decision: "allow",
+      tool_name: "Read",
+      target: "/w/README.md",
+      explanation: "Built-in default: reading files inside the workspace is allowed.",
+    });
+    expect(describeEvent(allowed)).toBe(
+      "Allowed automatically: Read /w/README.md — Built-in default: reading files inside the workspace is allowed.",
+    );
+    expect(describeEvent(event(2, "agent.permission_evaluated", { decision: "deny", tool_name: "Teleport", explanation: "x" }))).toBe(
+      "Blocked: Teleport — x",
+    );
+    expect(
+      describeEvent(event(3, "agent.permission_resolved", { tool_name: "Bash", status: "denied", source: "policy", note: "No shell" })),
+    ).toBe("Bash denied by a policy change: No shell");
+    expect(
+      describeEvent(
+        event(4, "policy.rule_changed", { change: "created", description: "Docs", decision: "allow", category: "file_edit", revision: 1 }),
+      ),
+    ).toBe("Policy rule created: “Docs” (allow file_edit, revision 1)");
+  });
+});
+
+describe("cached date formatters", () => {
+  it("format exactly like the locale methods they replace", () => {
+    for (const ms of [0, 1_794_430_000_000, Date.UTC(2026, 0, 2, 3, 4, 5)]) {
+      expect(formatClock(ms)).toBe(new Date(ms).toLocaleTimeString());
+      expect(formatTimestamp(ms)).toBe(
+        new Date(ms).toLocaleString(undefined, { year: "numeric", month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+      );
+    }
   });
 });

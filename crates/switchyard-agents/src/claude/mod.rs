@@ -13,13 +13,17 @@
 //!   process;
 //! * `--restricted` + `--strict-mcp-config` + an explicit tool list so that
 //!   repository settings, hooks and MCP servers cannot bypass Switchyard,
-//!   and a `Bash` ask rule so every shell command needs a decision.
+//!   and an `ask` rule for every enabled tool so each tool use reaches
+//!   Switchyard's policy evaluation (ADR 0017);
+//! * [`classify`] maps each request to a vendor-neutral operation.
 
+mod classify;
 mod detect;
 mod launch;
 mod session;
 mod wire;
 
+pub use classify::{ADAPTER, classify, enabled_tools};
 pub use detect::{AuthStatus, ClaudeInstallation, DetectError, auth_status, detect, locate};
 pub use launch::{LaunchSpec, NativeSession, TOOLS, build_args, build_env};
 pub use session::{ClaudeConfig, ClaudeSession, ExitReport, SessionError, SessionUpdate, spawn_session};

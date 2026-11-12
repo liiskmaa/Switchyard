@@ -1,6 +1,7 @@
 # ADR 0015: Protocol version 2 for workspace sessions
 
-- Status: accepted (2026-11-11)
+- Status: accepted (2026-11-11). The mechanism stands; the current version is 3 with minimum 3
+  ([ADR 0016](0016-approval-policy-model.md)).
 - Supersedes the "Protocol compatibility" section of [ADR 0012](0012-project-workspace-session.md).
 
 ## Context

@@ -27,10 +27,13 @@ pub struct ApprovalRecord {
     pub decision_source: Option<DecisionSource>,
     pub decided_by: Option<String>,
     pub decision_note: Option<String>,
+    /// The policy evaluation that created this approval (`None` for
+    /// approvals recorded before policies existed).
+    pub evaluation_id: Option<Uuid>,
 }
 
 const COLUMNS: &str = "id, project_id, session_id, agent_id, tool_name, tool_use_id, native_request_id, request, \
-                       status, requested_at, expires_at, decided_at, decision_source, decided_by, decision_note";
+                       status, requested_at, expires_at, decided_at, decision_source, decided_by, decision_note, evaluation_id";
 
 fn from_row(r: &Row<'_>) -> rusqlite::Result<Result<ApprovalRecord, StorageError>> {
     let id: String = r.get(0)?;
@@ -40,6 +43,7 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<Result<ApprovalRecord, StorageError
     let request: String = r.get(7)?;
     let status: String = r.get(8)?;
     let source: Option<String> = r.get(12)?;
+    let evaluation: Option<String> = r.get(15)?;
     let partial = ApprovalRecord {
         id: uuid::Uuid::nil(),
         project_id: uuid::Uuid::nil(),
@@ -56,6 +60,7 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<Result<ApprovalRecord, StorageError
         decision_source: None,
         decided_by: r.get(13)?,
         decision_note: r.get(14)?,
+        evaluation_id: None,
     };
     Ok((|| {
         Ok(ApprovalRecord {
@@ -69,6 +74,10 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<Result<ApprovalRecord, StorageError
             decision_source: source
                 .as_deref()
                 .map(|s| parse_enum(s, "approvals.decision_source"))
+                .transpose()?,
+            evaluation_id: evaluation
+                .as_deref()
+                .map(|e| parse_uuid(e, "approvals.evaluation_id"))
                 .transpose()?,
             ..partial
         })
@@ -85,7 +94,7 @@ fn collect(
 
 pub fn insert(conn: &Connection, a: &ApprovalRecord) -> Result<(), StorageError> {
     conn.execute(
-        &format!("INSERT INTO approvals (kind, {COLUMNS}) VALUES ('tool_use', ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"),
+        &format!("INSERT INTO approvals (kind, {COLUMNS}) VALUES ('tool_use', ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)"),
         params![
             a.id.to_string(),
             a.project_id.to_string(),
@@ -102,6 +111,7 @@ pub fn insert(conn: &Connection, a: &ApprovalRecord) -> Result<(), StorageError>
             a.decision_source.map(DecisionSource::as_str),
             a.decided_by,
             a.decision_note,
+            a.evaluation_id.map(|e| e.to_string()),
         ],
     )
     .map_err(|e| StorageError::from_unique(e, || format!("permission request {} already recorded", a.native_request_id)))?;
@@ -228,6 +238,7 @@ mod tests {
             decision_source: None,
             decided_by: None,
             decision_note: None,
+            evaluation_id: None,
         }
     }
 

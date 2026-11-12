@@ -170,6 +170,141 @@ export interface Approval {
   decision_source: string | null;
   decided_by: string | null;
   decision_note: string | null;
+  /** The policy evaluation that asked for this decision (null for approvals from before policies). */
+  policy?: ApprovalPolicy | null;
+}
+
+// --- policies (ADR 0016) -----------------------------------------------------
+
+export type OperationCategory =
+  | "file_read"
+  | "file_write"
+  | "file_edit"
+  | "file_delete"
+  | "directory_list"
+  | "search"
+  | "shell"
+  | "network"
+  | "external_tool"
+  | "unknown";
+
+export type PolicyDecision = "allow" | "ask" | "deny";
+export type PolicyReason = "system_restriction" | "rule" | "default" | "capped";
+export type RuleScope = "project" | "workspace";
+
+export interface PolicyConditions {
+  path_prefix?: string;
+  command?: string;
+}
+
+export interface PolicyRuleRef {
+  id: Uuid;
+  revision: number;
+  scope: RuleScope;
+  workspace_id: Uuid | null;
+  decision: PolicyDecision;
+  description: string;
+}
+
+export interface PolicyRestriction {
+  code: string;
+  message: string;
+}
+
+export interface ApprovalPolicy {
+  evaluation_id: Uuid;
+  category: OperationCategory;
+  reason: PolicyReason;
+  explanation: string;
+  deciding_rule: PolicyRuleRef | null;
+  policy_revision: number;
+}
+
+export interface PolicyRule {
+  id: Uuid;
+  project_id: Uuid;
+  workspace_id: Uuid | null;
+  workspace_name: string | null;
+  scope: RuleScope;
+  category: OperationCategory;
+  decision: PolicyDecision;
+  conditions: PolicyConditions;
+  description: string;
+  enabled: boolean;
+  archived: boolean;
+  /** Pass back as `expected_revision` when changing the rule. */
+  revision: number;
+  created_at_ms: number;
+  updated_at_ms: number;
+  archived_at_ms: number | null;
+}
+
+export interface PolicyRuleRevision {
+  revision: number;
+  policy_revision: number;
+  change: "created" | "updated" | "enabled" | "disabled" | "archived";
+  rule: PolicyRule;
+  changed_at_ms: number;
+  changed_by: string | null;
+}
+
+export interface PolicyCategoryInfo {
+  category: OperationCategory;
+  default_decision: PolicyDecision;
+  configurable: boolean;
+  allow_supported: boolean;
+  path_condition: boolean;
+  command_condition: boolean;
+}
+
+export interface EffectivePolicy {
+  project_id: Uuid;
+  workspace_id: Uuid | null;
+  policy_revision: number;
+  system_version: number;
+  system_restrictions: PolicyRestriction[];
+  categories: PolicyCategoryInfo[];
+  project_rules: PolicyRule[];
+  workspace_rules: PolicyRule[];
+}
+
+export interface PolicyPathFact {
+  location: "inside" | "outside" | "unresolved";
+  lexical?: string;
+  resolved?: string;
+  reason?: string;
+}
+
+export interface PolicyEvaluation {
+  id: Uuid;
+  evaluated_at_ms: number;
+  trigger: "request" | "reevaluation" | "decision_check";
+  project_id: Uuid;
+  workspace_id: Uuid | null;
+  workspace_name: string | null;
+  session_id: Uuid;
+  adapter: string;
+  tool_name: string;
+  category: OperationCategory;
+  input: {
+    operation?: { tool?: string; paths?: string[]; command?: string; background?: boolean; problem?: string };
+    paths?: PolicyPathFact[];
+  };
+  decision: PolicyDecision;
+  reason: PolicyReason;
+  explanation: string;
+  deciding_rule: PolicyRuleRef | null;
+  matched_rules: PolicyRuleRef[];
+  restrictions: PolicyRestriction[];
+  policy_revision: number;
+  system_version: number;
+  approval_id: Uuid | null;
+  approval_status: ApprovalStatus | null;
+}
+
+export interface PolicyRuleResult {
+  rule: PolicyRule;
+  policy_revision: number;
 }
 
 export type LiveKind = "text" | "thinking" | "message_start" | "message_stop" | "gap";
@@ -320,6 +455,50 @@ export interface CoreMethods {
   "approvals.decide": {
     params: { approval_id: Uuid; decision: "approve" | "deny"; note?: string };
     result: { approval: Approval };
+  };
+  "policies.list": {
+    params: { project_id: Uuid; include_archived?: boolean };
+    result: { rules: PolicyRule[]; policy_revision: number };
+  };
+  "policies.get": { params: { rule_id: Uuid }; result: { rule: PolicyRule; history: PolicyRuleRevision[] } };
+  "policies.create": {
+    params: {
+      project_id: Uuid;
+      workspace_id?: Uuid;
+      category: OperationCategory;
+      decision: PolicyDecision;
+      conditions?: PolicyConditions;
+      description: string;
+      enabled?: boolean;
+    };
+    result: PolicyRuleResult;
+  };
+  "policies.update": {
+    params: {
+      rule_id: Uuid;
+      expected_revision: number;
+      decision?: PolicyDecision;
+      conditions?: PolicyConditions;
+      description?: string;
+    };
+    result: PolicyRuleResult;
+  };
+  "policies.set_enabled": {
+    params: { rule_id: Uuid; expected_revision: number; enabled: boolean };
+    result: PolicyRuleResult;
+  };
+  "policies.archive": { params: { rule_id: Uuid; expected_revision: number }; result: PolicyRuleResult };
+  "policies.effective": { params: { project_id: Uuid; workspace_id?: Uuid }; result: EffectivePolicy };
+  "policies.evaluations": {
+    params: {
+      project_id?: Uuid;
+      workspace_id?: Uuid;
+      session_id?: Uuid;
+      rule_id?: Uuid;
+      decision?: PolicyDecision;
+      limit?: number;
+    };
+    result: { evaluations: PolicyEvaluation[] };
   };
 }
 

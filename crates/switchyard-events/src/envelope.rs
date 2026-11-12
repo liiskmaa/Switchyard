@@ -91,6 +91,31 @@ pub enum DomainEvent {
         input: serde_json::Value,
         description: Option<String>,
         expires_at_ms: i64,
+        /// The `ask` evaluation that created the approval (since v3).
+        #[serde(default)]
+        evaluation_id: Option<Uuid>,
+        #[serde(default)]
+        explanation: Option<String>,
+    },
+    /// A permission request was evaluated against the policy. For `allow`
+    /// and `deny` this is the final, automatic decision; for `ask` an
+    /// approval follows (`agent.permission_requested`).
+    #[serde(rename = "agent.permission_evaluated")]
+    AgentPermissionEvaluated {
+        evaluation_id: Uuid,
+        /// `request`, `reevaluation` or `decision_check`.
+        trigger: String,
+        tool_name: String,
+        category: String,
+        decision: String,
+        reason: String,
+        explanation: String,
+        rule_id: Option<Uuid>,
+        rule_revision: Option<u32>,
+        policy_revision: i64,
+        approval_id: Option<Uuid>,
+        /// What the request targeted (path or command), bounded.
+        target: Option<String>,
     },
     #[serde(rename = "agent.permission_resolved")]
     AgentPermissionResolved {
@@ -119,6 +144,25 @@ pub enum DomainEvent {
     /// The session failed (start failure, crash, lost supervision).
     #[serde(rename = "agent.failed")]
     AgentFailed { reason: String, detail: Option<String> },
+
+    // --- policies (context carries project_id, and workspace_id for
+    // workspace rules) -----------------------------------------------------
+    /// A policy rule was created, changed, enabled, disabled or archived.
+    #[serde(rename = "policy.rule_changed")]
+    PolicyRuleChanged {
+        rule_id: Uuid,
+        /// `created`, `updated`, `enabled`, `disabled` or `archived`.
+        change: String,
+        revision: u32,
+        policy_revision: i64,
+        scope: String,
+        category: String,
+        decision: String,
+        enabled: bool,
+        archived: bool,
+        description: String,
+        conditions: serde_json::Value,
+    },
 
     // --- workspaces (context carries project_id and workspace_id) ----------
     /// A workspace record was created; provisioning of its worktree begins.
@@ -185,6 +229,8 @@ impl DomainEvent {
             Self::AgentTurnCompleted { .. } => "agent.turn_completed",
             Self::AgentPermissionRequested { .. } => "agent.permission_requested",
             Self::AgentPermissionResolved { .. } => "agent.permission_resolved",
+            Self::AgentPermissionEvaluated { .. } => "agent.permission_evaluated",
+            Self::PolicyRuleChanged { .. } => "policy.rule_changed",
             Self::AgentInterrupted {} => "agent.interrupted",
             Self::AgentSessionResumed { .. } => "agent.session_resumed",
             Self::AgentWarning { .. } => "agent.warning",

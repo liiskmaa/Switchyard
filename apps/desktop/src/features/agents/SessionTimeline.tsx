@@ -1,16 +1,17 @@
+import { memo } from "react";
 import type React from "react";
 
 import { Badge, type Tone } from "../../components/ui";
-import { formatTimestamp, toolSummary } from "../../lib/format";
+import { formatClock, formatTimestamp, toolSummary } from "../../lib/format";
 import type { EventEnvelope } from "../../types/protocol";
 
 const str = (p: Record<string, unknown>, k: string): string => (typeof p[k] === "string" ? (p[k] as string) : "");
 
-function Item({ e }: { e: EventEnvelope }) {
+const Item = memo(function Item({ e }: { e: EventEnvelope }) {
   const p = e.payload;
   const time = (
     <time className="tl-time" title={formatTimestamp(e.occurred_at_ms)}>
-      {new Date(e.occurred_at_ms).toLocaleTimeString()}
+      {formatClock(e.occurred_at_ms)}
     </time>
   );
   const line = (tone: Tone, label: string, body: React.ReactNode) => (
@@ -49,7 +50,27 @@ function Item({ e }: { e: EventEnvelope }) {
         </span>,
       );
     case "agent.permission_requested":
-      return line("warn", "permission", <span>{str(p, "tool_name")} requested approval</span>);
+      return line(
+        "warn",
+        "permission",
+        <span>
+          {str(p, "tool_name")} needs your approval
+          {str(p, "explanation") ? <span className="muted"> · {str(p, "explanation")}</span> : null}
+        </span>,
+      );
+    case "agent.permission_evaluated": {
+      // `ask` is shown by the approval request that follows.
+      const decision = str(p, "decision");
+      if (decision === "ask") return null;
+      return line(
+        decision === "allow" ? "ok" : "error",
+        decision === "allow" ? "auto-allowed" : "blocked",
+        <span>
+          {str(p, "tool_name")}
+          <span className="muted"> · {str(p, "explanation")}</span>
+        </span>,
+      );
+    }
     case "agent.permission_resolved":
       return line(
         str(p, "status") === "approved" ? "ok" : "error",
@@ -98,9 +119,10 @@ function Item({ e }: { e: EventEnvelope }) {
     default:
       return null; // state changes, ready etc. are reflected in the header
   }
-}
+});
 
-export function SessionTimeline({ events }: { events: EventEnvelope[] }) {
+/** Memoized: live output re-renders the session view many times a second. */
+export const SessionTimeline = memo(function SessionTimeline({ events }: { events: EventEnvelope[] }) {
   return (
     <ol className="timeline">
       {events.map((e) => (
@@ -108,4 +130,4 @@ export function SessionTimeline({ events }: { events: EventEnvelope[] }) {
       ))}
     </ol>
   );
-}
+});

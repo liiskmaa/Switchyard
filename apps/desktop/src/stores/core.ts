@@ -54,7 +54,9 @@ export function applyLive(state: Record<string, LiveState>, o: LiveOutput): Reco
       next = { ...current, thinking: true, seq: o.seq };
       break;
     case "message_stop":
-      next = { ...current, thinking: false, seq: o.seq };
+      // The complete message is in the journal by now; nothing is streaming
+      // until the next message starts (e.g. while a permission request waits).
+      next = { ...current, text: "", thinking: false, seq: o.seq };
       break;
   }
   return { ...state, [o.session_id]: next };

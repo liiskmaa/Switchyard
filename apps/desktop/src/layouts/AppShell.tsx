@@ -5,7 +5,7 @@ import { StatusIndicator } from "../components/StatusIndicator";
 import { pendingApprovals } from "../features/agents/api";
 import { useCoreQuery } from "../stores/useCoreQuery";
 
-export type Section = "dashboard" | "projects" | "agents" | "activity" | "approvals" | "settings";
+export type Section = "dashboard" | "projects" | "agents" | "activity" | "approvals" | "policies" | "settings";
 
 const primary: { id: Section; label: string; icon: IconName }[] = [
   { id: "dashboard", label: "Dashboard", icon: "dashboard" },
@@ -13,6 +13,7 @@ const primary: { id: Section; label: string; icon: IconName }[] = [
   { id: "agents", label: "Agents", icon: "agents" },
   { id: "activity", label: "Activity", icon: "activity" },
   { id: "approvals", label: "Approvals", icon: "approvals" },
+  { id: "policies", label: "Policies", icon: "policy" },
 ];
 
 function NavItem({

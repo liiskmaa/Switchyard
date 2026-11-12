@@ -4,8 +4,8 @@ Switchyard is a local-first orchestration platform for native AI coding agents (
 Codex). It is not an agent itself. It supervises agent processes, coordinates their work, persists
 what happens, and gives a human operator control.
 
-This document describes what exists **today** (milestones 1–3: the foundation, native Claude Code
-sessions, and workspace isolation) and the boundaries that later milestones build on.
+This document describes what exists **today** (milestones 1–4: the foundation, native Claude Code
+sessions, workspace isolation, and approval policies) and the boundaries that later milestones build on.
 
 ## Processes
 
@@ -44,6 +44,7 @@ sessions, and workspace isolation) and the boundaries that later milestones buil
 | `switchyard-client` | Async protocol client: handshake, request correlation, notifications, disconnect detection. Used by the desktop and the tests. | protocol |
 | `switchyard-agents` | Vendor-neutral agent model; process supervision (no shell, controlled environment, bounded lines, SIGTERM/SIGKILL escalation); Claude Code adapter. | — |
 | `switchyard-workspaces` | Workspace domain rules without I/O: lifecycle and transitions, branch and path naming, cleanup safety evaluation. | — |
+| `switchyard-policy` | Approval policy without I/O: normalized operations, rules and their validation, deterministic evaluation with explanations. | — |
 | `switchyard-core` | The executable: config, lifecycle (lock, socket, signals), connection server, request handlers, workspaces (`src/workspaces`), agent sessions (`src/agents`), and the `switchyard-fake-claude` test binary. | all of the above |
 | `apps/desktop/src-tauri` | Desktop shell: Core bridge (connect, reconnect, replay, forward events), launcher, Tauri commands. | client, protocol |
 
@@ -51,8 +52,8 @@ Dependency rule: **transport, persistence and domain stay separate.** `events` d
 SQLite, `storage` does not know about sockets, and `protocol` does not know about handlers. Only
 `core` wires them together.
 
-`switchyard-permissions` from the initial proposal is not created yet. See
-[ADR 0006](../decisions/0006-crate-layout.md).
+`switchyard-permissions` from the initial proposal became `switchyard-policy` in milestone 4 (see
+[ADR 0006](../decisions/0006-crate-layout.md) and [ADR 0016](../decisions/0016-approval-policy-model.md)).
 
 ## Request path (example: `projects.add`)
 
@@ -88,8 +89,8 @@ SQLite, `storage` does not know about sockets, and `protocol` does not know abou
   enforced.
 - Migrations live in `/migrations`, are embedded at compile time, and are tracked with
   `PRAGMA user_version`. Core refuses a database written by a newer schema.
-- The schema covers projects, workspaces, agents, sessions, tasks, messages, findings, approvals,
-  permissions, decisions and events. See [database.md](database.md) for what is written today.
+- The schema covers projects, workspaces, agents, sessions, approvals, policy rules with their
+  revisions and evaluations, events, and the reserved tasks, messages, findings and decisions. See [database.md](database.md) for what is written today.
 - The `events` table is append-only (`UPDATE` and `DELETE` are blocked by triggers). Its context
   columns have no foreign keys: the journal outlives the entities it mentions.
 - Core holds a single connection behind a mutex, and async callers run on Tokio's blocking pool.
@@ -134,7 +135,9 @@ React 19 with strict TypeScript and no router or state library. A small external
 when Core (re)connects and refreshes on relevant events. Sections: Dashboard (live health, projects,
 recent events, active sessions), Projects (register, project checkout Git status, workspaces:
 create, start a session, Git status, archive, restore, confirmed cleanup), Agents (session view with
-workspace, branch and path, live output, composer), Approvals, Activity (journal) and Settings (real
+workspace, branch and path, live output, composer, automatic policy decisions), Approvals (with
+the policy result and reason), Policies (rules per project and workspace, defaults, enforced
+restrictions, decision history), Activity (journal) and Settings (real
 runtime paths and versions). No simulated data anywhere.
 
 ## Agent sessions (milestone 2)
@@ -182,8 +185,32 @@ Project (registered repo, never an agent cwd)
 - Details: [workspaces.md](workspaces.md), ADRs 0012–0014. Worktrees isolate source trees, **not
   processes**.
 
+## Approval policies (milestone 4)
+
+```text
+can_use_tool ─► claude::classify ─► Operation ─► path facts (Core, I/O) ─┐
+                                                                          ▼
+     one SQLite transaction: load rules + revision ─► evaluate (pure) ─► record evaluation + events
+                                                                          │
+                     allow ─► answer allow    ask ─► approval (person)    deny ─► answer deny
+```
+
+- Every Claude tool reaches Switchyard: the launch settings carry an `ask` rule for every enabled
+  tool.
+- `switchyard-policy` evaluates. The precedence is:
+  1. system restrictions;
+  2. the most restrictive matching rule (deny > ask > allow, whatever its scope);
+  3. built-in defaults;
+  4. caps that turn `allow` into `ask`.
+
+  Failures deny.
+- Human decisions apply to one request and never create rules.
+- A pending approval is never upgraded by a rule change, but a change can deny it.
+- Details: [policies.md](policies.md), ADRs 0016–0019. **Policies are an authorization and
+  workflow mechanism, not an OS-level sandbox.**
+
 ## What is intentionally absent
 
 There is no Codex adapter, no integration of workspace branches (merge, rebase, cherry-pick), no
-rule-based permission policy (the `permissions` table), no task, message or finding workflow, no
-automatic branch deletion or workspace pruning, and no OS-level sandbox yet.
+task, message or finding workflow, no automatic branch deletion or workspace pruning, no global
+(cross-project) policy rules, and no OS-level sandbox yet.

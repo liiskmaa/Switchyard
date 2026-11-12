@@ -8,6 +8,7 @@ members = [
     "crates/switchyard-client",
     "crates/switchyard-agents",
     "crates/switchyard-workspaces",
+    "crates/switchyard-policy",
     "crates/switchyard-core",
     "apps/desktop/src-tauri",
 ]
@@ -16,7 +17,7 @@ members = [
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.90"
-license = "UNLICENSED"
+license = "MIT"
 publish = false
 
 [workspace.dependencies]
@@ -27,6 +28,7 @@ switchyard-git = { path = "crates/switchyard-git" }
 switchyard-client = { path = "crates/switchyard-client" }
 switchyard-agents = { path = "crates/switchyard-agents" }
 switchyard-workspaces = { path = "crates/switchyard-workspaces" }
+switchyard-policy = { path = "crates/switchyard-policy" }
 
 tokio = { version = "1.54", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }

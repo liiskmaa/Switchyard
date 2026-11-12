@@ -10,6 +10,7 @@ use tokio::sync::watch;
 
 use crate::agents::AgentService;
 use crate::config::CoreConfig;
+use crate::policy::PolicyService;
 use crate::workspaces::WorkspaceService;
 
 /// Shared state for all connections. Cheap to clone.
@@ -23,6 +24,7 @@ pub(crate) struct CoreState {
     pub git: Git,
     pub agents: AgentService,
     pub workspaces: WorkspaceService,
+    pub policies: PolicyService,
     pub connected_clients: Arc<AtomicU64>,
     /// `Some(reason)` once shutdown has been requested.
     pub shutdown: watch::Sender<Option<String>>,

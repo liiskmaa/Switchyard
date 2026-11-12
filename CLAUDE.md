@@ -12,6 +12,9 @@ Rust process, **Switchyard Core**. The Tauri desktop app is only a client.
 - Milestone 3: workspace isolation: Git worktrees per workspace (`crates/switchyard-workspaces`,
   `crates/switchyard-git/src/worktree.rs`, `crates/switchyard-core/src/workspaces`). See
   `docs/architecture/workspaces.md` and ADRs 0012–0014.
+- Milestone 4: approval policies (`crates/switchyard-policy`, `crates/switchyard-agents/src/claude/classify.rs`,
+  `crates/switchyard-core/src/policy`, `migrations/0004_policies.sql`). See `docs/architecture/policies.md`
+  and ADRs 0016–0019.
 - Codex is not implemented.
 
 The verified Claude CLI behaviour is in `docs/architecture/agent-integration.md`, and the contract in
@@ -54,7 +57,7 @@ When running Core or the app manually, set `SWITCHYARD_DATA_DIR` (and, if that p
 - **Adding a protocol method** touches: `crates/switchyard-protocol/src/methods.rs` (the `method!`
   macro: name + params + result), the dispatch match in `crates/switchyard-core/src/handlers/mod.rs`,
   a handler module, the TS mirror, and `docs/protocols/core-ipc.md`. Keep all of them in sync.
-  Incompatible changes bump `PROTOCOL_VERSION` (currently 2) and, if the old contract can no longer
+  Incompatible changes bump `PROTOCOL_VERSION` (currently 3) and, if the old contract can no longer
   be served, `MIN_SUPPORTED_PROTOCOL_VERSION`; both sides refuse an unsupported version during
   `initialize` (ADR 0015). Never ship an incompatible change under the same version.
 - **Events:** add a variant to `DomainEvent` (`crates/switchyard-events/src/envelope.rs`, with a
@@ -99,6 +102,17 @@ When running Core or the app manually, set `SWITCHYARD_DATA_DIR` (and, if that p
   - Token deltas go to `LiveHub` only, never the journal.
   - Approvals are settled through `approvals::decide` (SQL-guarded `pending → final`), committed
     before delivery; every non-operator path denies.
+- **Policies.**
+  - Every `can_use_tool` request goes through `AgentService::on_permission_requested`: classify
+    (adapter) → path facts (`policy/paths.rs`) → `policy::evaluate_in_tx` inside the same transaction
+    that writes the outcome. Never answer an agent before the evaluation is committed; on any error,
+    deny. There must be no second path from adapter to approval.
+  - The evaluator (`switchyard-policy`) stays pure. A new tool needs a classifier entry (with its
+    known input fields) and must be in both `TOOLS` and the `SETTINGS` ask list (a test checks this).
+  - Rule changes go through `PolicyService` (rule + revision snapshot + `policy.rule_changed` in one
+    transaction) and are followed by `AgentService::reevaluate_pending`, which may only deny.
+  - Human decisions never create rules. Policies are not a sandbox: never word UI or docs as if
+    they were.
   - When CLI behaviour changes, re-record fixtures in `crates/switchyard-agents/tests/fixtures/`
     (sanitized; see its README) and keep `src/bin/fake_claude.rs` in sync with them.
 - Text edits made with ad-hoc scripts can silently no-op after `cargo fmt` reflows code. Verify

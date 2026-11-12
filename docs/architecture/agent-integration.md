@@ -29,14 +29,14 @@ claude -p --input-format stream-json --output-format stream-json --verbose \
        --permission-mode default --permission-prompt-tool stdio \
        --restricted --strict-mcp-config \
        --tools Read,Write,Edit,Glob,Grep,Bash,NotebookEdit \
-       --settings '{"permissions":{"ask":["Bash"],"defaultMode":"default"}}' \
+       --settings '{"permissions":{"ask":["Read","Write","Edit","Glob","Grep","Bash","NotebookEdit"],"defaultMode":"default"}}' \
        --session-id <uuid>            # new session; or: --resume <native id>
        [--model <alias>]
 ```
 
 - **Launch:** the process is started with `execve`. No shell is involved, and every argument is a
   separate argv entry (`crates/switchyard-agents/src/claude/launch.rs`).
-- **Working directory:** the project's registered root. The process runs in its own process group,
+- **Working directory:** the session's workspace (a Core-owned worktree; see section 1.5). The process runs in its own process group,
   and stdin, stdout and stderr are all piped.
 - **Environment:** the child environment is built from scratch (`ENV_POLICY`):
   - Passed through: `HOME`, `USER`, `PATH` (with the CLI's directory prepended), locale, proxy and
@@ -138,16 +138,34 @@ nothing earlier can *allow* a call:
   hooks do not apply. Managed (enterprise) settings still apply; that is a known limitation.
 - `--permission-mode default` is used. `acceptEdits`, `bypassPermissions` and
   `--dangerously-skip-permissions` are never used.
-- Built-in read-only tools (Read, Glob, Grep) inside the working directory are allowed by Claude
-  without asking [documented]. Everything else asks.
-- `--settings` adds an `ask` rule for `Bash`, so **every** shell command reaches Switchyard,
-  including the built-in "read-only" commands such as `ls` and `cat`, which would otherwise be
-  auto-allowed. [verified] `bash_ask`: `ls` and `cat /etc/hosts` both produced `can_use_tool`.
+- `--settings` adds an `ask` rule for **every enabled tool** (milestone 4, ADR 0017). Each Read,
+  Write, Edit, Glob, Grep, Bash and NotebookEdit call reaches Switchyard as `can_use_tool`:
+  - [verified] `bash_ask`: with the Bash `ask` rule, `ls` and `cat /etc/hosts` both produced
+    `can_use_tool`, although Claude treats them as read-only.
+  - [verified 2026-11-11, 2.1.322] with `ask` rules for Read, Glob and Grep, a Read of a file in the
+    working directory, `Glob *.txt` and `Grep hello` each produced `can_use_tool`. Without those
+    rules, Claude allows them silently [documented].
+  - The requests carry `tool_name`, `display_name`, `input`, `description`, `tool_use_id`,
+    `decision_reason_type`, `decision_reason_rule_source` and `server_policy_ask_only`.
+    Switchyard keeps the decision reason in the approval details and does not depend on it.
+- **Reads outside the working directory** never reach Switchyard: [verified] `--restricted` makes
+  Claude deny a Read of `../outside.txt` itself (it appears in `permission_denials`).
 - `--strict-mcp-config` loads no MCP servers. Without it, account-level claude.ai connectors were
   loaded [verified].
 
-**Not intercepted** (all native behaviour): reads with Read, Glob or Grep inside the working
-directory. Writes and edits outside it are refused by `--restricted` itself.
+**Policy evaluation.** Core classifies every `can_use_tool` request into an adapter-neutral operation
+(`switchyard_agents::claude::classify`). It evaluates the operation against the project's and the
+workspace's rules and records the result, and only then answers:
+- `allow` and `deny` are answered at once, with no approval;
+- `ask` creates an approval for a person.
+
+Unknown tools, tools that are not enabled and malformed input are denied. Built-in defaults:
+- reads and searches inside the workspace are allowed (Claude allowed these silently before
+  milestone 4);
+- writes, edits and Bash ask;
+- network and MCP tools are denied.
+
+See ADRs 0016–0019 and [policies.md](policies.md).
 
 **Hooks were evaluated and not used for interception.** PreToolUse, PermissionRequest and similar
 hooks are shell commands that Claude runs. Using them would mean Switchyard writing executable
@@ -170,9 +188,11 @@ process exits without running the tool.
   exact path as the child's `cwd`. The adapter gets only that path; it has no workspace logic.
   Claude stores sessions per working directory, so `--resume` runs in the same workspace.
 - `--restricted` confines the file tools to the working directory (and `--add-dir`, which is never
-  passed) [documented]. Reads inside the project are allowed without asking.
+  passed) [documented]. Reads and writes outside it are refused by the CLI itself [verified for
+  Read]. Inside it, every tool use is decided by Switchyard's policy.
 - **Bash is not sandboxed by Claude by default** [documented: "the sandbox is off by default"].
-  Switchyard compensates by requiring an operator decision for every Bash command (see above). It
+  Switchyard compensates by requiring an operator decision for every Bash command, unless a rule
+  allows that exact command (see above). It
   does *not* claim OS-level isolation. A command the operator approves runs with the user's
   privileges and can reach other workspaces and the original checkout: **worktrees isolate source
   trees, not processes.**

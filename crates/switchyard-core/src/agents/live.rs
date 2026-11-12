@@ -45,7 +45,10 @@ impl LiveHub {
             let buffer = buffers.entry(session_id).or_default();
             buffer.seq += 1;
             match kind {
-                LiveKind::MessageStart => {
+                // The complete message is journaled before `message_stop`, so
+                // nothing is "streaming" between messages (e.g. while a
+                // permission request waits for a decision).
+                LiveKind::MessageStart | LiveKind::MessageStop => {
                     buffer.text.clear();
                     buffer.truncated = false;
                 }
@@ -106,5 +109,16 @@ mod tests {
         assert!(matches!(rx.recv().await, Err(broadcast::error::RecvError::Lagged(1))));
         hub.publish(s, chunk(AdapterLiveKind::MessageStart, ""));
         assert_eq!(hub.snapshot(s).0, "");
+    }
+
+    #[test]
+    fn snapshot_is_empty_after_message_stop() {
+        let hub = LiveHub::new(8);
+        let s = Uuid::now_v7();
+        hub.publish(s, chunk(AdapterLiveKind::MessageStart, ""));
+        hub.publish(s, chunk(AdapterLiveKind::Text, "I'll edit the file."));
+        hub.publish(s, chunk(AdapterLiveKind::MessageStop, ""));
+        // A permission request now waits; the finished message is in the journal.
+        assert_eq!(hub.snapshot(s), (String::new(), 3));
     }
 }

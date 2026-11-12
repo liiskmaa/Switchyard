@@ -24,6 +24,7 @@ switchyard-storage.workspace = true
 switchyard-git.workspace = true
 switchyard-agents.workspace = true
 switchyard-workspaces.workspace = true
+switchyard-policy.workspace = true
 notify.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -36,6 +37,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-
 [dev-dependencies]
 switchyard-client.workspace = true
 tempfile.workspace = true
+# Policy tests inject rows and failures through a second SQLite connection.
+rusqlite.workspace = true
 
 [lints]
 workspace = true

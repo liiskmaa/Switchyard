@@ -265,3 +265,124 @@ async fn real_claude_two_workspaces_concurrently() {
         client.call::<SessionsStop>(SessionIdParams { session_id: s.id }).await.unwrap();
     }
 }
+
+/// Milestone 4 against the real CLI:
+/// - a Read inside the workspace reaches Switchyard (because of the `ask` rule for every tool) and
+///   the built-in default allows it without an approval;
+/// - a block rule denies a Read without an approval, and the agent receives the explanation;
+/// - an exact-command rule lets that one Bash command run without asking.
+#[tokio::test]
+#[ignore = "uses the real Claude Code CLI and makes model requests; set SWITCHYARD_REAL_CLAUDE=1"]
+async fn real_claude_policy_decisions() {
+    if std::env::var("SWITCHYARD_REAL_CLAUDE").as_deref() != Ok("1") {
+        eprintln!("skipped: set SWITCHYARD_REAL_CLAUDE=1");
+        return;
+    }
+    use switchyard_protocol::model::{OperationCategory, PolicyConditions, PolicyDecision};
+    let model = std::env::var("SWITCHYARD_REAL_CLAUDE_MODEL").unwrap_or_else(|_| "haiku".into());
+    let core = TestCore::start_with(|c| c.claude_executable = None).await;
+    let (client, _rx) = core.connect().await;
+    let repo = git_repo(core.dir.path(), "real-policy-repo");
+    let project = client
+        .call::<ProjectsAdd>(ProjectsAddParams { path: repo.display().to_string() })
+        .await
+        .unwrap()
+        .project;
+    let workspace = client
+        .call::<WorkspacesCreate>(WorkspacesCreateParams {
+            project_id: project.id,
+            name: None,
+            base_ref: None,
+        })
+        .await
+        .unwrap()
+        .workspace;
+    let ws = std::path::PathBuf::from(&workspace.path);
+    std::fs::write(ws.join("notes.txt"), "the codeword is sapphire\n").unwrap();
+    std::fs::write(ws.join("secret.txt"), "the codeword is ruby\n").unwrap();
+    let rule = |category, decision, path: Option<&str>, command: Option<&str>, description: &str| {
+        PoliciesCreateParams {
+            project_id: project.id,
+            workspace_id: None,
+            category,
+            decision,
+            conditions: PolicyConditions {
+                path_prefix: path.map(Into::into),
+                command: command.map(Into::into),
+            },
+            description: description.into(),
+            enabled: None,
+        }
+    };
+    client
+        .call::<PoliciesCreate>(rule(
+            OperationCategory::FileRead,
+            PolicyDecision::Deny,
+            Some("secret.txt"),
+            None,
+            "Secret stays secret",
+        ))
+        .await
+        .unwrap();
+    client
+        .call::<PoliciesCreate>(rule(
+            OperationCategory::Shell,
+            PolicyDecision::Allow,
+            None,
+            Some("git status"),
+            "git status is fine",
+        ))
+        .await
+        .unwrap();
+    let session = client
+        .call::<SessionsStart>(SessionsStartParams {
+            workspace_id: workspace.id,
+            project_id: Some(project.id),
+            provider: None,
+            prompt: Some(
+                "Do these steps with tools, one at a time: 1) Read notes.txt with the Read tool. 2) Read secret.txt \
+                 with the Read tool. 3) Run exactly `git status` with the Bash tool. Then reply with the codeword from \
+                 notes.txt and the word DONE."
+                    .into(),
+            ),
+            model: Some(model),
+        })
+        .await
+        .unwrap()
+        .session;
+    let evs = wait_turns(&client, session.id, 1).await;
+    let evaluations = client
+        .call::<PoliciesEvaluations>(PoliciesEvaluationsParams {
+            session_id: Some(session.id),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .evaluations;
+    for e in evaluations.iter().rev() {
+        println!("evaluation: {} {:?} {:?} {}", e.tool_name, e.decision, e.reason, e.explanation);
+    }
+    let approvals = client
+        .call::<ApprovalsList>(ApprovalsListParams { session_id: Some(session.id), ..Default::default() })
+        .await
+        .unwrap()
+        .approvals;
+    assert!(approvals.is_empty(), "no person was asked: {approvals:?}");
+    let decided = |tool: &str, d: PolicyDecision, needle: &str| {
+        evaluations
+            .iter()
+            .any(|e| e.tool_name == tool && e.decision == d && e.input.to_string().contains(needle))
+    };
+    assert!(
+        decided("Read", PolicyDecision::Allow, "notes.txt"),
+        "in-workspace read reached Switchyard and was allowed"
+    );
+    assert!(decided("Read", PolicyDecision::Deny, "secret.txt"), "the block rule denied the secret read");
+    assert!(decided("Bash", PolicyDecision::Allow, "git status"), "the exact command ran without asking");
+    assert!(evs.iter().any(|e| e.event_type == "agent.tool_failed" && e.payload["rejected"] == true));
+    let result = evs.iter().rev().find(|e| e.event_type == "agent.turn_completed").unwrap();
+    let text = result.payload["result"].as_str().unwrap_or_default().to_lowercase();
+    println!("result: {text}");
+    assert!(text.contains("sapphire") && !text.contains("ruby"), "the blocked file was not read");
+    client.call::<SessionsStop>(SessionIdParams { session_id: session.id }).await.unwrap();
+}

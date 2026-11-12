@@ -3299,6 +3299,7 @@ dependencies = [
  "nix",
  "serde",
  "serde_json",
+ "switchyard-policy",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -3323,12 +3324,14 @@ name = "switchyard-core"
 version = "0.1.0"
 dependencies = [
  "notify",
+ "rusqlite",
  "serde",
  "serde_json",
  "switchyard-agents",
  "switchyard-client",
  "switchyard-events",
  "switchyard-git",
+ "switchyard-policy",
  "switchyard-protocol",
  "switchyard-storage",
  "switchyard-workspaces",
@@ -3381,6 +3384,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchyard-policy"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "uuid",
+]
+
+[[package]]
 name = "switchyard-protocol"
 version = "0.1.0"
 dependencies = [
@@ -3388,6 +3401,7 @@ dependencies = [
  "serde_json",
  "switchyard-agents",
  "switchyard-events",
+ "switchyard-policy",
  "switchyard-workspaces",
  "thiserror 2.0.21",
  "tokio",
@@ -3399,9 +3413,11 @@ name = "switchyard-storage"
 version = "0.1.0"
 dependencies = [
  "rusqlite",
+ "serde",
  "serde_json",
  "switchyard-agents",
  "switchyard-events",
+ "switchyard-policy",
  "switchyard-workspaces",
  "tempfile",
  "thiserror 2.0.21",

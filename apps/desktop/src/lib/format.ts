@@ -23,15 +23,26 @@ export function formatDuration(ms: number): string {
   return `${s}s`;
 }
 
+// Formatters are built once: `toLocaleString(locale, options)` constructs a
+// new Intl.DateTimeFormat per call, which made long timelines take seconds to
+// render while an agent streamed.
+const TIMESTAMP = new Intl.DateTimeFormat(undefined, {
+  year: "numeric",
+  month: "short",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+});
+const CLOCK = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "numeric", second: "numeric" });
+
 export function formatTimestamp(ms: number): string {
-  return new Date(ms).toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+  return TIMESTAMP.format(ms);
+}
+
+/** Time of day, as `Date.prototype.toLocaleTimeString()` shows it. */
+export function formatClock(ms: number): string {
+  return CLOCK.format(ms);
 }
 
 export const shortId = (id: string): string => id.slice(-8);
@@ -79,7 +90,17 @@ export function describeEvent(event: EventEnvelope): string {
     case "agent.permission_requested":
       return `Permission requested: ${str(p, "tool_name") ?? "tool"} ${toolSummary(str(p, "tool_name"), p["input"])}`;
     case "agent.permission_resolved":
-      return `${str(p, "tool_name") ?? "Tool"} ${str(p, "status") ?? "resolved"} (${str(p, "source") ?? ""})`;
+      return str(p, "source") === "policy"
+        ? `${str(p, "tool_name") ?? "Tool"} denied by a policy change: ${str(p, "note") ?? ""}`
+        : `${str(p, "tool_name") ?? "Tool"} ${str(p, "status") ?? "resolved"} (${str(p, "source") ?? ""})`;
+    case "agent.permission_evaluated": {
+      const target = str(p, "target") ? ` ${str(p, "target")}` : "";
+      const verdict =
+        str(p, "decision") === "allow" ? "Allowed automatically" : str(p, "decision") === "deny" ? "Blocked" : "Needs approval";
+      return `${verdict}: ${str(p, "tool_name") ?? "tool"}${target} — ${str(p, "explanation") ?? ""}`;
+    }
+    case "policy.rule_changed":
+      return `Policy rule ${str(p, "change") ?? "changed"}: “${str(p, "description") ?? ""}” (${str(p, "decision") ?? "?"} ${str(p, "category") ?? "?"}, revision ${String(p["revision"] ?? "?")})`;
     case "agent.interrupted":
       return "Interrupt acknowledged";
     case "agent.session_resumed":
