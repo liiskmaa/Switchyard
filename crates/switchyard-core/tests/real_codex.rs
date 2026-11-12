@@ -404,7 +404,14 @@ async fn real_codex_sub_agents_are_blocked() {
     if spawned {
         assert!(warned, "a started sub-agent turn is reported and interrupted");
     }
-    assert!(decided.is_empty(), "no child request is offered to a person");
+    // The parent may run its own commands (e.g. `ls from-child.txt` to check);
+    // those are offered as usual. A sub-agent's requests never are: they are
+    // denied as foreign-thread requests before any approval exists.
+    assert!(
+        decided.iter().all(|a| a.input["other_thread"] != true),
+        "no sub-agent request is offered to a person: {:?}",
+        decided.iter().map(|a| a.input.clone()).collect::<Vec<_>>()
+    );
     tokio::time::sleep(Duration::from_secs(5)).await;
     assert!(!ws.join("from-child.txt").exists());
     c.call::<SessionsStop>(SessionIdParams { session_id: s.id }).await.unwrap();
