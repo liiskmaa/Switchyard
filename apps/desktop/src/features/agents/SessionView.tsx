@@ -220,6 +220,7 @@ function Composer({ session }: { session: Session }) {
     <form className="composer" onSubmit={onSubmit}>
       <textarea
         className="input textarea"
+        aria-label={running ? "Follow-up message for the next turn" : "Message to Claude"}
         placeholder={running ? "A turn is running. You can queue a follow-up for the next turn." : "Describe a development task for Claude…"}
         value={text}
         onChange={(e) => setText(e.target.value)}
