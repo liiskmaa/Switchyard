@@ -161,7 +161,8 @@ async fn decide(f: &Fx, a: Uuid, d: ApprovalDecision) -> Result<Approval, switch
 
 fn answers(thread: &str) -> Vec<Value> {
     let p = std::env::temp_dir().join("switchyard-fake-codex").join(format!("answers-{thread}.jsonl"));
-    std::fs::read_to_string(p).unwrap_or_default().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+    // Strict: a malformed line fails the test; a line being written is awaited.
+    common::read_jsonl(&p)
 }
 
 async fn answers_n(thread: &str, n: usize) -> Vec<Value> {

@@ -177,11 +177,8 @@ async fn decide(f: &Fixture, approval: Uuid, decision: ApprovalDecision) -> Appr
 /// Approval answers the fake Codex actually received (its own log).
 fn answers(thread: &str) -> Vec<Value> {
     let path = std::env::temp_dir().join("switchyard-fake-codex").join(format!("answers-{thread}.jsonl"));
-    std::fs::read_to_string(path)
-        .unwrap_or_default()
-        .lines()
-        .map(|l| serde_json::from_str(l).unwrap())
-        .collect()
+    // Strict: a malformed line fails the test; a line being written is awaited.
+    common::read_jsonl(&path)
 }
 
 async fn wait_answers(thread: &str, n: usize) -> Vec<Value> {
