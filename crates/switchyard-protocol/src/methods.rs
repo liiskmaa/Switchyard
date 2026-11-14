@@ -13,6 +13,10 @@ use crate::model::{
     TaskKind, TaskMessage, TaskProposal, TaskReadiness, TaskRef, Workspace, WorkspaceGitStatus,
 };
 
+use crate::model::{
+    Integration, IntegrationChanges, IntegrationSettingsInfo, ValidationPlanEntry, ValidationRunInfo,
+};
+
 pub trait Method {
     const NAME: &'static str;
     type Params: Serialize + DeserializeOwned + Send + 'static;
@@ -734,3 +738,218 @@ pub struct TasksDecideProposalResult {
 }
 
 method!(TasksDecideProposal, "tasks.decide_proposal", TasksDecideProposalParams, TasksDecideProposalResult);
+
+// --- integrations (M7, ADRs 0028-0031) --------------------------------------
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegrationsListParams {
+    #[serde(default)]
+    pub project_id: Option<Uuid>,
+    #[serde(default)]
+    pub task_id: Option<Uuid>,
+    /// Include integrated and cancelled integrations.
+    #[serde(default)]
+    pub include_closed: bool,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IntegrationsListResult {
+    pub integrations: Vec<Integration>,
+}
+
+method!(IntegrationsList, "integrations.list", IntegrationsListParams, IntegrationsListResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegrationIdParams {
+    pub integration_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IntegrationDetail {
+    pub integration: Integration,
+    /// Newest first.
+    pub runs: Vec<ValidationRunInfo>,
+    /// The policy decision for each enabled validation command.
+    pub plan: Vec<ValidationPlanEntry>,
+}
+
+method!(IntegrationsGet, "integrations.get", IntegrationIdParams, IntegrationDetail);
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegrationsCreateParams {
+    /// The task whose work is delivered; its implementation workspace is
+    /// used unless `workspace_id` is given.
+    #[serde(default)]
+    pub task_id: Option<Uuid>,
+    #[serde(default)]
+    pub workspace_id: Option<Uuid>,
+    /// Defaults to the branch checked out in the project checkout.
+    #[serde(default)]
+    pub target_branch: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IntegrationResult {
+    pub integration: Integration,
+}
+
+method!(IntegrationsCreate, "integrations.create", IntegrationsCreateParams, IntegrationResult);
+method!(IntegrationsRefresh, "integrations.refresh", IntegrationIdParams, IntegrationResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegrationsChangesParams {
+    pub integration_id: Uuid,
+}
+
+method!(IntegrationsChanges, "integrations.changes", IntegrationsChangesParams, IntegrationChanges);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegrationsPatchParams {
+    pub integration_id: Uuid,
+    #[serde(default)]
+    pub path: Option<String>,
+    /// The workspace's uncommitted changes instead of the source commits.
+    #[serde(default)]
+    pub uncommitted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegrationsPatchResult {
+    pub patch: String,
+    pub truncated: bool,
+}
+
+method!(IntegrationsPatch, "integrations.patch", IntegrationsPatchParams, IntegrationsPatchResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegrationsCommitWorkspaceParams {
+    pub integration_id: Uuid,
+    pub message: String,
+}
+
+method!(
+    IntegrationsCommitWorkspace,
+    "integrations.commit_workspace",
+    IntegrationsCommitWorkspaceParams,
+    IntegrationResult
+);
+method!(
+    IntegrationsUpdateFromTarget,
+    "integrations.update_from_target",
+    IntegrationIdParams,
+    IntegrationResult
+);
+method!(IntegrationsAbortResolution, "integrations.abort_resolution", IntegrationIdParams, IntegrationResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegrationsValidateParams {
+    pub integration_id: Uuid,
+    /// Commands the policy asks about that the operator authorizes for this
+    /// run, each with the exact command line the operator saw.
+    #[serde(default)]
+    pub authorize: Vec<ValidationAuthorization>,
+}
+
+/// The operator's authorization of one command, bound to its exact command
+/// line: if the command was edited since, the authorization does not apply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidationAuthorization {
+    pub command_id: Uuid,
+    pub command_line: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IntegrationsValidateResult {
+    pub integration: Integration,
+    pub run: ValidationRunInfo,
+}
+
+method!(
+    IntegrationsValidate,
+    "integrations.validate",
+    IntegrationsValidateParams,
+    IntegrationsValidateResult
+);
+method!(
+    IntegrationsCancelValidation,
+    "integrations.cancel_validation",
+    IntegrationIdParams,
+    IntegrationResult
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegrationsApproveParams {
+    pub integration_id: Uuid,
+    /// The source commit the operator inspected and approves.
+    pub source_commit: String,
+    /// The target commit the operator inspected and approves.
+    pub target_commit: String,
+}
+
+method!(IntegrationsApprove, "integrations.approve", IntegrationsApproveParams, IntegrationResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegrationsCancelParams {
+    pub integration_id: Uuid,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+method!(IntegrationsCancel, "integrations.cancel", IntegrationsCancelParams, IntegrationResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegrationsSettingsParams {
+    pub project_id: Uuid,
+}
+
+method!(IntegrationsSettings, "integrations.settings", IntegrationsSettingsParams, IntegrationSettingsInfo);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegrationsSetSettingsParams {
+    pub project_id: Uuid,
+    pub require_review: bool,
+}
+
+method!(
+    IntegrationsSetSettings,
+    "integrations.set_settings",
+    IntegrationsSetSettingsParams,
+    IntegrationSettingsInfo
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegrationsSetCommandParams {
+    pub project_id: Uuid,
+    /// Omitted to add a command.
+    #[serde(default)]
+    pub command_id: Option<Uuid>,
+    pub name: String,
+    /// Program and arguments; run directly, never through a shell.
+    pub argv: Vec<String>,
+    pub timeout_secs: u32,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub position: Option<i64>,
+}
+
+method!(
+    IntegrationsSetCommand,
+    "integrations.set_command",
+    IntegrationsSetCommandParams,
+    IntegrationSettingsInfo
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegrationsDeleteCommandParams {
+    pub command_id: Uuid,
+}
+
+method!(
+    IntegrationsDeleteCommand,
+    "integrations.delete_command",
+    IntegrationsDeleteCommandParams,
+    IntegrationSettingsInfo
+);

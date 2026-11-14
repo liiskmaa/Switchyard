@@ -267,6 +267,90 @@ pub enum DomainEvent {
     /// The operator approved or rejected a proposed subtask.
     #[serde(rename = "task.proposal_decided")]
     TaskProposalDecided { proposal_id: Uuid, decision: String, created_task_id: Option<Uuid> },
+
+    // --- integrations (context carries project_id, workspace_id and, when
+    // linked, task_id; ADRs 0028-0031) ---------------------------------------
+    /// The operator proposed delivering a workspace into a target branch.
+    #[serde(rename = "integration.created")]
+    IntegrationCreated {
+        integration_id: Uuid,
+        source_branch: String,
+        target_branch: String,
+        created_by: String,
+    },
+    /// Core (re)bound the integration to the current commits and checked it.
+    #[serde(rename = "integration.prepared")]
+    IntegrationPrepared {
+        integration_id: Uuid,
+        source_commit: String,
+        target_commit: String,
+        base_commit: Option<String>,
+        /// Blocker codes; empty means ready for approval.
+        blockers: Vec<String>,
+        files_changed: u64,
+    },
+    #[serde(rename = "integration.status_changed")]
+    IntegrationStatusChanged { integration_id: Uuid, from: String, to: String, reason: Option<String> },
+    /// Core changed the source workspace on the operator's request:
+    /// `committed`, `updated` (merged the target), `conflicts`, `aborted`.
+    #[serde(rename = "integration.workspace_changed")]
+    IntegrationWorkspaceChanged {
+        integration_id: Uuid,
+        action: String,
+        commit: Option<String>,
+        files: Vec<String>,
+        by: String,
+    },
+    #[serde(rename = "integration.validation_started")]
+    IntegrationValidationStarted {
+        integration_id: Uuid,
+        run_id: Uuid,
+        source_commit: String,
+        commands: Vec<String>,
+    },
+    #[serde(rename = "integration.validation_step_finished")]
+    IntegrationValidationStepFinished {
+        integration_id: Uuid,
+        run_id: Uuid,
+        name: String,
+        command: String,
+        status: String,
+        exit_code: Option<i32>,
+        authorized_by: Option<String>,
+        policy_decision: String,
+    },
+    #[serde(rename = "integration.validation_finished")]
+    IntegrationValidationFinished {
+        integration_id: Uuid,
+        run_id: Uuid,
+        source_commit: String,
+        status: String,
+    },
+    /// The operator approved these exact commits; Core starts integrating.
+    #[serde(rename = "integration.approved")]
+    IntegrationApproved {
+        integration_id: Uuid,
+        source_commit: String,
+        target_commit: String,
+        merge_commit: String,
+        method: String,
+        approved_by: String,
+    },
+    /// The target branch now points to the merge commit.
+    #[serde(rename = "integration.integrated")]
+    IntegrationIntegrated {
+        integration_id: Uuid,
+        target_branch: String,
+        merge_commit: String,
+        source_commit: String,
+        target_commit: String,
+        /// Settled by crash recovery after a Core restart.
+        recovered: bool,
+    },
+    /// The integration did not happen; `target_moved` says whether the
+    /// target branch is somewhere unexpected.
+    #[serde(rename = "integration.failed")]
+    IntegrationFailed { integration_id: Uuid, reason: String, target_moved: bool },
 }
 
 /// One observed filesystem change, relative to the workspace root.
@@ -322,6 +406,16 @@ impl DomainEvent {
             Self::TaskMessageRecorded { .. } => "task.message_recorded",
             Self::TaskReviewRecorded { .. } => "task.review_recorded",
             Self::TaskProposalDecided { .. } => "task.proposal_decided",
+            Self::IntegrationCreated { .. } => "integration.created",
+            Self::IntegrationPrepared { .. } => "integration.prepared",
+            Self::IntegrationStatusChanged { .. } => "integration.status_changed",
+            Self::IntegrationWorkspaceChanged { .. } => "integration.workspace_changed",
+            Self::IntegrationValidationStarted { .. } => "integration.validation_started",
+            Self::IntegrationValidationStepFinished { .. } => "integration.validation_step_finished",
+            Self::IntegrationValidationFinished { .. } => "integration.validation_finished",
+            Self::IntegrationApproved { .. } => "integration.approved",
+            Self::IntegrationIntegrated { .. } => "integration.integrated",
+            Self::IntegrationFailed { .. } => "integration.failed",
         }
     }
 
@@ -475,6 +569,17 @@ mod tests {
                 proposal_id: new_id(),
                 decision: "rejected".into(),
                 created_task_id: None,
+            },
+            DomainEvent::IntegrationFailed {
+                integration_id: new_id(),
+                reason: "x".into(),
+                target_moved: false,
+            },
+            DomainEvent::IntegrationStatusChanged {
+                integration_id: new_id(),
+                from: "ready".into(),
+                to: "integrating".into(),
+                reason: None,
             },
         ];
         for event in samples {

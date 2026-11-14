@@ -15,6 +15,7 @@ pub const MIGRATIONS: &[(u32, &str)] = &[
     (3, include_str!("../../../migrations/0003_workspaces.sql")),
     (4, include_str!("../../../migrations/0004_policies.sql")),
     (5, include_str!("../../../migrations/0005_tasks.sql")),
+    (6, include_str!("../../../migrations/0006_integrations.sql")),
 ];
 
 pub const LATEST_SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -75,6 +76,8 @@ mod tests {
                 "decisions",
                 "events",
                 "findings",
+                "integration_settings",
+                "integrations",
                 "messages",
                 "policy_evaluations",
                 "policy_rule_revisions",
@@ -85,6 +88,9 @@ mod tests {
                 "task_dependencies",
                 "task_proposals",
                 "tasks",
+                "validation_commands",
+                "validation_runs",
+                "validation_steps",
                 "workspaces"
             ]
         );
@@ -249,5 +255,52 @@ mod tests {
         let kept: i64 = c.query_row("SELECT COUNT(*) FROM permissions", [], |r| r.get(0)).unwrap();
         let approvals: i64 = c.query_row("SELECT COUNT(*) FROM approvals", [], |r| r.get(0)).unwrap();
         assert_eq!((kept, approvals), (1, 2));
+    }
+
+    /// Upgrading an M6 database (schema 5) keeps tasks and assignments, adds
+    /// no integration state and leaves earlier reviews without a recorded
+    /// tree (so they cannot satisfy an integration's review requirement).
+    #[test]
+    fn upgrade_from_v5_keeps_tasks_and_records_no_review_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.db");
+        {
+            let mut c = Connection::open(&path).unwrap();
+            apply_up_to(&mut c, 5);
+            c.execute_batch(V3_FIXTURE).unwrap();
+            c.execute_batch(
+                "INSERT INTO tasks (id, project_id, title, kind, priority, status, origin, created_at, updated_at)
+                     VALUES ('t1', 'p1', 'Fix it', 'implementation', 'normal', 'awaiting_review', 'operator', 1, 1);
+                 INSERT INTO task_assignments (id, task_id, project_id, role, provider, workspace_id, session_id,
+                     status, review_fingerprint, outcome, created_at)
+                     VALUES ('as1', 't1', 'p1', 'review', 'codex', 'w1', 's1', 'reported', 'fp', 'review: approved', 2);",
+            )
+            .unwrap();
+        }
+        let storage = Storage::open(&path).unwrap();
+        storage
+            .with_conn(|c| {
+                let count = |sql: &str| c.query_row(sql, [], |r| r.get::<_, i64>(0));
+                assert_eq!(count("PRAGMA user_version")?, i64::from(LATEST_SCHEMA_VERSION));
+                assert_eq!(count("SELECT COUNT(*) FROM tasks WHERE status = 'awaiting_review'")?, 1);
+                let row: (String, Option<String>, Option<String>) = c.query_row(
+                    "SELECT outcome, review_fingerprint, review_tree FROM task_assignments WHERE id = 'as1'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )?;
+                assert_eq!(row, ("review: approved".into(), Some("fp".into()), None));
+                for table in ["integrations", "integration_settings", "validation_commands", "validation_runs", "validation_steps"] {
+                    assert_eq!(count(&format!("SELECT COUNT(*) FROM {table}"))?, 0, "{table}");
+                }
+                assert_eq!(count("SELECT COUNT(*) FROM sessions WHERE workspace_id = 'w1'")?, 1);
+                // The upgraded rows can be referenced by an integration.
+                c.execute_batch(
+                    "INSERT INTO integrations (id, project_id, task_id, workspace_id, source_branch, source_commit,
+                         target_branch, target_commit, status, preflight, prepared_at, created_at, updated_at)
+                         VALUES ('i1', 'p1', 't1', 'w1', 'switchyard/w1', 'abc', 'main', 'def', 'open', '{}', 3, 3, 3);",
+                )?;
+                Ok(())
+            })
+            .unwrap();
     }
 }

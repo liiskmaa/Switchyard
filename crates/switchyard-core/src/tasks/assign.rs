@@ -373,6 +373,20 @@ impl TaskService {
             Role::Review => Some(workspace_fingerprint(&ctx.workspace_path).await?),
             _ => None,
         };
+        // The exact content under review, as a Git tree (ADR 0029): an
+        // integration later requires the delivered tree to equal it.
+        let review_tree = match a.role {
+            Role::Review => {
+                let w = self.workspaces.record(a.workspace_id).await?;
+                Some(
+                    self.workspaces
+                        .content_tree(&w)
+                        .await
+                        .map_err(|e| errors::internal("cannot record the reviewed content", e))?,
+                )
+            }
+            _ => None,
+        };
         let started = match reuse {
             Some(session_id) => self.agents.resume(session_id, None).await.map(|s| (s, true)),
             None => self
@@ -408,6 +422,9 @@ impl TaskService {
                 Err(e) => return Err(e),
             };
             store::mark_delivered(tx, &note_ids, a.id, now)?;
+            if let Some(tree) = &review_tree {
+                switchyard_storage::integrations::set_review_tree(tx, a.id, tree)?;
+            }
             drafts.push(draft(
                 DomainEvent::TaskAssignmentStarted {
                     assignment_id: a.id,

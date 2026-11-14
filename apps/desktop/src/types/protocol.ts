@@ -423,7 +423,7 @@ export interface CleanupReport {
 type NoParams = Record<string, never>;
 
 /** Methods the desktop bridge allows the UI to call. */
-export interface CoreMethods extends TaskMethods {
+export interface CoreMethods extends TaskMethods, IntegrationMethods {
   "system.health": { params: NoParams; result: HealthReport };
   "projects.list": { params: NoParams; result: { projects: Project[] } };
   "projects.get": { params: { project_id: Uuid }; result: { project: Project } };
@@ -732,4 +732,228 @@ export interface TaskMethods {
     params: { proposal_id: Uuid; approve: boolean; note?: string };
     result: { proposal: TaskProposal; created_task: Task | null };
   };
+}
+
+// --- integrations (M7, ADRs 0028-0031) -------------------------------------------
+
+export type IntegrationStatus =
+  | "open"
+  | "conflicted"
+  | "resolving"
+  | "validating"
+  | "ready"
+  | "integrating"
+  | "integrated"
+  | "failed"
+  | "cancelled";
+export type RunStatus = "running" | "passed" | "failed" | "cancelled" | "interrupted";
+export type StepStatus =
+  | "pending"
+  | "running"
+  | "passed"
+  | "failed"
+  | "timed_out"
+  | "cancelled"
+  | "refused"
+  | "skipped"
+  | "error";
+
+export interface Blocker {
+  code: string;
+  message: string;
+}
+
+export interface IntegrationFacts {
+  workspace_valid: { Ok: null } | { Err: string };
+  live_session: boolean;
+  uncommitted_changes: boolean;
+  workspace_busy: string[];
+  source_ahead: number;
+  has_changes: boolean;
+  merge: { kind: "up_to_date" } | { kind: "clean" } | { kind: "conflicts"; files: string[] };
+  target_checkout: { path: string; has_local_changes: boolean; busy: string[] } | null;
+  identity: { Ok: string } | { Err: string };
+  task: { Ok: null } | { Err: string } | null;
+  review: { required: boolean; satisfied: boolean; detail: string };
+  validations_configured: number;
+  validation_passed: boolean;
+  validation_failed: boolean;
+}
+
+export interface Integration {
+  id: Uuid;
+  project_id: Uuid;
+  task_id: Uuid | null;
+  workspace_id: Uuid;
+  workspace_name: string | null;
+  source_branch: string;
+  source_commit: string;
+  target_branch: string;
+  target_commit: string;
+  base_commit: string | null;
+  status: IntegrationStatus;
+  status_reason: string | null;
+  blockers: Blocker[];
+  preflight: {
+    facts?: IntegrationFacts;
+    blockers?: Blocker[];
+    summary?: { commits_ahead: number; files_changed: number; additions: number; deletions: number; source_tree: string };
+    require_review?: boolean;
+  };
+  prepared_at_ms: number;
+  approved_by: string | null;
+  approved_at_ms: number | null;
+  merge_commit: string | null;
+  method: "ref_update" | "checkout_fast_forward" | null;
+  failure: string | null;
+  revision: number;
+  created_at_ms: number;
+  updated_at_ms: number;
+  completed_at_ms: number | null;
+}
+
+export interface CommitSummary {
+  oid: string;
+  parents: string[];
+  author_name: string;
+  author_email: string;
+  authored_at_ms: number;
+  subject: string;
+}
+
+export interface ChangedFileInfo {
+  path: string;
+  old_path: string | null;
+  kind: "added" | "modified" | "deleted" | "renamed" | "copied" | "type_changed" | "unmerged" | "unknown";
+  additions: number | null;
+  deletions: number | null;
+  binary: boolean;
+}
+
+export interface IntegrationChanges {
+  source_commit: string;
+  target_commit: string;
+  base_commit: string | null;
+  diverged: boolean;
+  commits: CommitSummary[];
+  commits_total: number;
+  files: ChangedFileInfo[];
+  files_total: number;
+  additions: number;
+  deletions: number;
+  truncated: boolean;
+  uncommitted: ChangedFileInfo[];
+}
+
+export interface ValidationCommandConfig {
+  id: Uuid;
+  name: string;
+  argv: string[];
+  command_line: string;
+  timeout_secs: number;
+  enabled: boolean;
+  position: number;
+}
+
+export interface ValidationPlanEntry {
+  command_id: Uuid;
+  name: string;
+  command_line: string;
+  policy_decision: "allow" | "ask" | "deny";
+  policy_explanation: string;
+}
+
+export interface ValidationStepInfo {
+  id: Uuid;
+  position: number;
+  name: string;
+  command_line: string;
+  cwd: string;
+  timeout_secs: number;
+  policy_decision: string;
+  policy_explanation: string;
+  authorized_by: string | null;
+  status: StepStatus;
+  exit_code: number | null;
+  signal: number | null;
+  stdout: string | null;
+  stderr: string | null;
+  stdout_truncated: boolean;
+  stderr_truncated: boolean;
+  detail: string | null;
+  started_at_ms: number | null;
+  ended_at_ms: number | null;
+}
+
+export interface ValidationRunInfo {
+  id: Uuid;
+  source_commit: string;
+  status: RunStatus;
+  requested_by: string | null;
+  started_at_ms: number;
+  ended_at_ms: number | null;
+  steps: ValidationStepInfo[];
+}
+
+export interface IntegrationSettingsInfo {
+  project_id: Uuid;
+  require_review: boolean;
+  revision: number;
+  commands: ValidationCommandConfig[];
+}
+
+export interface IntegrationDetail {
+  integration: Integration;
+  runs: ValidationRunInfo[];
+  plan: ValidationPlanEntry[];
+}
+
+type IntegrationResult = { integration: Integration };
+type IntegrationId = { integration_id: Uuid };
+
+export interface IntegrationMethods {
+  "integrations.list": {
+    params: { project_id?: Uuid; task_id?: Uuid; include_closed?: boolean; limit?: number };
+    result: { integrations: Integration[] };
+  };
+  "integrations.get": { params: IntegrationId; result: IntegrationDetail };
+  "integrations.create": {
+    params: { task_id?: Uuid; workspace_id?: Uuid; target_branch?: string };
+    result: IntegrationResult;
+  };
+  "integrations.refresh": { params: IntegrationId; result: IntegrationResult };
+  "integrations.changes": { params: IntegrationId; result: IntegrationChanges };
+  "integrations.patch": {
+    params: { integration_id: Uuid; path?: string; uncommitted?: boolean };
+    result: { patch: string; truncated: boolean };
+  };
+  "integrations.commit_workspace": { params: { integration_id: Uuid; message: string }; result: IntegrationResult };
+  "integrations.update_from_target": { params: IntegrationId; result: IntegrationResult };
+  "integrations.abort_resolution": { params: IntegrationId; result: IntegrationResult };
+  "integrations.validate": {
+    /** Each authorization names the exact command line the operator saw. */
+    params: { integration_id: Uuid; authorize?: { command_id: Uuid; command_line: string }[] };
+    result: { integration: Integration; run: ValidationRunInfo };
+  };
+  "integrations.cancel_validation": { params: IntegrationId; result: IntegrationResult };
+  "integrations.approve": {
+    params: { integration_id: Uuid; source_commit: string; target_commit: string };
+    result: IntegrationResult;
+  };
+  "integrations.cancel": { params: { integration_id: Uuid; reason?: string }; result: IntegrationResult };
+  "integrations.settings": { params: { project_id: Uuid }; result: IntegrationSettingsInfo };
+  "integrations.set_settings": { params: { project_id: Uuid; require_review: boolean }; result: IntegrationSettingsInfo };
+  "integrations.set_command": {
+    params: {
+      project_id: Uuid;
+      command_id?: Uuid;
+      name: string;
+      argv: string[];
+      timeout_secs: number;
+      enabled?: boolean;
+      position?: number;
+    };
+    result: IntegrationSettingsInfo;
+  };
+  "integrations.delete_command": { params: { command_id: Uuid }; result: IntegrationSettingsInfo };
 }

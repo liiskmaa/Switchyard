@@ -17,6 +17,12 @@ use switchyard_protocol::methods::{
     WorkspacesGet, WorkspacesGitStatus, WorkspacesList, WorkspacesRestore, WorkspacesVerify,
 };
 use switchyard_protocol::methods::{
+    IntegrationsAbortResolution, IntegrationsApprove, IntegrationsCancel, IntegrationsCancelValidation,
+    IntegrationsChanges, IntegrationsCommitWorkspace, IntegrationsCreate, IntegrationsDeleteCommand,
+    IntegrationsGet, IntegrationsList, IntegrationsPatch, IntegrationsRefresh, IntegrationsSetCommand,
+    IntegrationsSetSettings, IntegrationsSettings, IntegrationsUpdateFromTarget, IntegrationsValidate,
+};
+use switchyard_protocol::methods::{
     TasksAddDependency, TasksAssign, TasksCancel, TasksCancelAssignment, TasksComplete, TasksCreate,
     TasksDecideProposal, TasksFail, TasksGet, TasksList, TasksNote, TasksPublish, TasksRemoveDependency,
     TasksRetry, TasksStartAssignment, TasksUpdate,
@@ -80,6 +86,23 @@ const ALLOWED_METHODS: &[&str] = &[
     TasksCancel::NAME,
     TasksRetry::NAME,
     TasksDecideProposal::NAME,
+    IntegrationsList::NAME,
+    IntegrationsGet::NAME,
+    IntegrationsCreate::NAME,
+    IntegrationsRefresh::NAME,
+    IntegrationsChanges::NAME,
+    IntegrationsPatch::NAME,
+    IntegrationsCommitWorkspace::NAME,
+    IntegrationsUpdateFromTarget::NAME,
+    IntegrationsAbortResolution::NAME,
+    IntegrationsValidate::NAME,
+    IntegrationsCancelValidation::NAME,
+    IntegrationsApprove::NAME,
+    IntegrationsCancel::NAME,
+    IntegrationsSettings::NAME,
+    IntegrationsSetSettings::NAME,
+    IntegrationsSetCommand::NAME,
+    IntegrationsDeleteCommand::NAME,
 ];
 
 #[derive(Debug, Serialize)]

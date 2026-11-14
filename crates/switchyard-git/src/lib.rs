@@ -6,19 +6,26 @@
 //! large native dependency. Every invocation is time-bounded and never
 //! prompts.
 //!
-//! The only mutating operations are `git worktree add` (with a new branch)
-//! and `git worktree remove` without `--force` for Core-owned workspaces
-//! ([`worktree`]). Nothing here merges, rebases, deletes branches, prunes or
-//! discards changes.
+//! The mutating operations are `git worktree add` (with a new branch) and
+//! `git worktree remove` without `--force` for Core-owned workspaces
+//! ([`worktree`]), and the integration operations in [`integrate`]: object
+//! creation, one compare-and-swap branch update, commits and merges inside
+//! Core-owned workspaces, and a fast-forward of a clean target checkout.
+//! Nothing here pushes, rebases, resets, force-updates, deletes branches,
+//! prunes or discards user changes.
 
 mod command;
 mod error;
 mod ignore;
+pub mod integrate;
 mod repository;
 mod status;
 pub mod worktree;
 
 pub use command::{Git, GitConfig};
 pub use error::GitError;
+pub use integrate::{
+    ChangeKind, ChangedFile, CommitInfo, DiffSummary, MergeOutcome, RepoState, WorktreeMerge,
+};
 pub use repository::RepositoryRoot;
 pub use status::{GitStatus, parse_porcelain_v2};

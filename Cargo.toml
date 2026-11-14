@@ -10,6 +10,7 @@ members = [
     "crates/switchyard-workspaces",
     "crates/switchyard-policy",
     "crates/switchyard-tasks",
+    "crates/switchyard-integrations",
     "crates/switchyard-core",
     "apps/desktop/src-tauri",
 ]
@@ -31,6 +32,7 @@ switchyard-agents = { path = "crates/switchyard-agents" }
 switchyard-workspaces = { path = "crates/switchyard-workspaces" }
 switchyard-policy = { path = "crates/switchyard-policy" }
 switchyard-tasks = { path = "crates/switchyard-tasks" }
+switchyard-integrations = { path = "crates/switchyard-integrations" }
 
 tokio = { version = "1.54", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }

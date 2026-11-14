@@ -108,5 +108,17 @@ Migration 0005 replaces the never-written milestone-1 placeholders `tasks`, `mes
 `findings`, adds `sessions.access` (`write` | `review`) and an `events_task` index. See
 [tasks.md](tasks.md).
 
+### Integrations (migration 0006, milestone 7)
+- `integrations`:
+  - bound `source_commit` / `target_commit`;
+  - `preflight` (facts and blockers);
+  - `merge_commit` recorded before the branch moves;
+  - one unfinished integration per workspace (unique partial index);
+  - status changes guarded by status and revision.
+- `integration_settings` (`require_review`) and `validation_commands` (argv, timeout).
+- `validation_runs` (bound to a source commit) and `validation_steps` (policy decision, authorizer,
+  exit status, bounded output).
+- `task_assignments.review_tree`: the Git tree a review saw. See [integrations.md](integrations.md).
+
 ### Reserved, not written yet
 `decisions`.

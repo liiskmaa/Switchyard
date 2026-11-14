@@ -4,8 +4,8 @@ Switchyard is a local-first orchestration platform for native AI coding agents (
 Codex). It is not an agent itself. It supervises agent processes, coordinates their work, persists
 what happens, and gives a human operator control.
 
-This document describes what exists **today** (milestones 1–6: the foundation, native Claude Code
-sessions, workspace isolation, approval policies, native Codex sessions, and task orchestration) and the boundaries that later milestones build on.
+This document describes what exists **today** (milestones 1–7: the foundation, native Claude Code
+sessions, workspace isolation, approval policies, native Codex sessions, task orchestration, and change integration) and the boundaries that later milestones build on.
 
 ## Processes
 
@@ -45,6 +45,7 @@ sessions, workspace isolation, approval policies, native Codex sessions, and tas
 | `switchyard-agents` | Vendor-neutral agent model; process supervision (no shell, controlled environment, bounded lines, SIGTERM/SIGKILL escalation); the provider-neutral `AgentSession` handle; Claude Code and Codex adapters. | — |
 | `switchyard-workspaces` | Workspace domain rules without I/O: lifecycle and transitions, branch and path naming, cleanup safety evaluation. | — |
 | `switchyard-policy` | Approval policy without I/O: normalized operations, rules and their validation, deterministic evaluation with explanations. | — |
+| `switchyard-integrations` | Change integration domain without I/O: integration lifecycle, preflight blockers from Git facts, validation command rules, merge commit message. | — |
 | `switchyard-tasks` | Task domain without I/O: lifecycle and transitions, the dependency graph (cycles, readiness), the `switchyard-report` parser and the versioned task context. | — |
 | `switchyard-core` | The executable: config, lifecycle (lock, socket, signals), connection server, request handlers, workspaces (`src/workspaces`), agent sessions (`src/agents`), and the `switchyard-fake-claude` test binary. | all of the above |
 | `apps/desktop/src-tauri` | Desktop shell: Core bridge (connect, reconnect, replay, forward events), launcher, Tauri commands. | client, protocol |
@@ -225,8 +226,19 @@ request ─► classify(provider) ─► Operation ─► path facts (Core, I/O)
 - The operator publishes, assigns, completes, fails and approves proposals.
 - Details: [tasks.md](tasks.md), ADRs 0023–0027.
 
+## Change integration (milestone 7)
+
+- An integration delivers one workspace's committed changes into a target branch. It is bound to
+  an exact source and target commit and checked against facts read from Git.
+- Agent work is committed in the workspace on the operator's request. If the target moved, the
+  workspace is updated from it, and conflicts are resolved in the workspace, never on the target.
+- Validation commands go through the policy evaluator and are bound to the source commit.
+- Only the operator's approval of the exact commits integrates. Core creates a merge commit and moves
+  the target branch by compare-and-swap (or fast-forwards its clean checkout); nothing is pushed.
+- Details: [integrations.md](integrations.md), ADRs 0028–0031.
+
 ## What is intentionally absent
 
-There is no support for Codex sub-agents (their requests are denied), no integration of workspace branches (merge, rebase, cherry-pick), no
+There is no support for Codex sub-agents (their requests are denied), no pushing or remote delivery (integration is local), no
 agent-initiated task creation or assignment (agents only propose), no automatic branch deletion or workspace pruning, no global
 (cross-project) policy rules, and no OS-level sandbox yet.

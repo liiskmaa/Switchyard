@@ -63,8 +63,9 @@ string_enum!(
         /// No session attached; the worktree has uncommitted or untracked
         /// changes.
         Dirty => "dirty",
-        /// Reserved for a later milestone (integration back into the
-        /// project). Nothing transitions into it yet.
+        /// Core is running an integration step in the worktree (a commit, a
+        /// merge from the target, validation commands). No session may
+        /// attach meanwhile (milestone 7, ADR 0028).
         Integrating => "integrating",
         /// The operator marked the work in this workspace as done. It can
         /// still be reopened by starting a session.
@@ -101,9 +102,10 @@ impl WorkspaceStatus {
         matches!(
             (self, to),
             (Provisioning, Ready | Dirty | Failed)
-                | (Ready, Dirty | Active | Completed | Archived | Failed)
-                | (Dirty, Ready | Active | Completed | Archived | Failed)
-                | (Completed, Ready | Dirty | Active | Archived | Failed)
+                | (Ready, Dirty | Active | Completed | Archived | Failed | Integrating)
+                | (Dirty, Ready | Active | Completed | Archived | Failed | Integrating)
+                | (Completed, Ready | Dirty | Active | Archived | Failed | Integrating)
+                | (Integrating, Ready | Dirty | Completed | Failed)
                 | (Active, Ready | Dirty | Failed)
                 | (Failed, Ready | Dirty | Archived)
                 | (Archived, Ready | Dirty | CleanupPending | Failed)
@@ -175,8 +177,13 @@ mod tests {
         // Two sessions can never share a workspace.
         assert!(!Active.can_transition(Active) || !Active.accepts_session());
         assert!(!Active.accepts_session());
-        // Integrating is reserved: unreachable for now.
-        assert!(WorkspaceStatus::ALL.iter().all(|s| *s == Integrating || !s.can_transition(Integrating)));
+        // Integrating is entered only from a settled, session-free state and
+        // never accepts a session.
+        for s in WorkspaceStatus::ALL {
+            let allowed = matches!(s, Ready | Dirty | Completed | Integrating);
+            assert_eq!(s.can_transition(Integrating), allowed, "{s} → integrating");
+        }
+        assert!(!Integrating.accepts_session());
         // Removed is final.
         assert!(WorkspaceStatus::ALL.iter().all(|s| !Removed.can_transition(*s)));
         assert!(Provisioning.transition(Active).is_err());

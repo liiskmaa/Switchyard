@@ -79,6 +79,8 @@ export function usageText(payload: Record<string, unknown>): string {
 export const shortId = (id: string): string => id.slice(-8);
 export const shortOid = (oid: string): string => oid.slice(0, 8);
 
+const short = (oid: string | undefined): string => (oid ? oid.slice(0, 10) : "?");
+
 function str(payload: Record<string, unknown>, key: string): string | undefined {
   const value = payload[key];
   return typeof value === "string" ? value : undefined;
@@ -187,6 +189,41 @@ export function describeEvent(event: EventEnvelope): string {
         : `Review: ${str(p, "result") ?? "?"} (${String(p["findings"] ?? 0)} findings)`;
     case "task.proposal_decided":
       return `Proposed subtask ${str(p, "decision") ?? "decided"}`;
+    case "integration.created":
+      return `Integration of ${str(p, "source_branch") ?? "?"} into ${str(p, "target_branch") ?? "?"} proposed by ${str(p, "created_by") ?? "?"}`;
+    case "integration.prepared": {
+      const blockers = Array.isArray(p["blockers"]) ? (p["blockers"] as string[]) : [];
+      return `Checked ${short(str(p, "source_commit"))} → ${short(str(p, "target_commit"))}: ${blockers.length ? `blocked (${blockers.join(", ")})` : "ready for approval"}`;
+    }
+    case "integration.status_changed":
+      return `Integration ${str(p, "from") ?? "?"} → ${str(p, "to") ?? "?"}${str(p, "reason") ? ` (${str(p, "reason")})` : ""}`;
+    case "integration.workspace_changed": {
+      const action = str(p, "action");
+      const files = Array.isArray(p["files"]) ? (p["files"] as string[]).join(", ") : "?";
+      const what =
+        action === "committed"
+          ? `committed the workspace (${short(str(p, "commit"))})`
+          : action === "updated"
+            ? `merged the target into the workspace (${short(str(p, "commit"))})`
+            : action === "conflicts"
+              ? `merging the target into the workspace conflicts in ${files}`
+              : action === "aborted"
+                ? "aborted the conflict resolution"
+                : (action ?? "changed the workspace");
+      return `${str(p, "by") ?? "Operator"} ${what}`;
+    }
+    case "integration.validation_started":
+      return `Validation started for ${short(str(p, "source_commit"))}`;
+    case "integration.validation_step_finished":
+      return `${str(p, "name") ?? "Command"}: ${str(p, "status") ?? "?"}${typeof p["exit_code"] === "number" ? ` (exit ${String(p["exit_code"])})` : ""}`;
+    case "integration.validation_finished":
+      return `Validation ${str(p, "status") ?? "finished"} for ${short(str(p, "source_commit"))}`;
+    case "integration.approved":
+      return `${str(p, "approved_by") ?? "Operator"} approved ${short(str(p, "source_commit"))} onto ${short(str(p, "target_commit"))}`;
+    case "integration.integrated":
+      return `Integrated: ${str(p, "target_branch") ?? "?"} is now at ${short(str(p, "merge_commit"))}${p["recovered"] === true ? " (confirmed after a Core restart)" : ""}`;
+    case "integration.failed":
+      return `Integration failed: ${str(p, "reason") ?? "?"}${p["target_moved"] === true ? " (the target branch is somewhere unexpected)" : ""}`;
     default:
       return event.event_type;
   }

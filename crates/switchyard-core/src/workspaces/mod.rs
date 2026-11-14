@@ -49,6 +49,8 @@ struct Inner {
     root: PathBuf,
     /// Serializes Git mutations per repository (project id).
     repo_locks: Mutex<HashMap<Uuid, Arc<AsyncMutex<()>>>>,
+    /// The status a workspace had before an integration step (restored after it).
+    before_integration: Mutex<HashMap<Uuid, WorkspaceStatus>>,
     /// Test hook: pause between confirming a cleanup and the final check.
     cleanup_pause: std::time::Duration,
 }
@@ -105,11 +107,108 @@ impl WorkspaceService {
     ) -> std::io::Result<Self> {
         let root = std::fs::canonicalize(root)?;
         Ok(Self {
-            inner: Arc::new(Inner { storage, bus, git, root, repo_locks: Mutex::default(), cleanup_pause }),
+            inner: Arc::new(Inner {
+                storage,
+                bus,
+                git,
+                root,
+                repo_locks: Mutex::default(),
+                before_integration: Mutex::default(),
+                cleanup_pause,
+            }),
         })
     }
 
-    fn repo_lock(&self, project_id: Uuid) -> Arc<AsyncMutex<()>> {
+    pub(crate) fn git(&self) -> &Git {
+        &self.inner.git
+    }
+
+    /// The tree of everything in the workspace's worktree (tracked files as
+    /// on disk plus untracked, non-ignored files), computed with a private
+    /// index so neither the worktree nor its index changes.
+    pub(crate) async fn content_tree(&self, w: &WorkspaceRecord) -> Result<String, switchyard_git::GitError> {
+        let index = self.inner.root.join(format!(".switchyard-index-{}", switchyard_events::new_id()));
+        self.inner.git.content_tree(Path::new(&w.path), &index).await
+    }
+
+    /// Marks a settled, session-free workspace `integrating` while Core runs
+    /// an integration step in it. Fails if a session is attached.
+    pub(crate) async fn begin_integration_op(&self, id: Uuid) -> Result<WorkspaceRecord, ProtocolError> {
+        let now = now_ms();
+        let (before, after) = self
+            .commit_checked(move |tx| {
+                let current = workspaces::get(tx, id)?;
+                if current.status == WorkspaceStatus::Integrating {
+                    return Ok(Err(err(
+                        ErrorCode::InvalidWorkspaceState,
+                        "another integration step is running in this workspace",
+                    )));
+                }
+                if workspaces::live_session(tx, id)?.is_some() {
+                    return Ok(Err(err(
+                        ErrorCode::WorkspaceOccupied,
+                        "a session is attached to this workspace",
+                    )));
+                }
+                if !current.status.can_transition(WorkspaceStatus::Integrating) {
+                    return Ok(Err(err(
+                        ErrorCode::InvalidWorkspaceState,
+                        format!("workspace is {}; Core cannot work in it", current.status),
+                    )));
+                }
+                let (before, after) = workspaces::transition(
+                    tx,
+                    id,
+                    WorkspaceStatus::Integrating,
+                    &WorkspaceChanges::default(),
+                    now,
+                )?;
+                let drafts = state_change_drafts(&before, &after)?;
+                Ok(Ok(((before.status, after), drafts)))
+            })
+            .await?;
+        self.inner
+            .before_integration
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id, before);
+        Ok(after)
+    }
+
+    /// Returns an `integrating` workspace to `completed` if the operator had
+    /// marked it so, otherwise to `ready`/`dirty` from Git status (`dirty`
+    /// if the status cannot be read).
+    pub(crate) async fn end_integration_op(&self, id: Uuid) {
+        let before = self
+            .inner
+            .before_integration
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&id);
+        let result: Result<(), ProtocolError> = async {
+            let w = self.record(id).await?;
+            if w.status != WorkspaceStatus::Integrating {
+                return Ok(());
+            }
+            let to = match (before, self.status_of(&w).await) {
+                (Some(WorkspaceStatus::Completed), Some(st)) => {
+                    (WorkspaceStatus::Completed, observed(&st, None))
+                }
+                (Some(WorkspaceStatus::Completed), None) => {
+                    (WorkspaceStatus::Completed, WorkspaceChanges::default())
+                }
+                (_, Some(st)) => (settled(&st), observed(&st, None)),
+                (_, None) => (WorkspaceStatus::Dirty, WorkspaceChanges::default()),
+            };
+            self.set_status(id, to.0, to.1, Vec::new()).await.map(|_| ())
+        }
+        .await;
+        if let Err(e) = result {
+            tracing::error!(workspace_id = %id, ?e, "cannot settle the workspace after an integration step");
+        }
+    }
+
+    pub(crate) fn repo_lock(&self, project_id: Uuid) -> Arc<AsyncMutex<()>> {
         let mut locks = self.inner.repo_locks.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         Arc::clone(locks.entry(project_id).or_default())
     }
@@ -141,7 +240,7 @@ impl WorkspaceService {
         }
     }
 
-    async fn project_root(&self, project_id: Uuid) -> Result<PathBuf, ProtocolError> {
+    pub(crate) async fn project_root(&self, project_id: Uuid) -> Result<PathBuf, ProtocolError> {
         match self.inner.storage.call(move |c| projects::get(c, project_id)).await {
             Ok(p) => Ok(PathBuf::from(p.root_path)),
             Err(StorageError::NotFound(_)) => {

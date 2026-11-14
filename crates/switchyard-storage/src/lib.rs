@@ -11,6 +11,7 @@ pub mod agents;
 pub mod approvals;
 mod error;
 pub mod events;
+pub mod integrations;
 mod migrations;
 pub mod policies;
 pub mod projects;

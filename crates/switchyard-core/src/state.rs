@@ -10,6 +10,7 @@ use tokio::sync::watch;
 
 use crate::agents::AgentService;
 use crate::config::CoreConfig;
+use crate::integrations::IntegrationService;
 use crate::policy::PolicyService;
 use crate::tasks::TaskService;
 use crate::workspaces::WorkspaceService;
@@ -27,6 +28,7 @@ pub(crate) struct CoreState {
     pub workspaces: WorkspaceService,
     pub policies: PolicyService,
     pub tasks: TaskService,
+    pub integrations: IntegrationService,
     pub connected_clients: Arc<AtomicU64>,
     /// `Some(reason)` once shutdown has been requested.
     pub shutdown: watch::Sender<Option<String>>,

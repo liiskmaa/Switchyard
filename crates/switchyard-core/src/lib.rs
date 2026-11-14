@@ -14,6 +14,7 @@ pub mod config;
 mod connection;
 mod error;
 mod handlers;
+mod integrations;
 mod journal;
 mod lifecycle;
 pub mod logging;

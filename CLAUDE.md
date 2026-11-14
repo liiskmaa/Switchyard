@@ -22,6 +22,10 @@ Rust process, **Switchyard Core**. The Tauri desktop app is only a client.
   graph, report parser, context renderer; `crates/switchyard-storage/src/tasks.rs`,
   `crates/switchyard-core/src/tasks/`, `migrations/0005_tasks.sql`, `apps/desktop/src/features/tasks`).
   See `docs/architecture/tasks.md` and ADRs 0023–0027.
+- Milestone 7: change integration (`crates/switchyard-integrations` is pure: state machine, blockers,
+  validation rules; `crates/switchyard-git/src/integrate.rs`, `crates/switchyard-core/src/integrations/`,
+  `migrations/0006_integrations.sql`, `apps/desktop/src/features/integrations`). See
+  `docs/architecture/integrations.md` and ADRs 0028–0031.
 
 The verified Claude CLI behaviour is in `docs/architecture/agent-integration.md`, the verified Codex
 app-server behaviour (0.166.0) in `docs/architecture/codex-integration.md`, and the contract in
@@ -46,9 +50,12 @@ cargo test -p switchyard-core --test workspaces         # worktrees, concurrent 
 cargo test -p switchyard-git --test worktrees           # git worktree operations on temp repos
 cargo test -p switchyard-core --test codex              # Codex sessions via the fake app-server
 cargo test -p switchyard-core --test tasks              # tasks via both fakes ([fake:report:HEX] scenarios)
+cargo test -p switchyard-core --test integrations       # integration: inspection, validation, approval, recovery
+cargo test -p switchyard-git --test integrate           # Git integration primitives on temp repos
 SWITCHYARD_REAL_CLAUDE=1 cargo test -p switchyard-core --test real_claude -- --ignored   # real CLI, paid
 SWITCHYARD_REAL_CODEX=1 cargo test -p switchyard-core --test real_codex -- --ignored     # real CLI, paid
 SWITCHYARD_REAL_CLAUDE=1 SWITCHYARD_REAL_CODEX=1 cargo test -p switchyard-core --test real_tasks -- --ignored
+SWITCHYARD_REAL_CLAUDE=1 SWITCHYARD_REAL_CODEX=1 cargo test -p switchyard-core --test real_integration -- --ignored
 ```
 
 Rust is pinned to 1.99.1 (`rust-toolchain.toml`), edition 2024. Clippy warns on `unwrap`/`expect`
@@ -81,8 +88,12 @@ When running Core or the app manually, set `SWITCHYARD_DATA_DIR` (and, if that p
   changes are **new** files `migrations/000N_*.sql` plus an entry in `MIGRATIONS`
   (`crates/switchyard-storage/src/migrations.rs`). Never edit an applied migration. `events` is
   append-only (enforced by triggers).
-- **Git:** read-only, via the `git` CLI in `crates/switchyard-git` (`--no-optional-locks`, no prompts,
-  timeouts). Map `GitError` to protocol codes in `crates/switchyard-core/src/handlers/errors.rs`.
+- **Git:** via the `git` CLI in `crates/switchyard-git` (`--no-optional-locks`, no prompts,
+  timeouts). Read-only except worktree add/remove and `integrate.rs` (object creation, one
+  compare-and-swap `update-ref`, commits/merges inside Core-owned workspaces, `merge --ff-only` of a
+  clean target checkout); writes run with hooks disabled. Never push, rebase, reset, force or delete.
+  Map `GitError` to protocol codes in `crates/switchyard-core/src/handlers/errors.rs`
+  (integration steps: `integrations::git_err`).
 - **Shutdown ordering matters:** server stops accepting → journals `core.stopping` → sets
   `state.closing` → subscription tasks drain → each connection sends a `shutdown` frame. Connections
   must wait on `closing`, not `shutdown`, or clients miss `core.stopping`.
@@ -152,6 +163,18 @@ When running Core or the app manually, set `SWITCHYARD_DATA_DIR` (and, if that p
     the system policy and are fingerprinted before/after; keep both.
   - Changes to the task context or report format bump `CONTEXT_VERSION` and keep the fakes'
     `src/bin/fake_support/report.rs` in sync.
+- **Integrations.**
+  - Changes go through `IntegrationService` (`journal::commit_checked`, `integrations::transition`
+    validates `IntegrationStatus::transition`, guarded by status + revision). Only operator IPC moves
+    a target branch, via `approve` with the exact bound commits.
+  - Preparation (`facts.rs`) reads every fact from Git and Core's records, never from agent output.
+    The source must contain the target; conflicts are resolved in the workspace, never on the target.
+  - Core work in a workspace (commit, update, validation) holds the project `repo_lock` and marks the
+    workspace `integrating` (`begin_integration_op`/`end_integration_op`).
+  - Validation commands go through `switchyard_policy::evaluate`; `ask` needs explicit operator
+    authorization. Never run them through a shell.
+  - Record the merge commit before moving the target (`integrating`); recovery settles from the
+    target branch tip.
 - Text edits made with ad-hoc scripts can silently no-op after `cargo fmt` reflows code. Verify
   behaviour-only edits (guards, checks) with a test.
 

@@ -34,6 +34,12 @@ pub enum GitError {
     WorktreeLocked(PathBuf),
     #[error("worktree {0} contains modified or untracked files")]
     WorktreeNotClean(PathBuf),
+    #[error("branch {branch} is at {actual}, not the expected {expected}")]
+    RefChanged { branch: String, expected: String, actual: String },
+    #[error("Git has no committer identity configured (set user.name and user.email): {0}")]
+    IdentityMissing(String),
+    #[error("{0}")]
+    WorktreeBusy(String),
     #[error("unexpected git output: {0}")]
     UnexpectedOutput(String),
     #[error("i/o error on {path}: {source}")]

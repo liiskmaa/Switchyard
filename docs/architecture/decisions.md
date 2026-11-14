@@ -30,14 +30,17 @@ Each significant decision is recorded as an ADR in [`docs/decisions/`](../decisi
 | [0025](../decisions/0025-task-messages-reports-and-context.md) | A versioned task context in the first message; agents answer with a fenced `switchyard-report` JSON block, parsed with limits and a per-role allowlist into structured messages; a message never authorizes anything. | A report after more than 8 KiB of final text is lost; agents can ignore the format. |
 | [0026](../decisions/0026-controlled-delegation.md) | Agents only propose subtasks; the operator approves each one into a draft. | No automatic decomposition. |
 | [0027](../decisions/0027-review-sessions.md) | Review sessions: file changes denied by the system policy, commands always ask, workspace fingerprinted before and after; a change forces the verdict to `blocked`. | Approved commands still run with the user's permissions. |
+| [0028](../decisions/0028-integrations-separate-from-tasks.md) | Integrations are their own record bound to exact commits, with blockers computed from Git; task states unchanged; delivery is not completion; the workspace is `integrating` while Core works in it. | A completed task cannot be re-reviewed for a changed source. |
+| [0029](../decisions/0029-git-strategy-and-commit-binding.md) | Always a merge commit of the approved target and source; the source must contain the target (update in the workspace; conflicts resolved there); compare-and-swap ref update or fast-forward of a clean checkout; approvals and reviews bound to exact commits/trees; hooks disabled. | Repository hooks do not run for Switchyard's merges. |
+| [0030](../decisions/0030-validation-execution.md) | Validation commands are argv, evaluated by the M4 policy (ask needs the operator), bound to the source commit, run in process groups with timeouts, cancellation and 64 KiB output tails. | Commands inherit Core's environment. |
+| [0031](../decisions/0031-integration-recovery-and-audit.md) | The merge commit is recorded before the branch moves; recovery settles from the target branch; every step is journaled and the merge commit carries trailers. | Only the ref update is atomic. |
 | [0007](../decisions/0007-toolchain-and-versions.md) | Tauri 2.12 (not 3-alpha), Rust 1.99.1 pinned, React 19.3, Vite 8, TS 5.9. | Conservative TypeScript choice. |
 
 ## Decisions deliberately deferred
 
 - **How Core is started at login** (LaunchAgent vs. on-demand from the desktop). It is currently on
   demand only.
-- **Integration of workspace branches** back into the project (merge, rebase, review). Workspaces
-  have a reserved `integrating` status; nothing merges automatically.
+- **Remote delivery** (push, pull requests, hosting integrations). M7 integrates locally only.
 - **OS-level sandboxing** of agent commands. Worktrees isolate source trees only.
 - **Global (cross-project) policy rules, session-scoped rules and "always allow" shortcuts.**
   Milestone 4 has project and workspace rules only (ADR 0016).

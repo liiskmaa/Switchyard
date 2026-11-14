@@ -13,6 +13,7 @@ switchyard-agents.workspace = true
 switchyard-workspaces.workspace = true
 switchyard-policy.workspace = true
 switchyard-tasks.workspace = true
+switchyard-integrations.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

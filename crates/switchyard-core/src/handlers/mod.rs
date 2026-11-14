@@ -4,6 +4,7 @@
 mod agents;
 pub(crate) mod errors;
 mod events;
+mod integrations;
 mod policies;
 mod projects;
 mod system;
@@ -200,6 +201,74 @@ pub(crate) async fn dispatch(conn: &Connection, method: &str, params: Value) -> 
         }
         methods::TasksDecideProposal::NAME => {
             typed::<methods::TasksDecideProposal, _, _>(params, |p| tasks::decide_proposal(conn, p)).await
+        }
+        methods::IntegrationsList::NAME => {
+            typed::<methods::IntegrationsList, _, _>(params, |p| integrations::list(state, p)).await
+        }
+        methods::IntegrationsGet::NAME => {
+            typed::<methods::IntegrationsGet, _, _>(params, |p| integrations::get(state, p)).await
+        }
+        methods::IntegrationsCreate::NAME => {
+            typed::<methods::IntegrationsCreate, _, _>(params, |p| integrations::create(conn, p)).await
+        }
+        methods::IntegrationsRefresh::NAME => {
+            typed::<methods::IntegrationsRefresh, _, _>(params, |p| integrations::refresh(state, p)).await
+        }
+        methods::IntegrationsChanges::NAME => {
+            typed::<methods::IntegrationsChanges, _, _>(params, |p| integrations::changes(state, p)).await
+        }
+        methods::IntegrationsPatch::NAME => {
+            typed::<methods::IntegrationsPatch, _, _>(params, |p| integrations::patch(state, p)).await
+        }
+        methods::IntegrationsCommitWorkspace::NAME => {
+            typed::<methods::IntegrationsCommitWorkspace, _, _>(params, |p| {
+                integrations::commit_workspace(conn, p)
+            })
+            .await
+        }
+        methods::IntegrationsUpdateFromTarget::NAME => {
+            typed::<methods::IntegrationsUpdateFromTarget, _, _>(params, |p| {
+                integrations::update_from_target(conn, p)
+            })
+            .await
+        }
+        methods::IntegrationsAbortResolution::NAME => {
+            typed::<methods::IntegrationsAbortResolution, _, _>(params, |p| {
+                integrations::abort_resolution(conn, p)
+            })
+            .await
+        }
+        methods::IntegrationsValidate::NAME => {
+            typed::<methods::IntegrationsValidate, _, _>(params, |p| integrations::validate(conn, p)).await
+        }
+        methods::IntegrationsCancelValidation::NAME => {
+            typed::<methods::IntegrationsCancelValidation, _, _>(params, |p| {
+                integrations::cancel_validation(state, p)
+            })
+            .await
+        }
+        methods::IntegrationsApprove::NAME => {
+            typed::<methods::IntegrationsApprove, _, _>(params, |p| integrations::approve(conn, p)).await
+        }
+        methods::IntegrationsCancel::NAME => {
+            typed::<methods::IntegrationsCancel, _, _>(params, |p| integrations::cancel(conn, p)).await
+        }
+        methods::IntegrationsSettings::NAME => {
+            typed::<methods::IntegrationsSettings, _, _>(params, |p| integrations::settings(state, p)).await
+        }
+        methods::IntegrationsSetSettings::NAME => {
+            typed::<methods::IntegrationsSetSettings, _, _>(params, |p| integrations::set_settings(state, p))
+                .await
+        }
+        methods::IntegrationsSetCommand::NAME => {
+            typed::<methods::IntegrationsSetCommand, _, _>(params, |p| integrations::set_command(state, p))
+                .await
+        }
+        methods::IntegrationsDeleteCommand::NAME => {
+            typed::<methods::IntegrationsDeleteCommand, _, _>(params, |p| {
+                integrations::delete_command(state, p)
+            })
+            .await
         }
         methods::LiveSubscribe::NAME => {
             events::live_subscribe(conn, parse::<methods::LiveSubscribe>(params)?).await

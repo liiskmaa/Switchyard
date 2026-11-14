@@ -158,6 +158,22 @@ client detect a restart. `seq` stays continuous across restarts because it lives
 | `tasks.fail` / `tasks.cancel` | `{task_id, note?}` | `{task}`; an open assignment is cancelled and its session stopped |
 | `tasks.retry` | `{task_id, note?}` | `{task}`: `failed` → `ready`/`blocked`, or `blocked` → `ready` once dependencies are completed |
 | `tasks.decide_proposal` | `{proposal_id, approve, note?}` | `{proposal, created_task}`: approving creates a draft subtask; once only (`conflict`) |
+| `integrations.list` | `{project_id?, task_id?, include_closed?, limit?}` | `{integrations: [Integration]}`, newest first |
+| `integrations.get` | `{integration_id}` | `IntegrationDetail`: `{integration, runs: [ValidationRun] (newest first), plan: [{command_id, name, command_line, policy_decision: allow\|ask\|deny, policy_explanation}]}` |
+| `integrations.create` | `{task_id?, workspace_id?, target_branch?}` | `{integration}` bound to the workspace branch tip and the target tip (default target: the branch checked out in the project checkout). `invalid_params` for another project, a `switchyard/*` or option-like target, a missing branch; `conflict` if the workspace has an unfinished integration. |
+| `integrations.refresh` | `{integration_id}` | `{integration}` re-read from Git and rebound to the current commits; any approver is cleared |
+| `integrations.changes` | `{integration_id}` | `IntegrationChanges` for the bound commits: commits `target..source`, files from the merge base (renames, binaries, counts), `diverged`, and the workspace's uncommitted files |
+| `integrations.patch` | `{integration_id, path?, uncommitted?}` | `{patch, truncated}` (cut at 1 MiB) |
+| `integrations.commit_workspace` | `{integration_id, message}` | `{integration}`; commits everything in the workspace (completes a resolution; refused while conflict markers remain) |
+| `integrations.update_from_target` | `{integration_id}` | `{integration}`; merges the target into the workspace; conflicts → `resolving`. The target never changes. |
+| `integrations.abort_resolution` | `{integration_id}` | `{integration}`; `git merge --abort` in the workspace |
+| `integrations.validate` | `{integration_id, authorize?: [{command_id, command_line}]}` | `{integration, run}`; an authorization covers a command only while its `command_line` is the one shown in the plan. Refused commands (policy `deny`, or `ask` not authorized) mean nothing runs; otherwise runs in the background (`validating`) |
+| `integrations.cancel_validation` | `{integration_id}` | `{integration}`; stops the running commands |
+| `integrations.approve` | `{integration_id, source_commit, target_commit}` | `{integration}` (`integrated` or `failed`). `conflict` if the commits are not the bound ones or moved (the integration is re-prepared), or it is already integrated; `invalid_state` unless `ready` |
+| `integrations.cancel` | `{integration_id, reason?}` | `{integration}` (`cancelled`); nothing in Git changes |
+| `integrations.settings` / `integrations.set_settings` | `{project_id}` / `{project_id, require_review}` | `{project_id, require_review, revision, commands: [ValidationCommand]}` |
+| `integrations.set_command` | `{project_id, command_id?, name, argv: [string], timeout_secs (1..=14400), enabled?, position?}` | settings; argv is run directly, never through a shell |
+| `integrations.delete_command` | `{command_id}` | settings |
 | `live.subscribe` | `{session_id?}` | `{subscription_id}`. Delivers `live` frames. |
 | `live.unsubscribe` | `{subscription_id}` | `{}` |
 
@@ -224,6 +240,18 @@ TaskMessage      { id, task_id, assignment_id?, kind, sender: agent|operator|cor
 TaskFinding      { id, task_id, message_id, assignment_id?, severity: info|low|medium|high|critical,
                    title, explanation?, suggestion?, path?, line?, status: open|resolved|dismissed,
                    created_at_ms, resolved_at_ms? }
+Integration      { id, project_id, task_id?, workspace_id, workspace_name?, source_branch, source_commit,
+                   target_branch, target_commit, base_commit?, status: open|conflicted|resolving|
+                   validating|ready|integrating|integrated|failed|cancelled, status_reason?,
+                   blockers: [{code, message}], preflight: {facts, blockers, summary, require_review},
+                   prepared_at_ms, approved_by?, approved_at_ms?, merge_commit?, method?, failure?,
+                   revision, created_at_ms, updated_at_ms, completed_at_ms? }
+ValidationRun    { id, source_commit, status: running|passed|failed|cancelled|interrupted,
+                   requested_by?, started_at_ms, ended_at_ms?, steps: [{ id, position, name,
+                   command_line, cwd, timeout_secs, policy_decision, policy_explanation,
+                   authorized_by?, status: pending|running|passed|failed|timed_out|cancelled|refused|
+                   skipped|error, exit_code?, signal?, stdout?, stderr?, stdout_truncated,
+                   stderr_truncated, detail?, started_at_ms?, ended_at_ms? }] }
 TaskProposal     { id, task_id, message_id, position, proposal: {title, description?, kind,
                    acceptance_criteria, depends_on: [index|task_id]}, status: pending|approved|
                    rejected, decided_by?, decision_note?, created_task_id?, created_at_ms,
@@ -298,9 +326,19 @@ the registration is kept and `projects.git_status` returns `repository_unavailab
 | `task.message_recorded` | `{message_id, kind, sender: agent\|operator\|core, assignment_id, summary}`; a message from an agent never authorizes anything |
 | `task.review_recorded` | `{assignment_id, reported_result, result, workspace_changed, findings}`; `result` is `blocked` when the workspace changed during the review |
 | `task.proposal_decided` | `{proposal_id, decision: approved\|rejected, created_task_id}` |
+| `integration.created` | `{integration_id, source_branch, target_branch, created_by}` |
+| `integration.prepared` | `{integration_id, source_commit, target_commit, base_commit, blockers: [code], files_changed}` |
+| `integration.status_changed` | `{integration_id, from, to, reason}` |
+| `integration.workspace_changed` | `{integration_id, action: committed\|updated\|conflicts\|aborted, commit, files, by}` |
+| `integration.validation_started` | `{integration_id, run_id, source_commit, commands}` |
+| `integration.validation_step_finished` | `{integration_id, run_id, name, command, status, exit_code, authorized_by, policy_decision}` |
+| `integration.validation_finished` | `{integration_id, run_id, source_commit, status}` |
+| `integration.approved` | `{integration_id, source_commit, target_commit, merge_commit, method: ref_update\|checkout_fast_forward, approved_by}`; recorded before the target moves |
+| `integration.integrated` | `{integration_id, target_branch, merge_commit, source_commit, target_commit, recovered}` |
+| `integration.failed` | `{integration_id, reason, target_moved}` |
 | `files.changed` | `{changes: [{path, kind: created\|modified\|deleted\|renamed, from?}], dropped}`: what the filesystem reported in one workspace (debounced, `.git` and ignored paths excluded). Paths are relative to the workspace root; the context carries project, workspace and session. |
 
-Agent events carry `project_id`, `workspace_id`, `session_id` and `agent_id` in the envelope; workspace events carry `project_id` and `workspace_id`; task events carry `project_id` and `task_id` (and `workspace_id` for assignment events). `events.list` also accepts `session_id` and `task_id`.
+Agent events carry `project_id`, `workspace_id`, `session_id` and `agent_id` in the envelope; workspace events carry `project_id` and `workspace_id`; task events carry `project_id` and `task_id` (and `workspace_id` for assignment events); integration events carry `project_id`, `workspace_id` and (when linked) `task_id`, with `integration_id` in the payload. `events.list` also accepts `session_id` and `task_id`.
 
 Clients must tolerate unknown event types and payload fields.
 
