@@ -144,6 +144,40 @@ impl RepoState {
     }
 }
 
+/// Why a fast-forward of a checked-out target did not complete.
+#[derive(Debug)]
+pub enum FastForwardError {
+    /// Refused before Git ran: nothing was changed.
+    Refused(String),
+    /// Git ran and did not complete (including a timeout, which stops it
+    /// part-way): the checkout may be partially updated.
+    Git(GitError),
+    /// Git completed, but the checkout was no longer on the target branch:
+    /// it fast-forwarded whatever was checked out instead.
+    Diverted { checked_out: String, branch_tip: Option<String> },
+}
+
+impl From<GitError> for FastForwardError {
+    fn from(e: GitError) -> Self {
+        Self::Git(e)
+    }
+}
+
+impl std::fmt::Display for FastForwardError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(m) => write!(f, "{m}"),
+            Self::Git(e) => write!(f, "{e}"),
+            Self::Diverted { checked_out, branch_tip } => write!(
+                f,
+                "the checkout was switched to {checked_out} during the update, and Git fast-forwarded that \
+                 instead; the target branch is at {}",
+                branch_tip.as_deref().unwrap_or("(missing)")
+            ),
+        }
+    }
+}
+
 /// What merging a commit into a workspace did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorktreeMerge {
@@ -160,16 +194,59 @@ pub enum WorktreeMerge {
 /// `>>>>>>> ` at a line start). A missing file has none.
 pub async fn has_conflict_markers(path: &Path) -> bool {
     let Ok(bytes) = tokio::fs::read(path).await else { return false };
-    bytes.split(|b| *b == b'\n').any(|line| {
-        let line = line.strip_suffix(b"\r").unwrap_or(line);
-        line.starts_with(b"<<<<<<< ") || line.starts_with(b">>>>>>> ") || line == b"======="
-    })
+    conflict_blocks(&bytes) > 0
 }
 
-/// Whether a file looks binary (a NUL byte in its first 8000 bytes, as Git decides).
+/// Whether content looks binary (a NUL byte in its first 8000 bytes, as Git decides).
+pub fn looks_binary(bytes: &[u8]) -> bool {
+    bytes.iter().take(8000).any(|b| *b == 0)
+}
+
 async fn is_binary(path: &Path) -> bool {
     let Ok(bytes) = tokio::fs::read(path).await else { return false };
-    bytes.iter().take(8000).any(|b| *b == 0)
+    looks_binary(&bytes)
+}
+
+/// A marker line: at least 7 `c` at the start of the line, then a space or
+/// the end of the line (Git writes 7 by default, more with the
+/// `conflict-marker-size` attribute).
+fn marker_line(line: &[u8], c: u8, label_allowed: bool) -> bool {
+    let run = line.iter().take_while(|b| **b == c).count();
+    run >= 7
+        && match line.get(run) {
+            None => true,
+            Some(b' ') => label_allowed,
+            Some(_) => false,
+        }
+}
+
+/// The number of complete conflict blocks in `text`: a `<<<<<<<` line,
+/// later a `=======` line, later a `>>>>>>>` line (an optional `|||||||`
+/// base section in between is part of the block). Isolated marker-like
+/// lines (a row of `=` under a heading, a quoted `<<<<<<<`) are not blocks.
+///
+/// This is the rule [`Git::commit_all`] uses; see ADR 0029.
+pub fn conflict_blocks(text: &[u8]) -> usize {
+    #[derive(PartialEq)]
+    enum S {
+        Idle,
+        Ours,
+        Theirs,
+    }
+    let mut state = S::Idle;
+    let mut blocks = 0;
+    for line in text.split(|b| *b == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if marker_line(line, b'<', true) {
+            state = S::Ours;
+        } else if state == S::Ours && marker_line(line, b'=', false) {
+            state = S::Theirs;
+        } else if state == S::Theirs && marker_line(line, b'>', true) {
+            blocks += 1;
+            state = S::Idle;
+        }
+    }
+    blocks
 }
 
 fn check_rev(rev: &str) -> Result<(), GitError> {
@@ -268,13 +345,12 @@ impl Git {
         check_rev(b)?;
         let args = ["merge-base", a, b];
         let out = self.run(repo, &args).await?;
-        if out.success {
-            return Ok(Some(out.stdout.trim().to_owned()));
+        match out.code {
+            Some(0) => Ok(Some(out.stdout.trim().to_owned())),
+            // Exit 1 without output: no common ancestor.
+            Some(1) if out.stderr.is_empty() => Ok(None),
+            _ => Err(Git::failed(&args, out)),
         }
-        if out.stderr.is_empty() {
-            return Ok(None);
-        }
-        Err(Git::failed(&args, out))
     }
 
     /// The tree of a commit.
@@ -579,6 +655,15 @@ impl Git {
                 unresolved.join(", ")
             )));
         }
+        // Every file about to be committed, staged or not: `git add` removes
+        // the unmerged state but not the markers.
+        let with_markers = self.files_with_new_conflict_blocks(dir).await?;
+        if !with_markers.is_empty() {
+            return Err(GitError::WorktreeBusy(format!(
+                "conflict markers remain in {}. Resolve them in the workspace first",
+                with_markers.join(", ")
+            )));
+        }
         let add = self.run_write(dir, &["add", "-A", "--", "."], true).await?;
         if !add.success {
             return Err(Git::failed(&["add", "-A"], add));
@@ -620,6 +705,21 @@ impl Git {
         Ok(entries)
     }
 
+    /// Whether `oid` names a commit in the repository (`false` if it does
+    /// not exist, for example a merge commit that never landed and was
+    /// garbage-collected). Other failures are errors.
+    pub async fn commit_exists(&self, repo: &Path, oid: &str) -> Result<bool, GitError> {
+        check_rev(oid)?;
+        let spec = format!("{oid}^{{commit}}");
+        let out = self.run(repo, &["rev-parse", "--verify", "--quiet", &spec]).await?;
+        match out.code {
+            Some(0) => Ok(true),
+            // `--verify --quiet`: exit 1 without output means "no such object".
+            Some(1) if out.stderr.is_empty() => Ok(false),
+            _ => Err(Git::failed(&["rev-parse", "--verify", &spec], out)),
+        }
+    }
+
     /// The branch a checkout is on (`refs/heads/...`, `None` if detached)
     /// and its HEAD commit.
     pub async fn checkout_head(&self, dir: &Path) -> Result<(Option<String>, Option<String>), GitError> {
@@ -630,16 +730,9 @@ impl Git {
         Ok((branch, head))
     }
 
-    /// Ignored, untracked files in the worktree at `dir` that a change from
-    /// `from` to `to` would write. Git's merge machinery does not reliably
-    /// protect ignored files (the three-way strategy replaces them even with
-    /// `--no-overwrite-ignore`), so callers refuse when this is not empty.
-    pub async fn ignored_files_at_risk(
-        &self,
-        dir: &Path,
-        from: &str,
-        to: &str,
-    ) -> Result<Vec<String>, GitError> {
+    /// Paths that differ between two trees or commits (no rename detection,
+    /// so both sides of a rename are listed).
+    pub async fn changed_paths(&self, dir: &Path, from: &str, to: &str) -> Result<Vec<String>, GitError> {
         check_rev(from)?;
         check_rev(to)?;
         let args = ["diff", "--no-renames", "--name-only", "-z", from, to];
@@ -647,30 +740,214 @@ impl Git {
         if !out.success {
             return Err(Git::failed(&args, out));
         }
-        let paths: Vec<&str> = out.stdout.split('\0').filter(|p| !p.is_empty()).collect();
-        let mut at_risk = Vec::new();
-        for chunk in paths.chunks(500) {
-            let mut args = vec!["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--"];
-            args.extend_from_slice(chunk);
+        Ok(out.stdout.split('\0').filter(|p| !p.is_empty()).map(str::to_owned).collect())
+    }
+
+    /// The tree `git merge-tree --write-tree` produces for merging `theirs`
+    /// into `ours` (with conflict markers in it if they conflict): the same
+    /// merge machinery `git merge` uses, so its paths are the paths a merge
+    /// in a working tree writes, including where directory-rename detection
+    /// moves a file.
+    async fn merge_result_tree(&self, dir: &Path, ours: &str, theirs: &str) -> Result<String, GitError> {
+        check_rev(ours)?;
+        check_rev(theirs)?;
+        let args = ["merge-tree", "--write-tree", "-z", "--name-only", ours, theirs];
+        let out = self.run(dir, &args).await?;
+        let clean_or_conflicts =
+            out.success || out.status.ends_with("status: 0") || out.status.ends_with("status: 1");
+        let tree = out.stdout.split('\0').next().unwrap_or("").trim().to_owned();
+        if !clean_or_conflicts || tree.len() < 40 || !tree.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(Git::failed(&args, out));
+        }
+        Ok(tree)
+    }
+
+    /// Untracked files (ignored or not) in the working tree at `dir` that
+    /// writing `paths` could replace or delete:
+    ///
+    /// * a file at a written path;
+    /// * a file (or symlink) where a written path needs a directory (an
+    ///   ancestor of it, e.g. an ignored `cfg` when `cfg/inner` is written);
+    /// * a file under a written path (a directory that becomes a file).
+    ///
+    /// Matching ignores case, so a case-insensitive file system cannot hide
+    /// a clash. Any error is returned: callers refuse rather than guess.
+    pub async fn untracked_files_at_risk(
+        &self,
+        dir: &Path,
+        paths: &[String],
+    ) -> Result<Vec<String>, GitError> {
+        let mut at_risk: Vec<String> = Vec::new();
+        // At or under a written path.
+        let specs: Vec<String> = paths.iter().map(|p| format!(":(icase,literal){p}")).collect();
+        for chunk in specs.chunks(200) {
+            let mut args = vec!["ls-files", "--others", "-z", "--"];
+            args.extend(chunk.iter().map(String::as_str));
             let out = self.run(dir, &args).await?;
             if !out.success {
-                return Err(Git::failed(&args, out));
+                return Err(Git::failed(&["ls-files", "--others"], out));
             }
             at_risk.extend(out.stdout.split('\0').filter(|p| !p.is_empty()).map(str::to_owned));
         }
+        // Where a written path needs a directory: any ancestor that exists as
+        // something other than a directory and is not tracked.
+        let mut ancestors: Vec<String> = Vec::new();
+        for p in paths {
+            let parts: Vec<&str> = p.split('/').collect();
+            for n in 1..parts.len() {
+                let a = parts[..n].join("/");
+                if ancestors.contains(&a) {
+                    continue;
+                }
+                match tokio::fs::symlink_metadata(dir.join(&a)).await {
+                    Ok(m) if !m.is_dir() => ancestors.push(a),
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotADirectory => {}
+                    Err(source) => return Err(GitError::Io { path: dir.join(&a), source }),
+                }
+            }
+        }
+        if !ancestors.is_empty() {
+            let mut args = vec!["ls-files", "-z", "--"];
+            let specs: Vec<String> = ancestors.iter().map(|a| format!(":(literal){a}")).collect();
+            args.extend(specs.iter().map(String::as_str));
+            let out = self.run(dir, &args).await?;
+            if !out.success {
+                return Err(Git::failed(&["ls-files"], out));
+            }
+            let tracked: Vec<&str> = out.stdout.split('\0').filter(|p| !p.is_empty()).collect();
+            at_risk.extend(ancestors.into_iter().filter(|a| !tracked.contains(&a.as_str())));
+        }
+        at_risk.sort();
+        at_risk.dedup();
         Ok(at_risk)
     }
 
-    async fn refuse_ignored_overwrite(&self, dir: &Path, from: &str, to: &str) -> Result<(), GitError> {
-        let at_risk = self.ignored_files_at_risk(dir, from, to).await?;
+    async fn refuse_overwrite(&self, dir: &Path, paths: &[String]) -> Result<(), GitError> {
+        let at_risk = self.untracked_files_at_risk(dir, paths).await?;
         if at_risk.is_empty() {
             return Ok(());
         }
         Err(GitError::WorktreeBusy(format!(
-            "the change would overwrite ignored files in {}: {}. Move them aside first; Switchyard never replaces them",
+            "the change would replace or remove untracked or ignored files in {}: {}. Move them aside first; \
+             Switchyard never overwrites them",
             dir.display(),
             at_risk.join(", ")
         )))
+    }
+
+    /// The paths a merge of `commit` into the HEAD of `dir` can write: what
+    /// the merge result changes relative to HEAD, plus everything the
+    /// incoming side changed since the merge base (in case rename detection
+    /// is configured differently for the real merge).
+    pub async fn paths_written_by_merge(&self, dir: &Path, commit: &str) -> Result<Vec<String>, GitError> {
+        let head = self.resolve_commit(dir, "HEAD").await?;
+        let result = self.merge_result_tree(dir, &head, commit).await?;
+        let mut paths = self.changed_paths(dir, &head, &result).await?;
+        let base = self.merge_base(dir, &head, commit).await?.unwrap_or_else(|| head.clone());
+        paths.extend(self.changed_paths(dir, &base, commit).await?);
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
+    }
+
+    /// Files whose content has more conflict blocks ([`conflict_blocks`])
+    /// than the same path in HEAD and, while a merge is in progress, in
+    /// `MERGE_HEAD`: markers the merge left, not content either side already
+    /// had. Covers every file a commit of the working tree would include
+    /// (tracked changes, staged or not, and untracked non-ignored files).
+    pub async fn files_with_new_conflict_blocks(&self, dir: &Path) -> Result<Vec<String>, GitError> {
+        let merging = self.repo_state(dir).await?.merge_in_progress;
+        let mut paths = Vec::new();
+        for args in [
+            &["diff", "--no-renames", "--name-only", "-z", "HEAD"][..],
+            &["ls-files", "--others", "--exclude-standard", "-z"][..],
+        ] {
+            let out = self.run(dir, args).await?;
+            if !out.success {
+                return Err(Git::failed(args, out));
+            }
+            paths.extend(out.stdout.split('\0').filter(|p| !p.is_empty()).map(str::to_owned));
+        }
+        paths.sort();
+        paths.dedup();
+        let mut found = Vec::new();
+        for path in paths {
+            let file = dir.join(&path);
+            let meta = match tokio::fs::symlink_metadata(&file).await {
+                Ok(m) => m,
+                // Deleted: nothing of it is committed.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(source) => return Err(GitError::Io { path: file, source }),
+            };
+            if !meta.is_file() {
+                continue;
+            }
+            let bytes =
+                tokio::fs::read(&file).await.map_err(|source| GitError::Io { path: file.clone(), source })?;
+            if looks_binary(&bytes) {
+                continue;
+            }
+            let now = conflict_blocks(&bytes);
+            if now == 0 {
+                continue;
+            }
+            let mut before = self.blocks_in(dir, "HEAD", &path).await?;
+            if merging {
+                before = before.max(self.blocks_in(dir, "MERGE_HEAD", &path).await?);
+            }
+            if now > before {
+                found.push(path);
+            }
+        }
+        Ok(found)
+    }
+
+    /// Conflict blocks in `rev:path` (0 if the path does not exist there).
+    async fn blocks_in(&self, dir: &Path, rev: &str, path: &str) -> Result<usize, GitError> {
+        let spec = format!("{rev}:{path}");
+        let oid = self.run(dir, &["rev-parse", "--verify", "--quiet", &spec]).await?;
+        if !oid.success {
+            // Exit 1 with no output: the path (or the revision) does not exist.
+            return match oid.code {
+                Some(1) if oid.stderr.is_empty() => Ok(0),
+                _ => Err(Git::failed(&["rev-parse", &spec], oid)),
+            };
+        }
+        let oid = oid.stdout.trim().to_owned();
+        check_rev(&oid)?;
+        let out = self.run(dir, &["cat-file", "blob", &oid]).await?;
+        if !out.success {
+            return Err(Git::failed(&["cat-file", "blob", &oid], out));
+        }
+        Ok(conflict_blocks(out.stdout.as_bytes()))
+    }
+
+    /// Whether the checkout at `dir` is provably as it was before an
+    /// attempted fast-forward from `expected` over `paths`: on `branch` at
+    /// `expected`, no tracked changes, no `index.lock`, and none of `paths`
+    /// present as an untracked file (Core refused beforehand if any were).
+    pub async fn checkout_unchanged(
+        &self,
+        dir: &Path,
+        branch: &str,
+        expected: &str,
+        paths: &[String],
+    ) -> Result<bool, GitError> {
+        let (b, head) = self.checkout_head(dir).await?;
+        if b.as_deref() != Some(format!("refs/heads/{branch}").as_str()) || head.as_deref() != Some(expected)
+        {
+            return Ok(false);
+        }
+        if self.repo_state(dir).await?.index_locked {
+            return Ok(false);
+        }
+        let st = self.run(dir, &["status", "--porcelain=v1", "-z", "--untracked-files=no"]).await?;
+        if !st.success || !st.stdout.is_empty() {
+            return Ok(false);
+        }
+        Ok(self.untracked_files_at_risk(dir, paths).await?.is_empty())
     }
 
     /// Paths with unresolved conflicts in the index of `dir`.
@@ -700,9 +977,10 @@ impl Git {
             return Ok(WorktreeMerge::UpToDate);
         }
         // Git's three-way merge replaces ignored files even with
-        // `--no-overwrite-ignore`: check the paths the merge can write first.
-        let base = self.merge_base(dir, &head, commit).await?.unwrap_or_else(|| head.clone());
-        self.refuse_ignored_overwrite(dir, &base, commit).await?;
+        // `--no-overwrite-ignore` (directory/file clashes, directory renames):
+        // refuse if any untracked file is near a path the merge can write.
+        let paths = self.paths_written_by_merge(dir, commit).await?;
+        self.refuse_overwrite(dir, &paths).await?;
         let args =
             ["merge", "--no-ff", "--no-edit", "--no-verify", "--no-overwrite-ignore", "-m", message, commit];
         let out = self.run_write(dir, &args, true).await?;
@@ -721,6 +999,10 @@ impl Git {
 
     /// Aborts a merge in progress in `dir` (`git merge --abort`).
     pub async fn merge_abort(&self, dir: &Path) -> Result<(), GitError> {
+        // Aborting restores every path that differs from HEAD; it must not
+        // take untracked files created meanwhile with it.
+        let paths = self.changed_paths_from_head(dir).await?;
+        self.refuse_overwrite(dir, &paths).await?;
         let args = ["merge", "--abort"];
         let out = self.run_write(dir, &args, true).await?;
         if !out.success {
@@ -729,19 +1011,67 @@ impl Git {
         Ok(())
     }
 
-    /// `git merge --ff-only <commit>` in a checkout of the target branch.
-    /// Git refuses (and changes nothing) if it is not a fast-forward or if
-    /// local changes or untracked files would be overwritten.
-    pub async fn fast_forward_checkout(&self, dir: &Path, commit: &str) -> Result<(), GitError> {
+    /// Paths that differ between HEAD and the index or working tree of `dir`.
+    async fn changed_paths_from_head(&self, dir: &Path) -> Result<Vec<String>, GitError> {
+        let args = ["diff", "--no-renames", "--name-only", "-z", "HEAD"];
+        let out = self.run(dir, &args).await?;
+        if !out.success {
+            return Err(Git::failed(&args, out));
+        }
+        Ok(out.stdout.split('\0').filter(|p| !p.is_empty()).map(str::to_owned).collect())
+    }
+
+    /// Fast-forwards `branch`, checked out at `dir`, from `expected` to
+    /// `commit` (`git merge --ff-only`). Refuses before running Git unless
+    /// the checkout is on `branch` at exactly `expected` and no untracked
+    /// file is near a path the update writes; Git itself refuses rather than
+    /// overwrite local changes. Afterwards it checks that the checkout is
+    /// still on `branch` and that `branch` is at `commit`
+    /// ([`FastForwardError::Diverted`] if Git moved something else because
+    /// the checkout was switched meanwhile).
+    ///
+    /// On any other failure (including a timeout, which stops Git part-way)
+    /// the checkout may be partially updated; [`Git::checkout_unchanged`]
+    /// tells whether it provably is not.
+    pub async fn fast_forward_checkout(
+        &self,
+        dir: &Path,
+        branch: &str,
+        expected: &str,
+        commit: &str,
+    ) -> Result<(), FastForwardError> {
+        check_branch(branch)?;
+        check_rev(expected)?;
         check_rev(commit)?;
-        // Ignored files (e.g. a local `.env`) are never replaced: checked here,
-        // with `--no-overwrite-ignore` as a second guard.
-        let head = self.resolve_commit(dir, "HEAD").await?;
-        self.refuse_ignored_overwrite(dir, &head, commit).await?;
+        let wanted = format!("refs/heads/{branch}");
+        let (b, head) = self.checkout_head(dir).await?;
+        if b.as_deref() != Some(wanted.as_str()) || head.as_deref() != Some(expected) {
+            return Err(FastForwardError::Refused(format!(
+                "the checkout at {} is no longer on {branch} at {expected}",
+                dir.display()
+            )));
+        }
+        let paths = self.changed_paths(dir, expected, commit).await?;
+        let at_risk = self.untracked_files_at_risk(dir, &paths).await?;
+        if !at_risk.is_empty() {
+            return Err(FastForwardError::Refused(format!(
+                "the update would replace or remove untracked or ignored files in {}: {}. Move them aside first",
+                dir.display(),
+                at_risk.join(", ")
+            )));
+        }
         let args = ["merge", "--ff-only", "--no-edit", "--no-verify", "--no-overwrite-ignore", commit];
         let out = self.run_write(dir, &args, true).await?;
         if !out.success {
-            return Err(Git::failed(&args, out));
+            return Err(FastForwardError::Git(Git::failed(&args, out)));
+        }
+        let (b, _) = self.checkout_head(dir).await?;
+        let tip = self.branch_tip(dir, branch).await?;
+        if b.as_deref() != Some(wanted.as_str()) || tip.as_deref() != Some(commit) {
+            return Err(FastForwardError::Diverted {
+                checked_out: b.unwrap_or_else(|| "a detached HEAD".into()),
+                branch_tip: tip,
+            });
         }
         Ok(())
     }
@@ -787,6 +1117,20 @@ mod tests {
             parse_merge_tree("690dbeaccf24a9e1be47b47ec752a626486b1737\n", false).unwrap(),
             MergeOutcome::Clean { .. }
         ));
+    }
+
+    #[test]
+    fn conflict_blocks_need_all_three_markers_in_order() {
+        assert_eq!(conflict_blocks(b"<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\n"), 1);
+        assert_eq!(conflict_blocks(b"<<<<<<< ours\na\n||||||| base\nz\n=======\nb\n>>>>>>> theirs\r\n"), 1);
+        assert_eq!(conflict_blocks(b"<<<<<<<<<<\na\n==========\nb\n>>>>>>>>>>\n"), 1, "a larger marker size");
+        assert_eq!(conflict_blocks(b"Title\n=======\n"), 0, "a heading underline");
+        assert_eq!(conflict_blocks(b"<<<<<<< a\nno separator\n>>>>>>> b\n"), 0);
+        assert_eq!(conflict_blocks(b"=======\n>>>>>>> b\n<<<<<<< a\n"), 0, "out of order");
+        assert_eq!(conflict_blocks(b"x <<<<<<< a\n=======\n>>>>>>> b\n"), 0, "not at a line start");
+        assert_eq!(conflict_blocks(b"<<<<<<<a\n=======\n>>>>>>> b\n"), 0, "no space after the marker");
+        let two = b"<<<<<<< a\n1\n=======\n2\n>>>>>>> b\nok\n<<<<<<< a\n3\n=======\n4\n>>>>>>> b";
+        assert_eq!(conflict_blocks(two), 2);
     }
 
     #[test]

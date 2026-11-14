@@ -522,6 +522,22 @@ pub enum TaskReadiness {
 
 pub use switchyard_integrations::{Blocker, IntegrationStatus, RunStatus, StepStatus};
 
+/// A Core-owned operation on an integration (ADR 0032). It belongs to Core,
+/// not to the request that started it: a client that disconnects or
+/// reconnects sees it here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegrationOperation {
+    pub id: Uuid,
+    /// `approve`, `commit_workspace`, `update_from_target`, `abort_resolution`, `validate`.
+    pub kind: String,
+    /// `running`, `completed`, `failed` or `interrupted`.
+    pub status: String,
+    pub requested_by: String,
+    pub error: Option<String>,
+    pub started_at_ms: i64,
+    pub ended_at_ms: Option<i64>,
+}
+
 /// The proposed delivery of one workspace's changes into a target branch,
 /// bound to an exact source and target commit.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -556,6 +572,10 @@ pub struct Integration {
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub completed_at_ms: Option<i64>,
+    /// The latest Core-owned operation on this integration (ADR 0032):
+    /// running, or how the last one ended. `None` if there was none.
+    #[serde(default)]
+    pub operation: Option<IntegrationOperation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

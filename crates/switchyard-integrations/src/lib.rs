@@ -14,5 +14,5 @@ pub use model::{IntegrationStatus, TransitionError, UnknownValue, merge_message}
 pub use preflight::{Blocker, Facts, MergeFact, ReviewFact, TargetCheckoutFact, blockers};
 pub use validation::{
     MAX_OUTPUT_BYTES, RunStatus, StepStatus, ValidationCommand, ValidationError, command_line,
-    validate_command,
+    final_run_status, validate_command,
 };

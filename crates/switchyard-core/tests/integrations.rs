@@ -40,13 +40,80 @@ struct Fx {
     project_id: Uuid,
     workspace_id: Uuid,
     ws: PathBuf,
+    /// The Git wrapper's hook directory, for fixtures made by [`fixture_hooked`].
+    hooks: Option<tempfile::TempDir>,
 }
 
 /// A project (main checked out in the project checkout) with one workspace.
 /// The repository has its own identity: Core's commits never depend on the
 /// machine's Git configuration.
 async fn fixture() -> Fx {
-    let core = TestCore::start_with(|_| {}).await;
+    fixture_with(|_| {}, None).await
+}
+
+/// A Git wrapper that runs the hooks in `dir` (files `hook-*`: first line a
+/// pattern matched against the arguments, the rest a shell action) before
+/// the real Git. A hook exiting with 99 makes that Git call fail (exit 128)
+/// without running Git. Without hook files it is transparent.
+fn git_wrapper(dir: &Path) -> PathBuf {
+    let real = String::from_utf8(Command::new("sh").args(["-c", "command -v git"]).output().unwrap().stdout)
+        .unwrap()
+        .trim()
+        .to_owned();
+    let path = dir.join("git");
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nfor f in '{d}'/hook-*; do\n  [ -f \"$f\" ] || continue\n  pat=$(head -n 1 \"$f\")\n  \
+             case \"$*\" in *\"$pat\"*) sh \"$f.sh\"; [ $? -eq 99 ] && exit 128 ;; esac\ndone\nexec '{real}' \"$@\"\n",
+            d = dir.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    path
+}
+
+/// [`fixture`] with Core's Git going through [`git_wrapper`], and `configure`.
+async fn fixture_hooked(configure: impl FnOnce(&mut switchyard_core::CoreConfig)) -> Fx {
+    let hooks = tempfile::Builder::new().prefix("syh").tempdir().unwrap();
+    let wrapper = git_wrapper(hooks.path());
+    fixture_with(
+        move |c| {
+            c.git.binary = wrapper;
+            configure(c);
+        },
+        Some(hooks),
+    )
+    .await
+}
+
+impl Fx {
+    /// Runs `action` (shell) before every Git call of Core whose arguments contain `pattern`.
+    fn hook(&self, name: &str, pattern: &str, action: &str) {
+        let dir = self.hooks.as_ref().unwrap().path();
+        std::fs::write(dir.join(format!("hook-{name}")), format!("{pattern}\n")).unwrap();
+        std::fs::write(dir.join(format!("hook-{name}.sh")), action).unwrap();
+    }
+
+    fn unhook(&self, name: &str) {
+        let dir = self.hooks.as_ref().unwrap().path();
+        let _ = std::fs::remove_file(dir.join(format!("hook-{name}")));
+        let _ = std::fs::remove_file(dir.join(format!("hook-{name}.sh")));
+    }
+
+    fn db(&self) -> rusqlite::Connection {
+        let c = rusqlite::Connection::open(self.core.dir.path().join("data/switchyard.db")).unwrap();
+        c.busy_timeout(Duration::from_secs(10)).unwrap();
+        c
+    }
+}
+
+async fn fixture_with(
+    configure: impl FnOnce(&mut switchyard_core::CoreConfig),
+    hooks: Option<tempfile::TempDir>,
+) -> Fx {
+    let core = TestCore::start_with(configure).await;
     let (c, _rx) = core.connect().await;
     let repo = git_repo(core.dir.path(), "int-repo");
     git(&repo, &["config", "user.name", "Switchyard Test"]);
@@ -66,7 +133,7 @@ async fn fixture() -> Fx {
         .await
         .unwrap()
         .workspace;
-    Fx { core, c, repo, project_id: project.id, workspace_id: w.id, ws: PathBuf::from(w.path) }
+    Fx { core, c, repo, project_id: project.id, workspace_id: w.id, ws: PathBuf::from(w.path), hooks }
 }
 
 async fn no_review(f: &Fx) {
@@ -628,7 +695,7 @@ async fn an_interrupted_integration_is_settled_after_a_restart() {
     f.c = c;
     let d = get(&f, j.id).await.integration;
     assert_eq!(d.status, IntegrationStatus::Failed);
-    assert!(d.failure.as_deref().unwrap().contains("nothing changed"), "{:?}", d.failure);
+    assert!(d.failure.as_deref().unwrap().contains("it was not moved"), "{:?}", d.failure);
     assert_eq!(git(&f.repo, &["rev-parse", "main"]), before);
     // It can be prepared again.
     assert_eq!(refresh(&f, j.id).await.status, IntegrationStatus::Ready);
@@ -952,4 +1019,642 @@ async fn a_completed_workspace_stays_completed_after_an_integration_step() {
             .unwrap()
             .workspace;
     assert_eq!(w.status, switchyard_protocol::model::WorkspaceStatus::Completed);
+}
+
+// --- Core-owned operations (ADR 0032) ---------------------------------------------
+
+/// Polls the integration until `done` holds (30 s at most).
+async fn wait_for(f: &Fx, id: Uuid, what: &str, done: impl Fn(&Integration) -> bool) -> Integration {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let i = get(f, id).await.integration;
+        if done(&i) {
+            return i;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for {what}: {i:#?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+fn op_is(i: &Integration, kind: &str, status: &str) -> bool {
+    i.operation.as_ref().is_some_and(|o| o.kind == kind && o.status == status)
+}
+
+async fn workspace_status(f: &Fx) -> switchyard_protocol::model::WorkspaceStatus {
+    f.c.call::<WorkspacesGet>(WorkspaceIdParams { workspace_id: f.workspace_id })
+        .await
+        .unwrap()
+        .workspace
+        .status
+}
+
+/// A ready integration of one committed file, with `main` checked out in the project checkout.
+async fn ready_integration(f: &Fx) -> Integration {
+    no_review(f).await;
+    std::fs::write(f.ws.join("a.txt"), "a\n").unwrap();
+    let i = create(f, None).await;
+    let i = commit_ws(f, i.id, "a").await.unwrap();
+    assert_eq!(i.status, IntegrationStatus::Ready, "{:?}", i.blockers);
+    i
+}
+
+/// Sends `approve` on a separate connection and drops that connection while
+/// Core is still working on it.
+async fn approve_and_disconnect(f: &Fx, i: &Integration) {
+    let (c2, _rx) = f.core.connect().await;
+    let p = IntegrationsApproveParams {
+        integration_id: i.id,
+        source_commit: i.source_commit.clone(),
+        target_commit: i.target_commit.clone(),
+    };
+    let request = tokio::spawn(async move { c2.call::<IntegrationsApprove>(p).await });
+    wait_for(f, i.id, "the approve operation to run", |x| op_is(x, "approve", "running")).await;
+    request.abort();
+    let _ = request.await;
+}
+
+#[tokio::test]
+async fn an_approval_completes_after_its_client_disconnects() {
+    let f = fixture_hooked(|_| {}).await;
+    let i = ready_integration(&f).await;
+    let target = i.target_commit.clone();
+    f.hook("ff", "merge --ff-only", "sleep 3");
+    approve_and_disconnect(&f, &i).await;
+
+    // A client reconnecting meanwhile sees the operation running.
+    let (c3, _rx) = f.core.connect().await;
+    let now = c3.call::<IntegrationsGet>(IntegrationIdParams { integration_id: i.id }).await.unwrap();
+    assert!(op_is(&now.integration, "approve", "running"), "{:?}", now.integration.operation);
+    // A repeated approval while it runs is refused, not executed twice.
+    let again = approve(&f, &i).await.unwrap_err();
+    assert_eq!(code_of(&again), Some(ErrorCode::Conflict), "{again:?}");
+
+    let done = wait_for(&f, i.id, "the integration to finish", |x| {
+        x.status.is_terminal() || x.status == IntegrationStatus::Failed
+    })
+    .await;
+    assert_eq!(done.status, IntegrationStatus::Integrated, "{:?}", done.status_reason);
+    assert!(op_is(&done, "approve", "completed"));
+    let merge = done.merge_commit.clone().unwrap();
+    assert_eq!(git(&f.repo, &["rev-parse", "main"]), merge);
+    assert_eq!(git(&f.repo, &["rev-parse", "main^1"]), target);
+    // After completion a retry is refused too; exactly one merge commit and one integrated event.
+    let again = approve(&f, &i).await.unwrap_err();
+    assert_eq!(code_of(&again), Some(ErrorCode::Conflict), "{again:?}");
+    let merges = git(
+        &f.repo,
+        &["log", "--merges", "--format=%H", &format!("--grep=Switchyard-Integration: {}", i.id), "main"],
+    );
+    assert_eq!(merges.lines().count(), 1, "{merges}");
+    let events = events_of(&f, i.id).await;
+    assert_eq!(events.iter().filter(|e| *e == "integration.integrated").count(), 1);
+    assert_eq!(events.iter().filter(|e| *e == "integration.operation_finished").count(), 2, "{events:?}");
+    assert_ne!(workspace_status(&f).await, switchyard_protocol::model::WorkspaceStatus::Integrating);
+}
+
+#[tokio::test]
+async fn a_workspace_update_completes_after_its_client_disconnects() {
+    let f = fixture_hooked(|_| {}).await;
+    no_review(&f).await;
+    std::fs::write(f.ws.join("a.txt"), "a\n").unwrap();
+    let i = create(&f, None).await;
+    commit_ws(&f, i.id, "a").await.unwrap();
+    std::fs::write(f.repo.join("main.txt"), "m\n").unwrap();
+    let target = commit(&f.repo, "main moves");
+    let i = refresh(&f, i.id).await;
+    assert!(codes(&i).contains(&"out_of_date".to_owned()), "{:?}", codes(&i));
+    f.hook("merge", "merge --no-ff", "sleep 3");
+    let (c2, _rx) = f.core.connect().await;
+    let request = tokio::spawn(async move {
+        c2.call::<IntegrationsUpdateFromTarget>(IntegrationIdParams { integration_id: i.id }).await
+    });
+    wait_for(&f, i.id, "the update to run", |x| op_is(x, "update_from_target", "running")).await;
+    // Disconnect once Core is inside the Git step (the workspace is locked).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while workspace_status(&f).await != switchyard_protocol::model::WorkspaceStatus::Integrating {
+        assert!(tokio::time::Instant::now() < deadline, "the update never reached its Git step");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    request.abort();
+    let _ = request.await;
+    let done =
+        wait_for(&f, i.id, "the update to finish", |x| op_is(x, "update_from_target", "completed")).await;
+    assert_eq!(done.status, IntegrationStatus::Ready, "{:?}", done.blockers);
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&f.ws)
+            .args(["merge-base", "--is-ancestor", &target, "HEAD"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert_ne!(workspace_status(&f).await, switchyard_protocol::model::WorkspaceStatus::Integrating);
+}
+
+#[tokio::test]
+async fn shutdown_waits_for_a_running_approval() {
+    let mut f = fixture_hooked(|_| {}).await;
+    let i = ready_integration(&f).await;
+    f.hook("ff", "merge --ff-only", "sleep 2");
+    approve_and_disconnect(&f, &i).await;
+    f.core.stop().await;
+    let hooks = f.hooks.as_ref().unwrap().path().to_path_buf();
+    f.core.restart_with(|c| c.git.binary = hooks.join("git")).await;
+    let (c, _rx) = f.core.connect().await;
+    f.c = c;
+    let d = get(&f, i.id).await.integration;
+    assert_eq!(d.status, IntegrationStatus::Integrated, "{:?}", d.status_reason);
+    assert!(op_is(&d, "approve", "completed"), "{:?}", d.operation);
+}
+
+#[tokio::test]
+async fn an_operation_stopped_at_shutdown_is_settled_from_git_at_the_next_start() {
+    let short = |c: &mut switchyard_core::CoreConfig| c.operation_shutdown_grace = Duration::from_secs(1);
+    let mut f = fixture_hooked(short).await;
+    let i = ready_integration(&f).await;
+    let target = i.target_commit.clone();
+    f.hook("ff", "merge --ff-only", "sleep 30");
+    approve_and_disconnect(&f, &i).await;
+    // Stop Core while Git is updating the checkout (after `integrating` was recorded).
+    wait_for(&f, i.id, "the branch update to start", |x| x.status == IntegrationStatus::Integrating).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let started = std::time::Instant::now();
+    f.core.stop().await;
+    assert!(started.elapsed() < Duration::from_secs(15), "shutdown was bounded: {:?}", started.elapsed());
+    f.unhook("ff");
+    let hooks = f.hooks.as_ref().unwrap().path().to_path_buf();
+    f.core.restart_with(|c| c.git.binary = hooks.join("git")).await;
+    let (c, _rx) = f.core.connect().await;
+    f.c = c;
+    let d = get(&f, i.id).await.integration;
+    assert_eq!(d.status, IntegrationStatus::Failed, "{:?}", d.status_reason);
+    assert!(op_is(&d, "approve", "interrupted"), "{:?}", d.operation);
+    let failure = d.failure.unwrap();
+    assert!(failure.contains("nothing was changed") && failure.contains("Checked afterwards"), "{failure}");
+    assert_eq!(git(&f.repo, &["rev-parse", "main"]), target);
+    // The supported path: refresh, approve again.
+    let i = refresh(&f, i.id).await;
+    assert_eq!(i.status, IntegrationStatus::Ready, "{:?}", i.blockers);
+    assert_eq!(approve(&f, &i).await.unwrap().status, IntegrationStatus::Integrated);
+}
+
+#[tokio::test]
+async fn a_timed_out_fast_forward_is_reported_from_what_git_shows() {
+    let short_git = |c: &mut switchyard_core::CoreConfig| {
+        c.git.timeout = Duration::from_secs(5);
+        c.git.checkout_timeout = Duration::from_secs(5);
+    };
+    let f = fixture_hooked(short_git).await;
+    let i = ready_integration(&f).await;
+    let target = i.target_commit.clone();
+    // Stopped before Git wrote anything: checked, and reported as unchanged.
+    f.hook("ff", "merge --ff-only", "sleep 30");
+    approve_and_disconnect(&f, &i).await;
+    let d = wait_for(&f, i.id, "the approval to end", |x| op_is(x, "approve", "completed")).await;
+    assert_eq!(d.status, IntegrationStatus::Failed);
+    let failure = d.failure.unwrap();
+    assert!(failure.contains("timeout") && failure.contains("nothing was changed"), "{failure}");
+    assert_eq!(git(&f.repo, &["rev-parse", "main"]), target);
+    assert!(op_is(&get(&f, i.id).await.integration, "approve", "completed"));
+
+    // Stopped after a file was written (simulated): may be partially updated.
+    let i = refresh(&f, i.id).await;
+    f.hook(
+        "ff",
+        "merge --ff-only",
+        &format!("printf 'half\\n' > '{}/shared.txt'; sleep 30", f.repo.display()),
+    );
+    approve_and_disconnect(&f, &i).await;
+    let d = wait_for(&f, i.id, "the approval to end", |x| {
+        x.status == IntegrationStatus::Failed && op_is(x, "approve", "completed")
+    })
+    .await;
+    let failure = d.failure.unwrap();
+    assert!(failure.contains("may be partially updated") && failure.contains("git status"), "{failure}");
+    assert!(!failure.contains("nothing was changed"), "{failure}");
+    assert_eq!(git(&f.repo, &["rev-parse", "main"]), target, "the branch did not move");
+    assert_eq!(std::fs::read_to_string(f.repo.join("shared.txt")).unwrap(), "half\n", "nothing was repaired");
+}
+
+#[tokio::test]
+async fn locks_are_released_after_failed_operations() {
+    let f = fixture_hooked(|_| {}).await;
+    let i = ready_integration(&f).await;
+    // The fast-forward is refused inside the operation: an untracked file of
+    // the user's is where the update would write `a.txt`.
+    std::fs::write(f.repo.join("a.txt"), "user's file\n").unwrap();
+    let d = approve(&f, &i).await.unwrap();
+    assert_eq!(d.status, IntegrationStatus::Failed, "{:?}", d.status_reason);
+    assert!(d.failure.as_deref().unwrap().contains("nothing was changed"), "{:?}", d.failure);
+    assert_eq!(std::fs::read_to_string(f.repo.join("a.txt")).unwrap(), "user's file\n");
+    std::fs::remove_file(f.repo.join("a.txt")).unwrap();
+    // A failing workspace step (markers left in a file) also releases everything.
+    std::fs::write(f.ws.join("m.txt"), "<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> other\n").unwrap();
+    let err = commit_ws(&f, i.id, "markers").await.unwrap_err();
+    assert!(format!("{err:?}").contains("conflict markers remain in m.txt"), "{err:?}");
+    assert_ne!(workspace_status(&f).await, switchyard_protocol::model::WorkspaceStatus::Integrating);
+    // The next operations on the same project and workspace go ahead.
+    std::fs::remove_file(f.ws.join("m.txt")).unwrap();
+    let i = refresh(&f, i.id).await;
+    assert_eq!(i.status, IntegrationStatus::Ready, "{:?}", i.blockers);
+    assert_eq!(approve(&f, &i).await.unwrap().status, IntegrationStatus::Integrated);
+}
+
+#[tokio::test]
+async fn a_target_checked_out_after_preparation_is_not_moved_under_its_checkout() {
+    let f = fixture_hooked(|_| {}).await;
+    no_review(&f).await;
+    git(&f.repo, &["branch", "release"]);
+    std::fs::write(f.ws.join("a.txt"), "a\n").unwrap();
+    let i =
+        f.c.call::<IntegrationsCreate>(IntegrationsCreateParams {
+            task_id: None,
+            workspace_id: Some(f.workspace_id),
+            target_branch: Some("release".into()),
+        })
+        .await
+        .unwrap()
+        .integration;
+    let i = commit_ws(&f, i.id, "a").await.unwrap();
+    let release = git(&f.repo, &["rev-parse", "release"]);
+    // Between preparation and the branch update, someone checks `release` out.
+    let side = f.core.dir.path().join("release-checkout");
+    f.hook(
+        "checkout",
+        "commit-tree",
+        &format!("git -C '{}' worktree add -q '{}' release", f.repo.display(), side.display()),
+    );
+    let d = approve(&f, &i).await.unwrap();
+    assert_eq!(d.status, IntegrationStatus::Failed, "{:?}", d.status_reason);
+    assert!(d.failure.unwrap().contains("checked out at"));
+    assert_eq!(git(&f.repo, &["rev-parse", "release"]), release, "nothing moved under the checkout");
+}
+
+#[tokio::test]
+async fn validation_fails_closed_when_its_results_cannot_be_recorded() {
+    let f = fixture().await;
+    no_review(&f).await;
+    std::fs::write(f.ws.join("a.txt"), "a\n").unwrap();
+    let i = create(&f, None).await;
+    let i = commit_ws(&f, i.id, "a").await.unwrap();
+    let ok = add_command(&f, "ok", &["/usr/bin/true"], 10).await;
+    // 1. A step's success cannot be recorded.
+    f.db()
+        .execute_batch(
+            "CREATE TRIGGER fail_step BEFORE UPDATE OF status ON validation_steps WHEN NEW.status = 'passed' \
+             BEGIN SELECT RAISE(ABORT, 'injected step failure'); END;",
+        )
+        .unwrap();
+    f.c.call::<IntegrationsValidate>(IntegrationsValidateParams {
+        integration_id: i.id,
+        authorize: auth(&f, &[ok]).await,
+    })
+    .await
+    .unwrap();
+    let d = wait_run(&f, i.id).await;
+    assert_eq!(d.runs[0].status, RunStatus::Failed);
+    assert_ne!(d.integration.status, IntegrationStatus::Ready);
+    f.db().execute_batch("DROP TRIGGER fail_step;").unwrap();
+    // 2. The run's `passed` cannot be recorded: it is recorded failed instead.
+    f.db()
+        .execute_batch(
+            "CREATE TRIGGER fail_run BEFORE UPDATE OF status ON validation_runs WHEN NEW.status = 'passed' \
+             BEGIN SELECT RAISE(ABORT, 'injected run failure'); END;",
+        )
+        .unwrap();
+    f.c.call::<IntegrationsValidate>(IntegrationsValidateParams {
+        integration_id: i.id,
+        authorize: auth(&f, &[ok]).await,
+    })
+    .await
+    .unwrap();
+    let d = wait_run(&f, i.id).await;
+    assert_eq!(d.runs[0].status, RunStatus::Failed);
+    assert_eq!(d.runs[0].steps[0].status, StepStatus::Passed, "the command itself passed");
+    assert_ne!(d.integration.status, IntegrationStatus::Ready);
+    f.db().execute_batch("DROP TRIGGER fail_run;").unwrap();
+    let passed: i64 = f
+        .db()
+        .query_row("SELECT COUNT(*) FROM validation_runs WHERE status = 'passed'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(passed, 0, "no run was ever recorded as passed");
+    assert_ne!(workspace_status(&f).await, switchyard_protocol::model::WorkspaceStatus::Integrating);
+    // With recording working again, the same commands pass.
+    f.c.call::<IntegrationsValidate>(IntegrationsValidateParams {
+        integration_id: i.id,
+        authorize: auth(&f, &[ok]).await,
+    })
+    .await
+    .unwrap();
+    assert_eq!(wait_run(&f, i.id).await.integration.status, IntegrationStatus::Ready);
+}
+
+#[tokio::test]
+async fn a_validation_cannot_start_when_its_configuration_cannot_be_read() {
+    let f = fixture().await;
+    no_review(&f).await;
+    std::fs::write(f.ws.join("a.txt"), "a\n").unwrap();
+    let i = create(&f, None).await;
+    let i = commit_ws(&f, i.id, "a").await.unwrap();
+    let ok = add_command(&f, "ok", &["/usr/bin/true"], 10).await;
+    let authorize = auth(&f, &[ok]).await;
+    f.db().execute_batch("ALTER TABLE validation_commands RENAME TO validation_commands_hidden;").unwrap();
+    let err =
+        f.c.call::<IntegrationsValidate>(IntegrationsValidateParams {
+            integration_id: i.id,
+            authorize: authorize.clone(),
+        })
+        .await
+        .unwrap_err();
+    f.db().execute_batch("ALTER TABLE validation_commands_hidden RENAME TO validation_commands;").unwrap();
+    assert!(code_of(&err).is_some(), "{err:?}");
+    let d = get(&f, i.id).await;
+    assert!(d.runs.is_empty(), "no run was recorded");
+    assert_ne!(d.integration.status, IntegrationStatus::Validating);
+    assert!(op_is(&d.integration, "validate", "failed"), "{:?}", d.integration.operation);
+    assert_ne!(workspace_status(&f).await, switchyard_protocol::model::WorkspaceStatus::Integrating);
+}
+
+#[tokio::test]
+async fn runs_record_exactly_the_configuration_they_executed() {
+    let f = fixture().await;
+    no_review(&f).await;
+    std::fs::write(f.ws.join("a.txt"), "a\n").unwrap();
+    let i = create(&f, None).await;
+    let i = commit_ws(&f, i.id, "a").await.unwrap();
+    let cmd = add_command(&f, "check", &["/bin/test", "-f", "a.txt"], 10).await;
+    // Edits race with validation starts.
+    let (editor, _rx) = f.core.connect().await;
+    let project_id = f.project_id;
+    let edits = tokio::spawn(async move {
+        for n in 0..40u32 {
+            let _ = editor
+                .call::<IntegrationsSetCommand>(IntegrationsSetCommandParams {
+                    project_id,
+                    command_id: Some(cmd),
+                    name: "check".into(),
+                    argv: vec![
+                        "/bin/test".into(),
+                        "-f".into(),
+                        if n % 2 == 0 { "a.txt" } else { "shared.txt" }.into(),
+                    ],
+                    timeout_secs: 10 + n % 3,
+                    enabled: true,
+                    position: None,
+                })
+                .await;
+        }
+    });
+    for _ in 0..6 {
+        let s = f.c.call::<IntegrationsSettings>(IntegrationsSettingsParams { project_id }).await.unwrap();
+        let c = &s.commands[0];
+        let a = vec![ValidationAuthorization { command_id: c.id, command_line: c.command_line.clone() }];
+        let _ = f
+            .c
+            .call::<IntegrationsValidate>(IntegrationsValidateParams { integration_id: i.id, authorize: a })
+            .await;
+        let _ = wait_run(&f, i.id).await;
+    }
+    edits.await.unwrap();
+    // Every run's recorded configuration is exactly what its steps executed.
+    let db = f.db();
+    let mut stmt = db.prepare("SELECT id, config FROM validation_runs").unwrap();
+    let runs: Vec<(String, String)> =
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(Result::unwrap).collect();
+    assert!(!runs.is_empty());
+    for (run, config) in runs {
+        let mut st = db
+            .prepare("SELECT command_id, command_line, timeout_secs, policy_decision FROM validation_steps WHERE run_id = ?1 ORDER BY position")
+            .unwrap();
+        let lines: Vec<String> = st
+            .query_map([&run], |r| {
+                Ok(format!(
+                    "{}\t{}\t{}\t{}",
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, String>(3)?
+                ))
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(config, lines.join("\n"), "run {run}");
+    }
+}
+
+#[tokio::test]
+async fn timeout_and_policy_changes_make_a_passed_run_stale() {
+    let f = fixture().await;
+    no_review(&f).await;
+    std::fs::write(f.ws.join("a.txt"), "a\n").unwrap();
+    let i = create(&f, None).await;
+    let i = commit_ws(&f, i.id, "a").await.unwrap();
+    let cmd = add_command(&f, "check", &["/bin/test", "-f", "a.txt"], 10).await;
+    let validate = |a: Vec<ValidationAuthorization>| {
+        f.c.call::<IntegrationsValidate>(IntegrationsValidateParams { integration_id: i.id, authorize: a })
+    };
+    validate(auth(&f, &[cmd]).await).await.unwrap();
+    assert_eq!(wait_run(&f, i.id).await.integration.status, IntegrationStatus::Ready);
+    // Only the timeout changes: the settings change re-checks the integration by itself.
+    f.c.call::<IntegrationsSetCommand>(IntegrationsSetCommandParams {
+        project_id: f.project_id,
+        command_id: Some(cmd),
+        name: "check".into(),
+        argv: vec!["/bin/test".into(), "-f".into(), "a.txt".into()],
+        timeout_secs: 11,
+        enabled: true,
+        position: None,
+    })
+    .await
+    .unwrap();
+    assert_eq!(codes(&get(&f, i.id).await.integration), vec!["validation_required"]);
+    validate(auth(&f, &[cmd]).await).await.unwrap();
+    assert_eq!(wait_run(&f, i.id).await.integration.status, IntegrationStatus::Ready);
+    // A policy rule changes the decision (ask → allow): the run was for "ask".
+    shell_rule(&f, "/bin/test -f a.txt", PolicyDecision::Allow).await;
+    assert_eq!(codes(&refresh(&f, i.id).await), vec!["validation_required"]);
+}
+
+#[tokio::test]
+async fn a_failed_preparation_after_validation_does_not_strand_the_integration() {
+    let mut f = fixture().await;
+    no_review(&f).await;
+    git(&f.repo, &["branch", "release"]);
+    std::fs::write(f.ws.join("a.txt"), "a\n").unwrap();
+    let i =
+        f.c.call::<IntegrationsCreate>(IntegrationsCreateParams {
+            task_id: None,
+            workspace_id: Some(f.workspace_id),
+            target_branch: Some("release".into()),
+        })
+        .await
+        .unwrap()
+        .integration;
+    let i = commit_ws(&f, i.id, "a").await.unwrap();
+    let release = git(&f.repo, &["rev-parse", "release"]);
+    // The command deletes the target branch, so preparing afterwards fails.
+    let repo = f.repo.display().to_string();
+    let drop_branch =
+        add_command(&f, "drop", &["/usr/bin/git", "-C", &repo, "update-ref", "-d", "refs/heads/release"], 60)
+            .await;
+    f.c.call::<IntegrationsValidate>(IntegrationsValidateParams {
+        integration_id: i.id,
+        authorize: auth(&f, &[drop_branch]).await,
+    })
+    .await
+    .unwrap();
+    let d = wait_for(&f, i.id, "validation to end", |x| x.status != IntegrationStatus::Validating).await;
+    assert_eq!(d.status, IntegrationStatus::Failed, "{:?} {:#?}", d.status_reason, get(&f, i.id).await.runs);
+    assert!(d.failure.unwrap().contains("could not check the integration again"));
+    assert_ne!(workspace_status(&f).await, switchyard_protocol::model::WorkspaceStatus::Integrating);
+    // Once the branch is back, a refresh is the way on.
+    git(&f.repo, &["branch", "release", &release]);
+    f.c.call::<IntegrationsDeleteCommand>(IntegrationsDeleteCommandParams { command_id: drop_branch })
+        .await
+        .unwrap();
+    assert_eq!(refresh(&f, i.id).await.status, IntegrationStatus::Ready);
+
+    // The same at startup: an interrupted validation whose target vanished.
+    f.core.stop().await;
+    let db = f.db();
+    db.execute(
+        "INSERT INTO validation_runs (id, integration_id, project_id, source_commit, status, requested_by, config, started_at) \
+         VALUES (?3, ?1, ?2, 'x', 'running', 'test', '', 1)",
+        rusqlite::params![i.id.to_string(), f.project_id.to_string(), Uuid::now_v7().to_string()],
+    )
+    .unwrap();
+    db.execute("UPDATE integrations SET status = 'validating' WHERE id = ?1", [i.id.to_string()]).unwrap();
+    drop(db);
+    git(&f.repo, &["update-ref", "-d", "refs/heads/release"]);
+    f.core.restart_with(|_| {}).await;
+    let (c, _rx) = f.core.connect().await;
+    f.c = c;
+    let d = get(&f, i.id).await;
+    assert_eq!(d.integration.status, IntegrationStatus::Failed, "{:?}", d.integration.status_reason);
+    assert!(d.runs.iter().any(|r| r.status == RunStatus::Interrupted));
+    git(&f.repo, &["branch", "release", &release]);
+    assert_eq!(refresh(&f, i.id).await.status, IntegrationStatus::Ready);
+}
+
+#[tokio::test]
+async fn settings_and_command_changes_are_journaled_with_their_change() {
+    let f = fixture().await;
+    let cmd = add_command(&f, "check", &["/usr/bin/true"], 10).await;
+    no_review(&f).await;
+    f.c.call::<IntegrationsDeleteCommand>(IntegrationsDeleteCommandParams { command_id: cmd }).await.unwrap();
+    let db = f.db();
+    let mut st = db
+        .prepare("SELECT event_type, payload FROM events WHERE event_type LIKE 'integration.%_changed' ORDER BY seq")
+        .unwrap();
+    let rows: Vec<(String, serde_json::Value)> = st
+        .query_map([], |r| Ok((r.get(0)?, serde_json::from_str(&r.get::<_, String>(1)?).unwrap())))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let kinds: Vec<&str> = rows.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(
+        kinds,
+        [
+            "integration.validation_command_changed",
+            "integration.settings_changed",
+            "integration.validation_command_changed"
+        ]
+    );
+    assert_eq!(rows[0].1["action"], "created");
+    assert_eq!(rows[0].1["after"]["command_line"], "/usr/bin/true");
+    assert_eq!(
+        (rows[1].1["require_review_before"].clone(), rows[1].1["require_review_after"].clone()),
+        (json!(true), json!(false))
+    );
+    assert!(rows[1].1["changed_by"].as_str().is_some_and(|s| !s.is_empty()));
+    assert_eq!((rows[2].1["action"].clone(), rows[2].1["after"].clone()), (json!("deleted"), json!(null)));
+    assert_eq!(rows[2].1["before"]["timeout_secs"], 10);
+    // Atomic: if the event cannot be written, the change is not made either.
+    db.execute_batch(
+        "CREATE TRIGGER no_settings_event BEFORE INSERT ON events WHEN NEW.event_type = 'integration.settings_changed' \
+         BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+    )
+    .unwrap();
+    let err =
+        f.c.call::<IntegrationsSetSettings>(IntegrationsSetSettingsParams {
+            project_id: f.project_id,
+            require_review: true,
+        })
+        .await;
+    assert!(err.is_err());
+    let s =
+        f.c.call::<IntegrationsSettings>(IntegrationsSettingsParams { project_id: f.project_id })
+            .await
+            .unwrap();
+    assert!(!s.require_review, "the setting did not change without its event");
+}
+
+/// Stops Core, makes `i` look interrupted after its merge commit `merge` was
+/// recorded (method `checkout_fast_forward`), and restarts Core.
+async fn interrupt_after_intent(f: &mut Fx, i: &Integration, merge: &str, restart: bool) {
+    f.core.stop().await;
+    let db = f.db();
+    db.execute(
+        "UPDATE integrations SET status = 'integrating', merge_commit = ?1, method = 'checkout_fast_forward' \
+         WHERE id = ?2",
+        rusqlite::params![merge, i.id.to_string()],
+    )
+    .unwrap();
+    drop(db);
+    if restart {
+        let hooks = f.hooks.as_ref().unwrap().path().to_path_buf();
+        f.core.restart_with(|c| c.git.binary = hooks.join("git")).await;
+        let (c, _rx) = f.core.connect().await;
+        f.c = c;
+    }
+}
+
+/// A merge commit for `i` (target, source), created but not on any branch.
+fn merge_of(f: &Fx, i: &Integration) -> String {
+    let tree = git(&f.repo, &["rev-parse", &format!("{}^{{tree}}", i.source_commit)]);
+    git(&f.repo, &["commit-tree", &tree, "-p", &i.target_commit, "-p", &i.source_commit, "-m", "merge"])
+}
+
+#[tokio::test]
+async fn recovery_never_guesses_when_git_cannot_be_read() {
+    let mut f = fixture_hooked(|_| {}).await;
+    let i = ready_integration(&f).await;
+    let merge = merge_of(&f, &i);
+    // The merge landed and someone committed on top while Core was down.
+    git(&f.repo, &["merge", "-q", "--ff-only", &merge]);
+    std::fs::write(f.repo.join("later.txt"), "l\n").unwrap();
+    commit(&f.repo, "later");
+    // At the next start the ancestry check fails.
+    f.hook("ancestry", "merge-base --is-ancestor", "exit 99");
+    interrupt_after_intent(&mut f, &i, &merge, true).await;
+    let d = get(&f, i.id).await.integration;
+    assert_eq!(d.status, IntegrationStatus::Integrating, "undecided, not failed: {:?}", d.failure);
+    // Once Git answers, a refresh settles it: it did land.
+    f.unhook("ancestry");
+    assert_eq!(refresh(&f, i.id).await.status, IntegrationStatus::Integrated);
+}
+
+#[tokio::test]
+async fn recovery_waits_while_a_git_process_may_still_be_writing() {
+    let mut f = fixture_hooked(|_| {}).await;
+    let i = ready_integration(&f).await;
+    let merge = merge_of(&f, &i);
+    interrupt_after_intent(&mut f, &i, &merge, false).await;
+    std::fs::write(f.repo.join(".git/index.lock"), "").unwrap();
+    let hooks = f.hooks.as_ref().unwrap().path().to_path_buf();
+    f.core.restart_with(|c| c.git.binary = hooks.join("git")).await;
+    let (c, _rx) = f.core.connect().await;
+    f.c = c;
+    let d = get(&f, i.id).await.integration;
+    assert_eq!(d.status, IntegrationStatus::Integrating);
+    assert!(d.status_reason.as_deref().unwrap().contains("index.lock"), "{:?}", d.status_reason);
+    // The lock is gone (the process finished, or the operator removed a stale one).
+    std::fs::remove_file(f.repo.join(".git/index.lock")).unwrap();
+    let d = refresh(&f, i.id).await;
+    assert_eq!(d.status, IntegrationStatus::Failed);
+    let failure = d.failure.unwrap();
+    assert!(failure.contains("Checked afterwards") && failure.contains("nothing was changed"), "{failure}");
+    assert_eq!(git(&f.repo, &["rev-parse", "main"]), i.target_commit);
 }

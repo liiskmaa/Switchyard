@@ -1,23 +1,38 @@
 //! Changes to the source workspace, each on the operator's explicit request
 //! (ADR 0029): commit the agent's work, merge the target into the workspace,
-//! abort that merge. The target branch is never changed here. Each step
-//! holds the project's repository lock and marks the workspace
-//! `integrating`, so no agent session can attach meanwhile.
+//! abort that merge. The target branch is never changed here.
+//!
+//! Each runs as a Core-owned operation (ADR 0032): it completes even if the
+//! requesting client disconnects. It holds the project's repository lock and
+//! marks the workspace `integrating` (no agent session can attach), and
+//! always releases both, whatever the Git step returned.
 
 use std::path::Path;
 
 use switchyard_events::{DomainEvent, now_ms};
-use switchyard_git::WorktreeMerge;
+use switchyard_git::{GitError, WorktreeMerge};
 use switchyard_integrations::{IntegrationStatus, MergeFact};
+use switchyard_protocol::ProtocolError;
 use switchyard_protocol::model::Integration;
-use switchyard_protocol::{ErrorCode, ProtocolError};
 use switchyard_storage::integrations::{self as store, IntegrationUpdate};
 use uuid::Uuid;
 
-use super::{IntegrationService, context, git_err, invalid_params, invalid_state, transition};
+use super::{IntegrationService, Op, OpKind, context, git_err, invalid_params, invalid_state, transition};
 use crate::journal::{commit_checked, draft};
 
 const MAX_MESSAGE: usize = 5000;
+
+/// A Git step in the workspace that did not complete: its effect on the
+/// workspace is unknown until Git is read again (preparation does that).
+fn workspace_step_error(e: GitError, path: &str) -> ProtocolError {
+    match e {
+        GitError::Timeout { .. } => invalid_state(format!(
+            "Git was stopped at its timeout while working in the workspace at {path} ({e}); the workspace may be \
+             partially updated. Its state is shown as Git reports it now; inspect it with `git status` there"
+        )),
+        other => git_err(other),
+    }
+}
 
 impl IntegrationService {
     async fn record_workspace_change(
@@ -47,8 +62,8 @@ impl IntegrationService {
 
     /// Commits everything in the workspace (the agent's uncommitted work,
     /// untracked non-ignored files included) as one commit on its branch.
-    /// While resolving, this completes the merge, and refuses if conflict
-    /// markers remain.
+    /// While resolving, this completes the merge; it refuses while conflict
+    /// markers remain or conflicts are unresolved.
     pub async fn commit_workspace(
         &self,
         id: Uuid,
@@ -59,7 +74,21 @@ impl IntegrationService {
         if message.is_empty() || message.len() > MAX_MESSAGE {
             return Err(invalid_params(format!("the commit message must be 1 to {MAX_MESSAGE} bytes")));
         }
-        let _claim = self.claim(id)?;
+        let svc = self.clone();
+        let by = actor.clone();
+        self.run_op(id, OpKind::CommitWorkspace, actor, move |op| async move {
+            svc.commit_workspace_work(op, id, message, by).await
+        })
+        .await
+    }
+
+    async fn commit_workspace_work(
+        &self,
+        op: Op,
+        id: Uuid,
+        message: String,
+        actor: String,
+    ) -> Result<Integration, ProtocolError> {
         let i = self.record(id).await?;
         if !matches!(
             i.status,
@@ -74,14 +103,21 @@ impl IntegrationService {
             )));
         }
         let lock = self.inner.workspaces.repo_lock(i.project_id);
-        let _repo = lock.lock().await;
-        let w = self.inner.workspaces.begin_integration_op(i.workspace_id).await?;
+        let repo = lock.lock().await;
+        let w = self.begin_workspace_step(op, i.workspace_id).await?;
         let result = self.inner.workspaces.git().commit_all(Path::new(&w.path), &message).await;
         self.inner.workspaces.end_integration_op(w.id).await;
-        let commit = result.map_err(git_err)?;
-        self.record_workspace_change(id, "committed", Some(commit), Vec::new(), actor, None).await?;
-        drop(_repo);
-        self.prepare(id).await?;
+        let recorded = match result {
+            Ok(commit) => {
+                self.record_workspace_change(id, "committed", Some(commit), Vec::new(), actor, None).await
+            }
+            Err(e) => Err(workspace_step_error(e, &w.path)),
+        };
+        drop(repo);
+        // Whatever happened, the integration shows what Git shows now.
+        let prepared = self.prepare(id).await;
+        recorded?;
+        prepared?;
         self.wire(id).await
     }
 
@@ -90,7 +126,20 @@ impl IntegrationService {
     /// branch; conflicts leave the merge in progress in the workspace for
     /// the operator, or an agent assigned there, to resolve.
     pub async fn update_from_target(&self, id: Uuid, actor: String) -> Result<Integration, ProtocolError> {
-        let _claim = self.claim(id)?;
+        let svc = self.clone();
+        let by = actor.clone();
+        self.run_op(id, OpKind::UpdateFromTarget, actor, move |op| async move {
+            svc.update_from_target_work(op, id, by).await
+        })
+        .await
+    }
+
+    async fn update_from_target_work(
+        &self,
+        op: Op,
+        id: Uuid,
+        actor: String,
+    ) -> Result<Integration, ProtocolError> {
         let i = self.prepare(id).await?;
         if !matches!(
             i.status,
@@ -107,14 +156,14 @@ impl IntegrationService {
             return Err(invalid_state("commit the workspace's changes before updating it from the target"));
         }
         let lock = self.inner.workspaces.repo_lock(i.project_id);
-        let _repo = lock.lock().await;
+        let repo = lock.lock().await;
         // The target as it is now (re-read under the lock).
         let root = self.inner.workspaces.project_root(i.project_id).await?;
         let git = self.inner.workspaces.git().clone();
         let target = git.branch_tip(&root, &i.target_branch).await.map_err(git_err)?.ok_or_else(|| {
             invalid_state(format!("the target branch {} no longer exists", i.target_branch))
         })?;
-        let w = self.inner.workspaces.begin_integration_op(i.workspace_id).await?;
+        let w = self.begin_workspace_step(op, i.workspace_id).await?;
         // Re-checked now that no session can attach: nothing uncommitted, nothing in progress.
         let clean = async {
             let head = git.tree_of(Path::new(&w.path), "HEAD").await.ok()?;
@@ -135,12 +184,12 @@ impl IntegrationService {
         );
         let result = git.merge_into_worktree(Path::new(&w.path), &target, &message).await;
         self.inner.workspaces.end_integration_op(w.id).await;
-        match result.map_err(git_err)? {
-            WorktreeMerge::Merged(c) => {
-                self.record_workspace_change(id, "updated", Some(c), Vec::new(), actor, None).await?;
+        let recorded = match result {
+            Ok(WorktreeMerge::Merged(c)) => {
+                self.record_workspace_change(id, "updated", Some(c), Vec::new(), actor, None).await
             }
-            WorktreeMerge::UpToDate => {}
-            WorktreeMerge::Conflicts(files) => {
+            Ok(WorktreeMerge::UpToDate) => Ok(()),
+            Ok(WorktreeMerge::Conflicts(files)) => {
                 self.record_workspace_change(
                     id,
                     "conflicts",
@@ -149,39 +198,53 @@ impl IntegrationService {
                     actor,
                     Some(IntegrationStatus::Resolving),
                 )
-                .await?;
+                .await
             }
-        }
-        drop(_repo);
-        self.prepare(id).await?;
+            Err(e) => Err(workspace_step_error(e, &w.path)),
+        };
+        drop(repo);
+        let prepared = self.prepare(id).await;
+        recorded?;
+        prepared?;
         self.wire(id).await
     }
 
     /// Abandons a merge from the target that is in progress in the
     /// workspace (`git merge --abort`), restoring the workspace to its last
     /// commit. Edits made while resolving are discarded: the operator asked
-    /// for exactly that.
+    /// for exactly that. Untracked files near the restored paths stop it.
     pub async fn abort_resolution(&self, id: Uuid, actor: String) -> Result<Integration, ProtocolError> {
-        let _claim = self.claim(id)?;
+        let svc = self.clone();
+        let by = actor.clone();
+        self.run_op(id, OpKind::AbortResolution, actor, move |op| async move {
+            svc.abort_resolution_work(op, id, by).await
+        })
+        .await
+    }
+
+    async fn abort_resolution_work(
+        &self,
+        op: Op,
+        id: Uuid,
+        actor: String,
+    ) -> Result<Integration, ProtocolError> {
         let i = self.record(id).await?;
         if i.status != IntegrationStatus::Resolving {
             return Err(invalid_state("no conflict resolution is in progress"));
         }
         let lock = self.inner.workspaces.repo_lock(i.project_id);
-        let _repo = lock.lock().await;
-        let w = self.inner.workspaces.begin_integration_op(i.workspace_id).await.map_err(|e| {
-            if e.code == ErrorCode::WorkspaceOccupied {
-                invalid_state("an agent session is running in the workspace; stop it first")
-            } else {
-                e
-            }
-        })?;
+        let repo = lock.lock().await;
+        let w = self.begin_workspace_step(op, i.workspace_id).await?;
         let result = self.inner.workspaces.git().merge_abort(Path::new(&w.path)).await;
         self.inner.workspaces.end_integration_op(w.id).await;
-        result.map_err(git_err)?;
-        self.record_workspace_change(id, "aborted", None, Vec::new(), actor, None).await?;
-        drop(_repo);
-        self.prepare(id).await?;
+        let recorded = match result {
+            Ok(()) => self.record_workspace_change(id, "aborted", None, Vec::new(), actor, None).await,
+            Err(e) => Err(workspace_step_error(e, &w.path)),
+        };
+        drop(repo);
+        let prepared = self.prepare(id).await;
+        recorded?;
+        prepared?;
         self.wire(id).await
     }
 }

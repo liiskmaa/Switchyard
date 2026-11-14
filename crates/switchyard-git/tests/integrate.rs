@@ -5,7 +5,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use switchyard_git::{ChangeKind, Git, GitError, MergeOutcome, WorktreeMerge};
+use std::time::Duration;
+
+use switchyard_git::{ChangeKind, FastForwardError, Git, GitConfig, GitError, MergeOutcome, WorktreeMerge};
 
 fn run_git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
@@ -209,12 +211,12 @@ async fn a_fast_forward_of_a_checkout_never_overwrites_local_changes() {
     let merge = git.commit_tree(&root, &tree, &[&target, &source], "Merge").await.unwrap();
     // The user's uncommitted edit of the same file blocks the fast-forward.
     std::fs::write(root.join("keep.txt"), "user's unsaved work\n").unwrap();
-    assert!(git.fast_forward_checkout(&root, &merge).await.is_err());
+    assert!(git.fast_forward_checkout(&root, "main", &target, &merge).await.is_err());
     assert_eq!(std::fs::read_to_string(root.join("keep.txt")).unwrap(), "user's unsaved work\n");
     assert_eq!(git.resolve_commit(&root, "main").await.unwrap(), target, "nothing moved");
     // With the checkout clean it fast-forwards to exactly the prepared commit.
     run_git(&root, &["checkout", "--", "keep.txt"]);
-    git.fast_forward_checkout(&root, &merge).await.unwrap();
+    git.fast_forward_checkout(&root, "main", &target, &merge).await.unwrap();
     assert_eq!(git.resolve_commit(&root, "main").await.unwrap(), merge);
     assert_eq!(std::fs::read_to_string(root.join("keep.txt")).unwrap(), "one\nchanged by ws\nthree\n");
 }
@@ -244,6 +246,11 @@ async fn workspace_merges_commit_all_and_abort() {
     assert!(git.repo_state(&ws).await.unwrap().merge_in_progress);
     let refused = git.commit_all(&ws, "with markers").await.unwrap_err();
     assert!(matches!(refused, GitError::WorktreeBusy(_)), "{refused:?}");
+    // Staging the file does not make its markers a resolution.
+    run_git(&ws, &["add", "--", "keep.txt"]);
+    let refused = git.commit_all(&ws, "with staged markers").await.unwrap_err();
+    assert!(refused.to_string().contains("conflict markers remain in keep.txt"), "{refused}");
+    assert!(git.repo_state(&ws).await.unwrap().merge_in_progress, "nothing was committed");
     git.merge_abort(&ws).await.unwrap();
     assert!(git.repo_state(&ws).await.unwrap().is_idle());
     assert_eq!(git.resolve_commit(&ws, "HEAD").await.unwrap(), snap);
@@ -295,7 +302,7 @@ async fn merges_never_overwrite_ignored_files() {
         panic!()
     };
     let merge = git.commit_tree(&root, &tree, &[&target, &source], "Merge").await.unwrap();
-    assert!(git.fast_forward_checkout(&root, &merge).await.is_err(), "Git must refuse");
+    assert!(git.fast_forward_checkout(&root, "main", &target, &merge).await.is_err(), "Git must refuse");
     assert_eq!(std::fs::read_to_string(root.join("secrets.env")).unwrap(), "USER SECRET\n");
     assert_eq!(git.resolve_commit(&root, "main").await.unwrap(), target, "nothing moved");
 
@@ -338,4 +345,218 @@ async fn conflicts_without_markers_need_an_explicit_resolution() {
     run_git(&ws, &["rm", "-q", "--", "gone.txt"]);
     let done = git.commit_all(&ws, "resolve").await.unwrap();
     assert_eq!(run_git(&ws, &["rev-parse", "HEAD"]), done);
+}
+
+fn read(p: &Path) -> String {
+    std::fs::read_to_string(p).unwrap()
+}
+
+/// Ignores `pattern` in the workspace (committed there), so files matching it
+/// are ignored, untracked files of the workspace.
+fn ignore_in_ws(ws: &Path, pattern: &str) {
+    let mut gi = read(&ws.join(".gitignore"));
+    gi.push_str(pattern);
+    gi.push('\n');
+    std::fs::write(ws.join(".gitignore"), gi).unwrap();
+    commit(ws, "ignore");
+}
+
+#[tokio::test]
+async fn an_ignored_file_is_never_replaced_by_a_directory() {
+    let (_d, root, ws) = setup();
+    let git = Git::default();
+    ignore_in_ws(&ws, "cfg");
+    std::fs::write(ws.join("cfg"), "SECRET\n").unwrap();
+    // The target adds `cfg/inner`: merging it would turn `cfg` into a directory.
+    std::fs::create_dir(root.join("cfg")).unwrap();
+    std::fs::write(root.join("cfg/inner"), "t\n").unwrap();
+    run_git(&root, &["add", "-f", "cfg/inner"]);
+    let target = commit(&root, "add cfg/inner");
+    let head = git.resolve_commit(&ws, "HEAD").await.unwrap();
+    let err = git.merge_into_worktree(&ws, &target, "update").await.unwrap_err();
+    assert!(err.to_string().contains("cfg"), "{err}");
+    assert_eq!(read(&ws.join("cfg")), "SECRET\n");
+    assert_eq!(git.resolve_commit(&ws, "HEAD").await.unwrap(), head, "nothing was merged");
+    assert!(git.repo_state(&ws).await.unwrap().is_idle());
+
+    // The same clash in a checked-out target being fast-forwarded.
+    std::fs::remove_dir_all(root.join("cfg")).unwrap();
+    run_git(&root, &["switch", "-q", "--detach"]);
+    let main = run_git(&root, &["rev-parse", "HEAD~1"]);
+    run_git(&root, &["switch", "-q", "-C", "main", &main]);
+    std::fs::write(root.join(".git/info/exclude"), "cfg\n").unwrap();
+    std::fs::write(root.join("cfg"), "ROOT SECRET\n").unwrap();
+    let err = git.fast_forward_checkout(&root, "main", &main, &target).await.unwrap_err();
+    assert!(matches!(err, FastForwardError::Refused(_)), "{err}");
+    assert_eq!(read(&root.join("cfg")), "ROOT SECRET\n");
+    assert_eq!(git.resolve_commit(&root, "main").await.unwrap(), main);
+}
+
+#[tokio::test]
+async fn a_directory_rename_cannot_overwrite_an_ignored_file() {
+    let (_d, root, ws) = setup();
+    let git = Git::default();
+    std::fs::create_dir(root.join("src")).unwrap();
+    std::fs::write(root.join("src/a.rs"), "a\n").unwrap();
+    std::fs::write(root.join("src/b.rs"), "b\n").unwrap();
+    commit(&root, "src");
+    run_git(&ws, &["merge", "-q", "main"]);
+    ignore_in_ws(&ws, "*.env");
+    // The workspace renames src/ to lib/; the target adds src/new.env, which
+    // directory-rename detection places at lib/new.env.
+    run_git(&ws, &["mv", "src", "lib"]);
+    commit(&ws, "rename src to lib");
+    std::fs::write(root.join("src/new.env"), "NEW\n").unwrap();
+    run_git(&root, &["add", "-f", "src/new.env"]);
+    let target = commit(&root, "add src/new.env");
+    std::fs::write(ws.join("lib/new.env"), "SECRET\n").unwrap();
+    let err = git.merge_into_worktree(&ws, &target, "update").await.unwrap_err();
+    assert!(err.to_string().contains("lib/new.env"), "{err}");
+    assert_eq!(read(&ws.join("lib/new.env")), "SECRET\n");
+    assert!(git.repo_state(&ws).await.unwrap().is_idle());
+}
+
+#[tokio::test]
+async fn nested_ignored_files_under_a_replaced_directory_are_protected() {
+    let (_d, root, ws) = setup();
+    let git = Git::default();
+    ignore_in_ws(&ws, "logs/");
+    std::fs::create_dir_all(ws.join("logs/deep/er")).unwrap();
+    std::fs::write(ws.join("logs/deep/er/run.log"), "LOG\n").unwrap();
+    // The target adds a file `logs/deep` where the workspace has a directory.
+    std::fs::create_dir(root.join("logs")).unwrap();
+    std::fs::write(root.join("logs/deep"), "a file now\n").unwrap();
+    run_git(&root, &["add", "-f", "logs/deep"]);
+    let target = commit(&root, "logs/deep is a file");
+    let err = git.merge_into_worktree(&ws, &target, "update").await.unwrap_err();
+    assert!(err.to_string().contains("logs/deep/er/run.log"), "{err}");
+    assert_eq!(read(&ws.join("logs/deep/er/run.log")), "LOG\n");
+    // Different letter case is the same file on a case-insensitive file system.
+    let at_risk = git.untracked_files_at_risk(&ws, &["LOGS/DEEP".to_owned()]).await.unwrap();
+    assert_eq!(at_risk, vec!["logs/deep/er/run.log"]);
+}
+
+#[tokio::test]
+async fn unrelated_ignored_files_do_not_block_a_merge() {
+    let (_d, root, ws) = setup();
+    let git = Git::default();
+    ignore_in_ws(&ws, ".env");
+    std::fs::create_dir(ws.join("build")).unwrap();
+    std::fs::write(ws.join("build/out.bin"), [0u8, 1]).unwrap();
+    std::fs::write(ws.join(".env"), "KEEP\n").unwrap();
+    std::fs::write(root.join("keep.txt"), "one\nmain\nthree\n").unwrap();
+    std::fs::write(root.join("added.txt"), "x\n").unwrap();
+    let target = commit(&root, "main change");
+    let WorktreeMerge::Merged(_) = git.merge_into_worktree(&ws, &target, "update").await.unwrap() else {
+        panic!("expected a clean merge")
+    };
+    assert_eq!(read(&ws.join(".env")), "KEEP\n");
+    assert_eq!(std::fs::read(ws.join("build/out.bin")).unwrap(), [0u8, 1]);
+    assert_eq!(read(&ws.join("keep.txt")), "one\nmain\nthree\n");
+}
+
+#[tokio::test]
+async fn a_plain_merge_without_ignored_files_is_clean() {
+    let (_d, root, ws) = setup();
+    let git = Git::default();
+    std::fs::write(ws.join("ws.txt"), "w\n").unwrap();
+    commit(&ws, "ws work");
+    std::fs::write(root.join("main.txt"), "m\n").unwrap();
+    let target = commit(&root, "main work");
+    let WorktreeMerge::Merged(head) = git.merge_into_worktree(&ws, &target, "update").await.unwrap() else {
+        panic!("expected a clean merge")
+    };
+    assert!(git.is_ancestor(&ws, &target, &head).await.unwrap());
+    assert_eq!((read(&ws.join("ws.txt")), read(&ws.join("main.txt"))), ("w\n".into(), "m\n".into()));
+}
+
+#[tokio::test]
+async fn marker_like_text_is_judged_by_complete_new_conflict_blocks() {
+    let (_d, root, ws) = setup();
+    let git = Git::default();
+    // A heading underline and a quoted marker are not conflict blocks.
+    std::fs::write(ws.join("doc.md"), "Title\n=======\n\nGit writes `<<<<<<<` lines.\n<<<<<<< only\n")
+        .unwrap();
+    // A fixture with a complete block, committed earlier, may keep it.
+    std::fs::write(ws.join("fixture.txt"), "<<<<<<< a\nx\n=======\ny\n>>>>>>> b\n").unwrap();
+    run_git(&ws, &["add", "-A"]);
+    run_git(&ws, &["commit", "-q", "--no-verify", "-m", "fixture"]);
+    std::fs::write(ws.join("fixture.txt"), "<<<<<<< a\nx2\n=======\ny\n>>>>>>> b\n").unwrap();
+    std::fs::write(ws.join("doc.md"), "Title\n=======\n\nchanged\n").unwrap();
+    git.commit_all(&ws, "edits").await.unwrap();
+    // A new complete block outside any merge is refused too.
+    std::fs::write(ws.join("new.txt"), "<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> other\n").unwrap();
+    let err = git.commit_all(&ws, "new block").await.unwrap_err();
+    assert!(err.to_string().contains("new.txt"), "{err}");
+    let _ = root;
+}
+
+/// A `git` wrapper inside the test's directory that runs `action` before the
+/// real Git for invocations whose arguments contain `matching`.
+fn wrapper(dir: &Path, matching: &str, action: &str) -> PathBuf {
+    let real = String::from_utf8(Command::new("sh").args(["-c", "command -v git"]).output().unwrap().stdout)
+        .unwrap()
+        .trim()
+        .to_owned();
+    let path = dir.join("git-wrapper.sh");
+    std::fs::write(
+        &path,
+        format!("#!/bin/sh\ncase \"$*\" in *\"{matching}\"*) {action} ;; esac\nexec \"{real}\" \"$@\"\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    path
+}
+
+/// Source and merge commits for a fast-forward of `main` in `root`.
+async fn prepared_merge(git: &Git, root: &Path, ws: &Path) -> (String, String) {
+    let target = git.resolve_commit(root, "main").await.unwrap();
+    std::fs::write(ws.join("keep.txt"), "one\nfrom ws\nthree\n").unwrap();
+    std::fs::write(ws.join("more.txt"), "m\n").unwrap();
+    let source = commit(ws, "feature");
+    let MergeOutcome::Clean { tree } = git.merge_tree(root, &target, &source).await.unwrap() else {
+        panic!()
+    };
+    let merge = git.commit_tree(root, &tree, &[&target, &source], "Merge").await.unwrap();
+    (target, merge)
+}
+
+#[tokio::test]
+async fn a_checkout_switched_during_the_fast_forward_is_detected() {
+    let (d, root, ws) = setup();
+    let (target, merge) = prepared_merge(&Git::default(), &root, &ws).await;
+    run_git(&root, &["branch", "other", &target]);
+    let wrap = wrapper(d.path(), "merge --ff-only", &format!("git -C '{}' switch -q other", root.display()));
+    let git = Git::new(GitConfig { binary: wrap, ..GitConfig::default() });
+    let err = git.fast_forward_checkout(&root, "main", &target, &merge).await.unwrap_err();
+    let FastForwardError::Diverted { checked_out, branch_tip } = &err else { panic!("{err}") };
+    assert_eq!((checked_out.as_str(), branch_tip.as_deref()), ("refs/heads/other", Some(target.as_str())));
+    assert_eq!(run_git(&root, &["rev-parse", "main"]), target, "the target branch did not move");
+}
+
+#[tokio::test]
+async fn a_timed_out_fast_forward_reports_what_it_finds() {
+    let (d, root, ws) = setup();
+    let (target, merge) = prepared_merge(&Git::default(), &root, &ws).await;
+    let config = |binary| GitConfig {
+        binary,
+        timeout: Duration::from_secs(3),
+        checkout_timeout: Duration::from_secs(3),
+    };
+    let paths = Git::default().changed_paths(&root, &target, &merge).await.unwrap();
+    // Stopped before Git wrote anything: provably unchanged.
+    let git = Git::new(config(wrapper(d.path(), "merge --ff-only", "sleep 20")));
+    let err = git.fast_forward_checkout(&root, "main", &target, &merge).await.unwrap_err();
+    assert!(matches!(err, FastForwardError::Git(GitError::Timeout { .. })), "{err}");
+    assert!(Git::default().checkout_unchanged(&root, "main", &target, &paths).await.unwrap());
+    // Stopped after Git wrote a file (simulated): not unchanged.
+    let action = format!("printf 'half\\n' > '{}/keep.txt'; sleep 20", root.display());
+    let git = Git::new(config(wrapper(d.path(), "merge --ff-only", &action)));
+    let err = git.fast_forward_checkout(&root, "main", &target, &merge).await.unwrap_err();
+    assert!(matches!(err, FastForwardError::Git(GitError::Timeout { .. })), "{err}");
+    assert!(!Git::default().checkout_unchanged(&root, "main", &target, &paths).await.unwrap());
+    // A new file written by the interrupted update also counts.
+    run_git(&root, &["checkout", "--", "keep.txt"]);
+    std::fs::write(root.join("more.txt"), "m\n").unwrap();
+    assert!(!Git::default().checkout_unchanged(&root, "main", &target, &paths).await.unwrap());
 }

@@ -138,22 +138,22 @@ pub(super) async fn settings(
 }
 
 pub(super) async fn set_settings(
-    state: &CoreState,
+    conn: &Connection,
     p: IntegrationsSetSettingsParams,
 ) -> Result<IntegrationSettingsInfo, ProtocolError> {
-    state.integrations.set_settings(p.project_id, p.require_review).await
+    conn.state.integrations.set_settings(p.project_id, p.require_review, actor(conn)).await
 }
 
 pub(super) async fn set_command(
-    state: &CoreState,
+    conn: &Connection,
     p: IntegrationsSetCommandParams,
 ) -> Result<IntegrationSettingsInfo, ProtocolError> {
-    state.integrations.set_command(p).await
+    conn.state.integrations.set_command(p, actor(conn)).await
 }
 
 pub(super) async fn delete_command(
-    state: &CoreState,
+    conn: &Connection,
     p: IntegrationsDeleteCommandParams,
 ) -> Result<IntegrationSettingsInfo, ProtocolError> {
-    state.integrations.delete_command(p.command_id).await
+    conn.state.integrations.delete_command(p.command_id, actor(conn)).await
 }

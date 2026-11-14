@@ -18,7 +18,8 @@ export const runValidation = (id: string, authorize: { command_id: string; comma
   coreRequest("integrations.validate", { integration_id: id, authorize });
 export const cancelValidation = (id: string) => coreRequest("integrations.cancel_validation", { integration_id: id });
 /** Approves exactly the commits the operator was shown. */
-export const approveIntegration = (i: Integration) =>
+/** Approves exactly the commits the operator confirmed (not whatever is current). */
+export const approveIntegration = (i: Pick<Integration, "id" | "source_commit" | "target_commit">) =>
   coreRequest("integrations.approve", {
     integration_id: i.id,
     source_commit: i.source_commit,

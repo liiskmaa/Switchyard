@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Integration, IntegrationStatus } from "../../types/protocol";
-import { consequences, integrationActions } from "./labels";
+import { consequences, integrationActions, operationLine } from "./labels";
 
 const integration = (status: IntegrationStatus, blockers: string[] = [], configured = 1): Integration => ({
   id: "i",
@@ -45,6 +45,7 @@ const integration = (status: IntegrationStatus, blockers: string[] = [], configu
   created_at_ms: 0,
   updated_at_ms: 0,
   completed_at_ms: null,
+  operation: null,
 });
 
 describe("integrationActions", () => {
@@ -77,5 +78,33 @@ describe("consequences", () => {
     expect(text).toContain("bbbbbbbbbb");
     expect(text).toContain("/repo");
     expect(text).toContain("Nothing is pushed");
+  });
+});
+
+describe("Core-owned operations", () => {
+  const op = (status: "running" | "completed" | "failed" | "interrupted", error: string | null = null) => ({
+    id: "o",
+    kind: "approve" as const,
+    status,
+    requested_by: "desktop",
+    error,
+    started_at_ms: 0,
+    ended_at_ms: status === "running" ? null : 1,
+  });
+
+  it("a stranded integration can be checked again only while no operation runs", () => {
+    const stranded = { ...integration("integrating"), operation: op("interrupted", "Core stopped") };
+    expect(integrationActions(stranded).refresh).toBe(true);
+    const running = { ...integration("integrating"), operation: op("running") };
+    expect(integrationActions(running).refresh).toBe(false);
+    expect(integrationActions(running).cancel).toBe(false);
+  });
+
+  it("says that a running operation survives the client", () => {
+    const line = operationLine({ ...integration("integrating"), operation: op("running") });
+    expect(line?.tone).toBe("info");
+    expect(line?.text).toContain("continues even if you close the app");
+    expect(operationLine({ ...integration("failed"), operation: op("failed", "Git refused") })?.text).toContain("Git refused");
+    expect(operationLine({ ...integration("ready"), operation: op("completed") })).toBeNull();
   });
 });

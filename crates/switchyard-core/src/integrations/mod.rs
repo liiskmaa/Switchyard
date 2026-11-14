@@ -15,10 +15,12 @@
 mod execute;
 mod facts;
 mod inspect;
+mod operations;
 mod validate;
 mod workspace_ops;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use switchyard_events::{DomainEvent, EventBus, EventContext, EventDraft, new_id, now_ms};
@@ -41,6 +43,7 @@ use crate::journal::{commit_checked, draft};
 use crate::workspaces::WorkspaceService;
 
 pub(crate) use facts::Prepared;
+pub(crate) use operations::{Op, OpKind};
 
 fn invalid_state(m: impl Into<String>) -> ProtocolError {
     ProtocolError::new(ErrorCode::InvalidState, m)
@@ -88,8 +91,13 @@ pub(crate) fn blockers_of(i: &IntegrationRecord) -> Vec<Blocker> {
     serde_json::from_value(i.preflight["blockers"].clone()).unwrap_or_default()
 }
 
-fn to_wire(i: IntegrationRecord, workspace_name: Option<String>) -> Integration {
+fn to_wire(
+    i: IntegrationRecord,
+    workspace_name: Option<String>,
+    operation: Option<store::OperationRecord>,
+) -> Integration {
     Integration {
+        operation: operation.map(operations::op_wire),
         blockers: blockers_of(&i),
         id: i.id,
         project_id: i.project_id,
@@ -119,7 +127,8 @@ fn to_wire(i: IntegrationRecord, workspace_name: Option<String>) -> Integration 
 
 fn wire_from_conn(c: &Connection, i: IntegrationRecord) -> Result<Integration, StorageError> {
     let name = workspaces::find(c, i.workspace_id)?.map(|w| w.name);
-    Ok(to_wire(i, name))
+    let op = store::latest_operation(c, i.id)?;
+    Ok(to_wire(i, name, op))
 }
 
 /// Status change plus its journal event.
@@ -143,6 +152,17 @@ pub(crate) fn transition(
         )?);
     }
     Ok(after)
+}
+
+/// What an audit event records about a validation command.
+fn command_snapshot(c: &CommandRecord) -> serde_json::Value {
+    serde_json::json!({
+        "name": c.name,
+        "command_line": command_line(&c.argv),
+        "timeout_secs": c.timeout_secs,
+        "enabled": c.enabled,
+        "position": c.position,
+    })
 }
 
 fn command_wire(c: CommandRecord) -> ValidationCommandConfig {
@@ -182,6 +202,12 @@ struct Inner {
     busy: Arc<Mutex<HashSet<Uuid>>>,
     /// Cancellation of running validation runs, by integration.
     cancels: Mutex<HashMap<Uuid, watch::Sender<bool>>>,
+    /// Set at shutdown: no new operation starts (ADR 0032).
+    stopping: AtomicBool,
+    /// Supervised operation tasks alive now.
+    running: watch::Sender<usize>,
+    /// The work of each running operation, stopped only at shutdown.
+    bodies: Mutex<HashMap<Uuid, tokio::task::AbortHandle>>,
 }
 
 impl IntegrationService {
@@ -193,6 +219,9 @@ impl IntegrationService {
                 workspaces,
                 busy: Arc::default(),
                 cancels: Mutex::default(),
+                stopping: AtomicBool::new(false),
+                running: watch::channel(0).0,
+                bodies: Mutex::default(),
             }),
         }
     }
@@ -357,9 +386,18 @@ impl IntegrationService {
     /// Re-reads everything from Git and rebinds the integration to the
     /// current source and target commits. Any change since the last
     /// preparation means earlier validation and inspection no longer apply.
+    ///
+    /// An integration left `integrating` or `validating` with no operation
+    /// working on it (Core stopped, or a Git read failed during recovery) is
+    /// settled from Git instead.
     pub async fn refresh(&self, id: Uuid) -> Result<Integration, ProtocolError> {
         let _claim = self.claim(id)?;
-        self.prepare(id).await?;
+        let i = self.record(id).await?;
+        if matches!(i.status, IntegrationStatus::Integrating | IntegrationStatus::Validating) {
+            self.settle_stranded(id).await?;
+        } else {
+            self.prepare(id).await?;
+        }
         self.wire(id).await
     }
 
@@ -486,23 +524,45 @@ impl IntegrationService {
             })
     }
 
+    /// Changes the project's review requirement. The change and its
+    /// `integration.settings_changed` event (before, after, who) are one
+    /// transaction; open integrations are then checked again.
     pub async fn set_settings(
         &self,
         project_id: Uuid,
         require_review: bool,
+        actor: String,
     ) -> Result<IntegrationSettingsInfo, ProtocolError> {
         self.settings(project_id).await?;
-        self.inner
-            .storage
-            .call(move |c| store::set_settings(c, project_id, require_review, now_ms()))
-            .await
-            .map_err(errors::storage)?;
+        commit_checked(&self.inner.storage, &self.inner.bus, move |tx| {
+            let before = store::settings(tx, project_id)?;
+            let after = store::set_settings(tx, project_id, require_review, now_ms())?;
+            let ctx = EventContext { project_id: Some(project_id), ..Default::default() };
+            let d = draft(
+                DomainEvent::IntegrationSettingsChanged {
+                    project_id,
+                    require_review_before: before.require_review,
+                    require_review_after: after.require_review,
+                    revision: after.revision,
+                    changed_by: actor,
+                },
+                &ctx,
+            )?;
+            Ok(Ok(((), vec![d])))
+        })
+        .await?;
+        self.reprepare_project(project_id).await;
         self.settings(project_id).await
     }
 
+    /// Creates or changes a validation command, with its
+    /// `integration.validation_command_changed` event in the same
+    /// transaction; open integrations are then checked again (a passed run
+    /// counts only for the configuration it executed).
     pub async fn set_command(
         &self,
         p: IntegrationsSetCommandParams,
+        actor: String,
     ) -> Result<IntegrationSettingsInfo, ProtocolError> {
         let cmd = ValidationCommand {
             name: p.name.trim().to_owned(),
@@ -512,57 +572,121 @@ impl IntegrationService {
         validate_command(&cmd).map_err(|e| invalid_params(e.to_string()))?;
         let project_id = p.project_id;
         self.settings(project_id).await?;
-        self.inner
-            .storage
-            .call(move |c| {
-                let now = now_ms();
-                let existing = match p.command_id {
-                    Some(id) => {
-                        let e = store::get_command(c, id)?;
-                        if e.project_id != project_id {
-                            return Err(StorageError::NotFound(format!("validation command {id}")));
-                        }
-                        Some(e)
+        commit_checked(&self.inner.storage, &self.inner.bus, move |tx| {
+            let now = now_ms();
+            let existing = match p.command_id {
+                Some(id) => match store::get_command(tx, id) {
+                    Ok(e) if e.project_id == project_id => Some(e),
+                    Ok(_) | Err(StorageError::NotFound(_)) => {
+                        return Ok(Err(ProtocolError::new(
+                            ErrorCode::NotFound,
+                            format!("validation command {id} not found in this project"),
+                        )));
                     }
-                    None => None,
-                };
-                let position = p.position.unwrap_or_else(|| {
-                    existing.as_ref().map(|e| e.position).unwrap_or_else(|| {
-                        store::commands(c, project_id).map(|v| v.len() as i64).unwrap_or(0)
-                    })
-                });
-                store::upsert_command(
-                    c,
-                    &CommandRecord {
-                        id: p.command_id.unwrap_or_else(new_id),
-                        project_id,
-                        position,
-                        name: cmd.name,
-                        argv: cmd.argv,
-                        timeout_secs: cmd.timeout_secs,
-                        enabled: p.enabled,
-                        created_at_ms: existing.map(|e| e.created_at_ms).unwrap_or(now),
-                        updated_at_ms: now,
-                    },
-                )
-            })
-            .await
-            .map_err(errors::storage)?;
+                    Err(e) => return Err(e),
+                },
+                None => None,
+            };
+            let position = match (p.position, &existing) {
+                (Some(pos), _) => pos,
+                (None, Some(e)) => e.position,
+                (None, None) => store::commands(tx, project_id)?.len() as i64,
+            };
+            let record = CommandRecord {
+                id: p.command_id.unwrap_or_else(new_id),
+                project_id,
+                position,
+                name: cmd.name,
+                argv: cmd.argv,
+                timeout_secs: cmd.timeout_secs,
+                enabled: p.enabled,
+                created_at_ms: existing.as_ref().map(|e| e.created_at_ms).unwrap_or(now),
+                updated_at_ms: now,
+            };
+            store::upsert_command(tx, &record)?;
+            let ctx = EventContext { project_id: Some(project_id), ..Default::default() };
+            let d = draft(
+                DomainEvent::IntegrationValidationCommandChanged {
+                    project_id,
+                    command_id: record.id,
+                    action: if existing.is_some() { "updated" } else { "created" }.into(),
+                    before: existing.as_ref().map(command_snapshot),
+                    after: Some(command_snapshot(&record)),
+                    changed_by: actor,
+                },
+                &ctx,
+            )?;
+            Ok(Ok(((), vec![d])))
+        })
+        .await?;
+        self.reprepare_project(project_id).await;
         self.settings(project_id).await
     }
 
-    pub async fn delete_command(&self, command_id: Uuid) -> Result<IntegrationSettingsInfo, ProtocolError> {
-        let project_id = self
+    /// Deletes a validation command, with its event in the same transaction.
+    pub async fn delete_command(
+        &self,
+        command_id: Uuid,
+        actor: String,
+    ) -> Result<IntegrationSettingsInfo, ProtocolError> {
+        let project_id = commit_checked(&self.inner.storage, &self.inner.bus, move |tx| {
+            let cmd = match store::get_command(tx, command_id) {
+                Ok(c) => c,
+                Err(StorageError::NotFound(_)) => {
+                    return Ok(Err(ProtocolError::new(
+                        ErrorCode::NotFound,
+                        format!("validation command {command_id} not found"),
+                    )));
+                }
+                Err(e) => return Err(e),
+            };
+            store::delete_command(tx, command_id)?;
+            let ctx = EventContext { project_id: Some(cmd.project_id), ..Default::default() };
+            let d = draft(
+                DomainEvent::IntegrationValidationCommandChanged {
+                    project_id: cmd.project_id,
+                    command_id,
+                    action: "deleted".into(),
+                    before: Some(command_snapshot(&cmd)),
+                    after: None,
+                    changed_by: actor,
+                },
+                &ctx,
+            )?;
+            Ok(Ok((cmd.project_id, vec![d])))
+        })
+        .await?;
+        self.reprepare_project(project_id).await;
+        self.settings(project_id).await
+    }
+
+    /// Checks the project's open integrations again after a settings change,
+    /// so their blockers (and any approval readiness) reflect it. Ones with
+    /// an operation running are skipped: the operation prepares them when it
+    /// ends, and approval re-checks everything under the lock anyway.
+    async fn reprepare_project(&self, project_id: Uuid) {
+        let open = self
             .inner
             .storage
-            .call(move |c| {
-                let cmd = store::get_command(c, command_id)?;
-                store::delete_command(c, command_id)?;
-                Ok(cmd.project_id)
-            })
-            .await
-            .map_err(errors::storage)?;
-        self.settings(project_id).await
+            .call(move |c| store::list_integrations(c, Some(project_id), None, false, 1000))
+            .await;
+        let Ok(open) = open else { return };
+        for i in open {
+            if !matches!(
+                i.status,
+                IntegrationStatus::Open
+                    | IntegrationStatus::Conflicted
+                    | IntegrationStatus::Ready
+                    | IntegrationStatus::Failed
+                    | IntegrationStatus::Resolving
+            ) {
+                continue;
+            }
+            let Ok(_claim) = self.claim(i.id) else { continue };
+            if let Err(e) = self.prepare(i.id).await {
+                tracing::warn!(integration = %i.id, ?e, "cannot check an integration again after a settings change");
+            }
+        }
     }
 
     /// The workspace of an integration (for UI and tests).

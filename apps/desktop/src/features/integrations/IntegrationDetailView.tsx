@@ -23,7 +23,7 @@ import {
   runValidation,
   updateFromTarget,
 } from "./api";
-import { RUN_TONE, STATUS_LABEL, STEP_TONE, consequences, integrationActions, shortOid, statusTone } from "./labels";
+import { RUN_TONE, STATUS_LABEL, STEP_TONE, consequences, integrationActions, operationLine, shortOid, statusTone } from "./labels";
 
 function useAction(onDone: () => void) {
   const [busy, setBusy] = useState(false);
@@ -217,11 +217,16 @@ export function IntegrationDetailView({
   };
   const action = useAction(refresh);
   const [message, setMessage] = useState("");
-  const [authorized, setAuthorized] = useState<string[]>([]);
-  const [confirming, setConfirming] = useState(false);
+  // Each authorization keeps the exact command line the operator checked;
+  // Core refuses one whose line no longer matches the command.
+  const [authorized, setAuthorized] = useState<{ command_id: string; command_line: string }[]>([]);
+  // The approval is for the commits shown when the operator confirmed.
+  const [confirming, setConfirming] = useState<{ source_commit: string; target_commit: string } | null>(null);
   // Authorizations are for the plan as shown: any change to it clears them.
   const planKey = JSON.stringify(detail.data?.plan ?? []);
   useEffect(() => setAuthorized([]), [planKey]);
+  const commitsKey = `${detail.data?.integration.source_commit ?? ""}:${detail.data?.integration.target_commit ?? ""}`;
+  useEffect(() => setConfirming(null), [commitsKey]);
 
   if (detail.error) return <ErrorNotice title="Cannot load the integration" message={detail.error.message} code={detail.error.code} />;
   const d: IntegrationDetail | null = detail.data;
@@ -233,6 +238,9 @@ export function IntegrationDetailView({
   const merge = facts?.merge;
   const latestForSource = d.runs.find((r) => r.source_commit === i.source_commit);
   const asks = d.plan.filter((p) => p.policy_decision === "ask");
+  const isAuthorized = (p: { command_id: string; command_line: string }) =>
+    authorized.some((a) => a.command_id === p.command_id && a.command_line === p.command_line);
+  const op = operationLine(i);
 
   return (
     <div className="detail">
@@ -303,6 +311,11 @@ export function IntegrationDetailView({
             {i.approved_by}.
           </p>
         ) : null}
+        {op && !(op.tone === "error" && i.failure) ? (
+          <div className={`notice ${op.tone === "error" ? "notice-error" : op.tone === "warn" ? "notice-warn" : ""}`} role="status">
+            <div className="small">{op.text}</div>
+          </div>
+        ) : null}
         {i.failure ? <ErrorNotice title="Integration failed" message={i.failure} /> : null}
         {can.approve ? (
           <>
@@ -321,20 +334,20 @@ export function IntegrationDetailView({
                   disabled={action.busy}
                   onClick={() =>
                     void action.run(async () => {
-                      setConfirming(false);
-                      await approveIntegration(i);
+                      setConfirming(null);
+                      await approveIntegration({ id: i.id, ...confirming });
                     })
                   }
                 >
-                  Integrate {shortOid(i.source_commit)} into {i.target_branch}
+                  Integrate {shortOid(confirming.source_commit)} into {i.target_branch}
                 </Button>
-                <Button variant="ghost" onClick={() => setConfirming(false)}>
+                <Button variant="ghost" onClick={() => setConfirming(null)}>
                   Back
                 </Button>
               </div>
             ) : (
               <div className="form-actions start">
-                <Button variant="primary" onClick={() => setConfirming(true)}>
+                <Button variant="primary" onClick={() => setConfirming({ source_commit: i.source_commit, target_commit: i.target_commit })}>
                   Approve these commits…
                 </Button>
               </div>
@@ -427,9 +440,13 @@ export function IntegrationDetailView({
                   <label className="check small">
                     <input
                       type="checkbox"
-                      checked={authorized.includes(p.command_id)}
+                      checked={isAuthorized(p)}
                       onChange={(e) =>
-                        setAuthorized(e.target.checked ? [...authorized, p.command_id] : authorized.filter((x) => x !== p.command_id))
+                        setAuthorized(
+                          e.target.checked
+                            ? [...authorized.filter((a) => a.command_id !== p.command_id), { command_id: p.command_id, command_line: p.command_line }]
+                            : authorized.filter((a) => a.command_id !== p.command_id),
+                        )
                       }
                     />{" "}
                     Authorize for this run (it runs with your user's permissions in the workspace)
@@ -442,17 +459,8 @@ export function IntegrationDetailView({
         <div className="form-actions start">
           {can.validate ? (
             <Button
-              disabled={action.busy || asks.some((a) => !authorized.includes(a.command_id))}
-              onClick={() =>
-                void action.run(() =>
-                  runValidation(
-                    i.id,
-                    d.plan
-                      .filter((p) => authorized.includes(p.command_id))
-                      .map((p) => ({ command_id: p.command_id, command_line: p.command_line })),
-                  ),
-                )
-              }
+              disabled={action.busy || asks.some((a) => !isAuthorized(a))}
+              onClick={() => void action.run(() => runValidation(i.id, authorized))}
             >
               Validate {shortOid(i.source_commit)}
             </Button>

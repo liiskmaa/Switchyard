@@ -18,7 +18,7 @@ impl Git {
         let args = ["check-ignore", "--stdin", "-z"];
         let out = self.run_with_input(root, &args, Some(input)).await?;
         // Exit status 1 means "none of the paths are ignored".
-        if !out.success && !out.stderr.is_empty() {
+        if !(out.success || out.code == Some(1) && out.stderr.is_empty()) {
             return Err(Git::failed(&args, out));
         }
         Ok(out.stdout.split('\0').filter(|s| !s.is_empty()).map(str::to_owned).collect())

@@ -25,7 +25,8 @@ pub mod worktree;
 pub use command::{Git, GitConfig};
 pub use error::GitError;
 pub use integrate::{
-    ChangeKind, ChangedFile, CommitInfo, DiffSummary, MergeOutcome, RepoState, WorktreeMerge,
+    ChangeKind, ChangedFile, CommitInfo, DiffSummary, FastForwardError, MergeOutcome, RepoState,
+    WorktreeMerge, conflict_blocks, looks_binary,
 };
 pub use repository::RepositoryRoot;
 pub use status::{GitStatus, parse_porcelain_v2};

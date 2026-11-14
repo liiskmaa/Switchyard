@@ -257,16 +257,16 @@ pub(crate) async fn dispatch(conn: &Connection, method: &str, params: Value) -> 
             typed::<methods::IntegrationsSettings, _, _>(params, |p| integrations::settings(state, p)).await
         }
         methods::IntegrationsSetSettings::NAME => {
-            typed::<methods::IntegrationsSetSettings, _, _>(params, |p| integrations::set_settings(state, p))
+            typed::<methods::IntegrationsSetSettings, _, _>(params, |p| integrations::set_settings(conn, p))
                 .await
         }
         methods::IntegrationsSetCommand::NAME => {
-            typed::<methods::IntegrationsSetCommand, _, _>(params, |p| integrations::set_command(state, p))
+            typed::<methods::IntegrationsSetCommand, _, _>(params, |p| integrations::set_command(conn, p))
                 .await
         }
         methods::IntegrationsDeleteCommand::NAME => {
             typed::<methods::IntegrationsDeleteCommand, _, _>(params, |p| {
-                integrations::delete_command(state, p)
+                integrations::delete_command(conn, p)
             })
             .await
         }

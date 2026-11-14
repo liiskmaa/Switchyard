@@ -120,5 +120,11 @@ Migration 0005 replaces the never-written milestone-1 placeholders `tasks`, `mes
   exit status, bounded output).
 - `task_assignments.review_tree`: the Git tree a review saw. See [integrations.md](integrations.md).
 
+### Integration operations (migration 0007)
+- `integration_operations`: each Core-owned operation (ADR 0032) with kind, status
+  (`running` | `completed` | `failed` | `interrupted`), requester, error and the workspace status it
+  replaced. At most one `running` per integration (unique partial index). Rows still `running` at
+  startup were interrupted and are settled from Git.
+
 ### Reserved, not written yet
 `decisions`.

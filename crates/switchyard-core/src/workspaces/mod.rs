@@ -132,8 +132,12 @@ impl WorkspaceService {
     }
 
     /// Marks a settled, session-free workspace `integrating` while Core runs
-    /// an integration step in it. Fails if a session is attached.
-    pub(crate) async fn begin_integration_op(&self, id: Uuid) -> Result<WorkspaceRecord, ProtocolError> {
+    /// an integration step in it. Fails if a session is attached. Returns the
+    /// workspace and the status it had before.
+    pub(crate) async fn begin_integration_op(
+        &self,
+        id: Uuid,
+    ) -> Result<(WorkspaceRecord, WorkspaceStatus), ProtocolError> {
         let now = now_ms();
         let (before, after) = self
             .commit_checked(move |tx| {
@@ -172,7 +176,7 @@ impl WorkspaceService {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(id, before);
-        Ok(after)
+        Ok((after, before))
     }
 
     /// Returns an `integrating` workspace to `completed` if the operator had

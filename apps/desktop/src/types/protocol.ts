@@ -810,6 +810,21 @@ export interface Integration {
   created_at_ms: number;
   updated_at_ms: number;
   completed_at_ms: number | null;
+  /** The latest Core-owned operation (ADR 0032): running, or how the last one ended. */
+  operation: IntegrationOperation | null;
+}
+
+export type IntegrationOperationKind = "approve" | "commit_workspace" | "update_from_target" | "abort_resolution" | "validate";
+
+/** A Core-owned operation. It continues when the client disconnects. */
+export interface IntegrationOperation {
+  id: Uuid;
+  kind: IntegrationOperationKind;
+  status: "running" | "completed" | "failed" | "interrupted";
+  requested_by: string;
+  error: string | null;
+  started_at_ms: number;
+  ended_at_ms: number | null;
 }
 
 export interface CommitSummary {

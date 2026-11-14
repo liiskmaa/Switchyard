@@ -161,15 +161,15 @@ client detect a restart. `seq` stays continuous across restarts because it lives
 | `integrations.list` | `{project_id?, task_id?, include_closed?, limit?}` | `{integrations: [Integration]}`, newest first |
 | `integrations.get` | `{integration_id}` | `IntegrationDetail`: `{integration, runs: [ValidationRun] (newest first), plan: [{command_id, name, command_line, policy_decision: allow\|ask\|deny, policy_explanation}]}` |
 | `integrations.create` | `{task_id?, workspace_id?, target_branch?}` | `{integration}` bound to the workspace branch tip and the target tip (default target: the branch checked out in the project checkout). `invalid_params` for another project, a `switchyard/*` or option-like target, a missing branch; `conflict` if the workspace has an unfinished integration. |
-| `integrations.refresh` | `{integration_id}` | `{integration}` re-read from Git and rebound to the current commits; any approver is cleared |
+| `integrations.refresh` | `{integration_id}` | `{integration}` re-read from Git and rebound to the current commits; any approver is cleared. An integration left `integrating`/`validating` with no running operation is settled from Git instead (ADR 0032). `conflict` while an operation runs. |
 | `integrations.changes` | `{integration_id}` | `IntegrationChanges` for the bound commits: commits `target..source`, files from the merge base (renames, binaries, counts), `diverged`, and the workspace's uncommitted files |
 | `integrations.patch` | `{integration_id, path?, uncommitted?}` | `{patch, truncated}` (cut at 1 MiB) |
-| `integrations.commit_workspace` | `{integration_id, message}` | `{integration}`; commits everything in the workspace (completes a resolution; refused while conflict markers remain) |
-| `integrations.update_from_target` | `{integration_id}` | `{integration}`; merges the target into the workspace; conflicts → `resolving`. The target never changes. |
-| `integrations.abort_resolution` | `{integration_id}` | `{integration}`; `git merge --abort` in the workspace |
+| `integrations.commit_workspace` | `{integration_id, message}` | `{integration}`; commits everything in the workspace (completes a resolution; refused while any file to be committed has new conflict blocks, staged or not, or a markerless conflict is unresolved). A Core-owned operation. |
+| `integrations.update_from_target` | `{integration_id}` | `{integration}`; merges the target into the workspace; conflicts → `resolving`. The target never changes; refused if an untracked or ignored file is in the way. A Core-owned operation. |
+| `integrations.abort_resolution` | `{integration_id}` | `{integration}`; `git merge --abort` in the workspace. A Core-owned operation. |
 | `integrations.validate` | `{integration_id, authorize?: [{command_id, command_line}]}` | `{integration, run}`; an authorization covers a command only while its `command_line` is the one shown in the plan. Refused commands (policy `deny`, or `ask` not authorized) mean nothing runs; otherwise runs in the background (`validating`) |
 | `integrations.cancel_validation` | `{integration_id}` | `{integration}`; stops the running commands |
-| `integrations.approve` | `{integration_id, source_commit, target_commit}` | `{integration}` (`integrated` or `failed`). `conflict` if the commits are not the bound ones or moved (the integration is re-prepared), or it is already integrated; `invalid_state` unless `ready` |
+| `integrations.approve` | `{integration_id, source_commit, target_commit}` | `{integration}` (`integrated` or `failed`). `conflict` if the commits are not the bound ones or moved (the integration is re-prepared), it is already integrated, or an operation is running; `invalid_state` unless `ready`. A Core-owned operation: if the client disconnects, it completes anyway. |
 | `integrations.cancel` | `{integration_id, reason?}` | `{integration}` (`cancelled`); nothing in Git changes |
 | `integrations.settings` / `integrations.set_settings` | `{project_id}` / `{project_id, require_review}` | `{project_id, require_review, revision, commands: [ValidationCommand]}` |
 | `integrations.set_command` | `{project_id, command_id?, name, argv: [string], timeout_secs (1..=14400), enabled?, position?}` | settings; argv is run directly, never through a shell |
@@ -245,7 +245,9 @@ Integration      { id, project_id, task_id?, workspace_id, workspace_name?, sour
                    validating|ready|integrating|integrated|failed|cancelled, status_reason?,
                    blockers: [{code, message}], preflight: {facts, blockers, summary, require_review},
                    prepared_at_ms, approved_by?, approved_at_ms?, merge_commit?, method?, failure?,
-                   revision, created_at_ms, updated_at_ms, completed_at_ms? }
+                   revision, created_at_ms, updated_at_ms, completed_at_ms?,
+                   operation?: {id, kind, status: running|completed|failed|interrupted, requested_by,
+                   error?, started_at_ms, ended_at_ms?} }
 ValidationRun    { id, source_commit, status: running|passed|failed|cancelled|interrupted,
                    requested_by?, started_at_ms, ended_at_ms?, steps: [{ id, position, name,
                    command_line, cwd, timeout_secs, policy_decision, policy_explanation,
@@ -336,6 +338,10 @@ the registration is kept and `projects.git_status` returns `repository_unavailab
 | `integration.approved` | `{integration_id, source_commit, target_commit, merge_commit, method: ref_update\|checkout_fast_forward, approved_by}`; recorded before the target moves |
 | `integration.integrated` | `{integration_id, target_branch, merge_commit, source_commit, target_commit, recovered}` |
 | `integration.failed` | `{integration_id, reason, target_moved}` |
+| `integration.operation_started` | `{integration_id, operation_id, kind: approve\|commit_workspace\|update_from_target\|abort_resolution\|validate, requested_by}` |
+| `integration.operation_finished` | `{integration_id, operation_id, kind, status: completed\|failed\|interrupted, error?}` |
+| `integration.settings_changed` | `{project_id, require_review_before, require_review_after, revision, changed_by}` |
+| `integration.validation_command_changed` | `{project_id, command_id, action: created\|updated\|deleted, before?, after?, changed_by}`; `before`/`after`: `{name, command_line, timeout_secs, enabled, position}` |
 | `files.changed` | `{changes: [{path, kind: created\|modified\|deleted\|renamed, from?}], dropped}`: what the filesystem reported in one workspace (debounced, `.git` and ignored paths excluded). Paths are relative to the workspace root; the context carries project, workspace and session. |
 
 Agent events carry `project_id`, `workspace_id`, `session_id` and `agent_id` in the envelope; workspace events carry `project_id` and `workspace_id`; task events carry `project_id` and `task_id` (and `workspace_id` for assignment events); integration events carry `project_id`, `workspace_id` and (when linked) `task_id`, with `integration_id` in the payload. `events.list` also accepts `session_id` and `task_id`.

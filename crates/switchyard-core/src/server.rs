@@ -43,6 +43,9 @@ pub(crate) async fn run(listener: UnixListener, owner_uid: u32, state: CoreState
     let reason = state.shutdown.borrow().clone().unwrap_or_default();
     // Agents first, so their final events reach still-connected clients.
     state.agents.shutdown().await;
+    // Validation runs are stopped; authorized Git operations get a bounded
+    // grace to finish (ADR 0032).
+    state.integrations.shutdown(state.config.operation_shutdown_grace).await;
     announce_stopping(&state, &reason).await;
     state.closing.send_replace(true);
 

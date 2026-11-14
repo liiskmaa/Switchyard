@@ -1,5 +1,5 @@
 import type { Tone } from "../../components/ui";
-import type { Integration, IntegrationStatus, RunStatus, StepStatus } from "../../types/protocol";
+import type { Integration, IntegrationOperationKind, IntegrationStatus, RunStatus, StepStatus } from "../../types/protocol";
 
 export const STATUS_LABEL: Record<IntegrationStatus, string> = {
   open: "Not ready",
@@ -78,8 +78,39 @@ export function integrationActions(i: Integration): IntegrationActions {
     validate: idle && sourceFinal && (i.preflight.facts?.validations_configured ?? 0) > 0,
     approve: s === "ready" && i.blockers.length === 0,
     cancel: s !== "integrated" && s !== "cancelled" && s !== "integrating" && s !== "validating",
-    refresh: idle || s === "resolving",
+    // While no Core operation works on it, an integrating/validating
+    // integration can be settled from Git again (after a Core restart).
+    refresh: idle || s === "resolving" || ((s === "integrating" || s === "validating") && !operationRunning(i)),
   };
+}
+
+export function operationRunning(i: Integration): boolean {
+  return i.operation?.status === "running";
+}
+
+const OPERATION_LABEL: Record<IntegrationOperationKind, string> = {
+  approve: "Integrating the approved commits",
+  commit_workspace: "Committing the workspace",
+  update_from_target: "Updating the workspace from the target",
+  abort_resolution: "Aborting the conflict resolution",
+  validate: "Validating",
+};
+
+/** One line about the latest Core-owned operation, or null if there is nothing to say. */
+export function operationLine(i: Integration): { tone: "info" | "warn" | "error"; text: string } | null {
+  const op = i.operation;
+  if (!op) return null;
+  const what = OPERATION_LABEL[op.kind];
+  switch (op.status) {
+    case "running":
+      return { tone: "info", text: `${what} (requested by ${op.requested_by}). Core continues even if you close the app or lose the connection.` };
+    case "failed":
+      return { tone: "error", text: `${what} did not complete: ${op.error ?? "no reason recorded"}` };
+    case "interrupted":
+      return { tone: "warn", text: `${what} was interrupted because Core stopped. ${op.error ?? ""}`.trim() };
+    default:
+      return null;
+  }
 }
 
 /** The consequences of approving, in plain words. */
@@ -88,7 +119,7 @@ export function consequences(i: Integration): string[] {
   const lines = [
     `Switchyard creates a merge commit whose parents are ${i.target_branch} at ${shortOid(i.target_commit)} and ${i.source_branch} at ${shortOid(i.source_commit)}.`,
     checkout
-      ? `${i.target_branch} is checked out at ${checkout.path}: that checkout is fast-forwarded to the merge commit. Git refuses rather than overwrite local changes.`
+      ? `${i.target_branch} is checked out at ${checkout.path}: that checkout is fast-forwarded to the merge commit. Git refuses rather than overwrite local changes, and Switchyard refuses if an untracked or ignored file is in the way.`
       : `${i.target_branch} is moved to the merge commit only if it is still at ${shortOid(i.target_commit)} (compare-and-swap).`,
     "Nothing is pushed or deployed. The workspace and its branch are left as they are.",
     "If either commit has changed by the time you approve, nothing happens and the integration is checked again.",

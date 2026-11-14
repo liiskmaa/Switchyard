@@ -41,6 +41,10 @@ pub struct CoreConfig {
     pub live_capacity: usize,
     /// Debounce window for filesystem change batches.
     pub file_debounce: Duration,
+    /// How long shutdown waits for running integration operations (a Git
+    /// step that was authorized) before stopping them; stopped ones are
+    /// settled from Git at the next start (ADR 0032).
+    pub operation_shutdown_grace: Duration,
     /// Test hook: delay between persisting a confirmed cleanup and its final
     /// filesystem check, to exercise changes made in that window. Zero in
     /// production; not configurable from the environment.
@@ -68,6 +72,7 @@ impl CoreConfig {
             agent_term_grace: Duration::from_secs(5),
             live_capacity: 1024,
             file_debounce: Duration::from_millis(500),
+            operation_shutdown_grace: Duration::from_secs(60),
             cleanup_test_pause: Duration::ZERO,
         }
     }

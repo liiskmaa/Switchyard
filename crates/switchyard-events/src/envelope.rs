@@ -351,6 +351,48 @@ pub enum DomainEvent {
     /// target branch is somewhere unexpected.
     #[serde(rename = "integration.failed")]
     IntegrationFailed { integration_id: Uuid, reason: String, target_moved: bool },
+    /// Core started an operation it owns (ADR 0032): `approve`,
+    /// `commit_workspace`, `update_from_target`, `abort_resolution`,
+    /// `validate`. It runs to completion even if the requesting client
+    /// disconnects.
+    #[serde(rename = "integration.operation_started")]
+    IntegrationOperationStarted {
+        integration_id: Uuid,
+        operation_id: Uuid,
+        kind: String,
+        requested_by: String,
+    },
+    /// The operation ended: `completed`, `failed` (with `error`) or
+    /// `interrupted` (Core stopped during it; settled from Git at startup).
+    #[serde(rename = "integration.operation_finished")]
+    IntegrationOperationFinished {
+        integration_id: Uuid,
+        operation_id: Uuid,
+        kind: String,
+        status: String,
+        error: Option<String>,
+    },
+    /// The operator changed the project's integration settings.
+    #[serde(rename = "integration.settings_changed")]
+    IntegrationSettingsChanged {
+        project_id: Uuid,
+        require_review_before: bool,
+        require_review_after: bool,
+        revision: i64,
+        changed_by: String,
+    },
+    /// The operator created, changed or deleted a validation command.
+    /// `before`/`after`: `{name, command_line, timeout_secs, enabled, position}`.
+    #[serde(rename = "integration.validation_command_changed")]
+    IntegrationValidationCommandChanged {
+        project_id: Uuid,
+        command_id: Uuid,
+        /// `created`, `updated` or `deleted`.
+        action: String,
+        before: Option<Value>,
+        after: Option<Value>,
+        changed_by: String,
+    },
 }
 
 /// One observed filesystem change, relative to the workspace root.
@@ -416,6 +458,10 @@ impl DomainEvent {
             Self::IntegrationApproved { .. } => "integration.approved",
             Self::IntegrationIntegrated { .. } => "integration.integrated",
             Self::IntegrationFailed { .. } => "integration.failed",
+            Self::IntegrationOperationStarted { .. } => "integration.operation_started",
+            Self::IntegrationOperationFinished { .. } => "integration.operation_finished",
+            Self::IntegrationSettingsChanged { .. } => "integration.settings_changed",
+            Self::IntegrationValidationCommandChanged { .. } => "integration.validation_command_changed",
         }
     }
 
@@ -580,6 +626,34 @@ mod tests {
                 from: "ready".into(),
                 to: "integrating".into(),
                 reason: None,
+            },
+            DomainEvent::IntegrationOperationStarted {
+                integration_id: new_id(),
+                operation_id: new_id(),
+                kind: "approve".into(),
+                requested_by: "desktop".into(),
+            },
+            DomainEvent::IntegrationOperationFinished {
+                integration_id: new_id(),
+                operation_id: new_id(),
+                kind: "approve".into(),
+                status: "failed".into(),
+                error: Some("x".into()),
+            },
+            DomainEvent::IntegrationSettingsChanged {
+                project_id: new_id(),
+                require_review_before: true,
+                require_review_after: false,
+                revision: 2,
+                changed_by: "desktop".into(),
+            },
+            DomainEvent::IntegrationValidationCommandChanged {
+                project_id: new_id(),
+                command_id: new_id(),
+                action: "updated".into(),
+                before: Some(serde_json::json!({"name": "a"})),
+                after: None,
+                changed_by: "desktop".into(),
             },
         ];
         for event in samples {

@@ -20,9 +20,16 @@ approved. Agents leave their work uncommitted (M6 tells them not to commit).
   cannot conflict. If the target moved, the operator **updates the workspace from the target**
   (`git merge --no-ff T` inside the Core-owned worktree). Conflicts stay in the workspace (`resolving`)
   for the operator, or an agent assigned to that workspace, to resolve; the operator then commits
-  the resolution or aborts it (`git merge --abort`). Core refuses to commit a resolution while a file
-  still contains conflict markers, or while a conflicted path that has no markers (one side deleted or
-  renamed it, or a binary file) has not been explicitly staged (`git add`) by whoever resolved it. The target branch is never used to resolve anything.
+  the resolution or aborts it (`git merge --abort`). Core refuses to commit while a conflicted path that
+  has no markers (one side deleted or renamed it, or a binary file) has not been explicitly staged
+  (`git add`) by whoever resolved it, and while **any** file about to be committed, staged or not, has
+  new conflict blocks. A conflict block is a line starting with at least seven `<` followed by a space
+  or the line end, later a line of at least seven `=`, later a line starting with at least seven `>`
+  followed by a space or the line end. A file has new blocks if it has more than the same path in HEAD
+  and, during a merge, in `MERGE_HEAD`. Isolated marker-like lines (a heading underline, a quoted
+  marker) are not blocks, and content either side already had is allowed. A file that gains a complete
+  block outside a merge is refused too; to commit such content deliberately, commit it in the workspace
+  with Git directly. Binary files are not scanned. The target branch is never used to resolve anything.
 - **Execution** (under the per-project repository lock):
   1. re-read every fact;
   2. require `S` and `T` unchanged and no blockers;
@@ -32,11 +39,23 @@ approved. Agents leave their work uncommitted (M6 tells them not to commit).
   5. move the target. If the target is not checked out: `git update-ref refs/heads/<target> <merge>
      <T>`, a compare-and-swap that Git applies atomically. If it is checked out (usually the project
      checkout): `git merge --ff-only <merge>` in that checkout. That requires no local changes to
-     tracked files, and Git refuses rather than overwrite local or untracked files. Core also checks,
-     before both merges it runs in a working tree (update from the target, fast-forward), that no
-     ignored file would be overwritten (`--no-overwrite-ignore` alone does not stop Git's three-way
-     merge from replacing an ignored file), and that the target checkout is still on the target
-     branch at `T`.
+     tracked files, and Git refuses rather than overwrite local or untracked files. The fast-forward is
+     bound to the target branch: Core checks the checkout is on it at `T` immediately before, and
+     afterwards that it still is and that the branch is at the merge commit (if the checkout was
+     switched meanwhile, Git moved whatever was checked out; that is reported).
+- **Untracked and ignored files are never replaced or removed** by a merge Core runs in a working tree
+  (update from the target, the fast-forward, aborting a resolution). `--no-overwrite-ignore` does not
+  stop Git's three-way merge from replacing an ignored file (directory/file clashes, directory-rename
+  detection), so Core computes the paths the operation writes: for a merge, the paths the merge result
+  (`merge-tree --write-tree`, the same machinery as `git merge`) changes relative to HEAD, plus
+  everything the incoming side changed since the merge base; for a fast-forward, the diff; for an
+  abort, everything that differs from HEAD. It refuses if any untracked file (ignored or not) is at
+  one of those paths, under one of them, or where one of them needs a directory (an ancestor that is a
+  file or symlink). Matching ignores case. Any error refuses.
+- **Target race:** the ref compare-and-swap is used only when the target is not checked out. Core
+  re-checks that right before updating it and refuses if it has been checked out since preparation; if
+  it was checked out in the instant between that check and the update, the integration is recorded
+  with a note that the checkout's files still show the previous commit.
 - **Commit binding:** an approval names `S` and `T`. A request with other commits, or any change
   detected under the lock, refuses the approval and re-prepares the integration. Preparing again
   clears any recorded approver.

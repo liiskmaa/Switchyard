@@ -125,3 +125,28 @@ mod tests {
         assert_eq!(command_line(&["echo".into(), "it's".into()]), "echo 'it'\\''s'");
     }
 }
+
+/// The final status of a validation run. `observed` is what running the
+/// steps produced; a run is `Passed` only if it had at least one step and
+/// every step's success was both observed and recorded (`confirmed` counts
+/// those). Anything less is `Failed` (or the observed failure/cancellation).
+pub fn final_run_status(expected: usize, confirmed: usize, observed: RunStatus) -> RunStatus {
+    match observed {
+        RunStatus::Passed if expected == 0 || confirmed != expected => RunStatus::Failed,
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod final_status_tests {
+    use super::*;
+
+    #[test]
+    fn a_run_passes_only_with_every_step_confirmed() {
+        assert_eq!(final_run_status(0, 0, RunStatus::Passed), RunStatus::Failed, "zero commands");
+        assert_eq!(final_run_status(3, 2, RunStatus::Passed), RunStatus::Failed, "partial execution");
+        assert_eq!(final_run_status(3, 3, RunStatus::Passed), RunStatus::Passed, "all executed and recorded");
+        assert_eq!(final_run_status(3, 3, RunStatus::Cancelled), RunStatus::Cancelled);
+        assert_eq!(final_run_status(3, 1, RunStatus::Failed), RunStatus::Failed);
+    }
+}

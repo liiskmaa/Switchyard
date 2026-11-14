@@ -24,8 +24,8 @@ Rust process, **Switchyard Core**. The Tauri desktop app is only a client.
   See `docs/architecture/tasks.md` and ADRs 0023–0027.
 - Milestone 7: change integration (`crates/switchyard-integrations` is pure: state machine, blockers,
   validation rules; `crates/switchyard-git/src/integrate.rs`, `crates/switchyard-core/src/integrations/`,
-  `migrations/0006_integrations.sql`, `apps/desktop/src/features/integrations`). See
-  `docs/architecture/integrations.md` and ADRs 0028–0031.
+  `migrations/0006_integrations.sql`, `migrations/0007_integration_operations.sql`,
+  `apps/desktop/src/features/integrations`). See `docs/architecture/integrations.md` and ADRs 0028–0032.
 
 The verified Claude CLI behaviour is in `docs/architecture/agent-integration.md`, the verified Codex
 app-server behaviour (0.166.0) in `docs/architecture/codex-integration.md`, and the contract in
@@ -50,7 +50,7 @@ cargo test -p switchyard-core --test workspaces         # worktrees, concurrent 
 cargo test -p switchyard-git --test worktrees           # git worktree operations on temp repos
 cargo test -p switchyard-core --test codex              # Codex sessions via the fake app-server
 cargo test -p switchyard-core --test tasks              # tasks via both fakes ([fake:report:HEX] scenarios)
-cargo test -p switchyard-core --test integrations       # integration: inspection, validation, approval, recovery
+cargo test -p switchyard-core --test integrations       # integration: inspection, validation, approval, operations, recovery
 cargo test -p switchyard-git --test integrate           # Git integration primitives on temp repos
 SWITCHYARD_REAL_CLAUDE=1 cargo test -p switchyard-core --test real_claude -- --ignored   # real CLI, paid
 SWITCHYARD_REAL_CODEX=1 cargo test -p switchyard-core --test real_codex -- --ignored     # real CLI, paid
@@ -169,10 +169,20 @@ When running Core or the app manually, set `SWITCHYARD_DATA_DIR` (and, if that p
     a target branch, via `approve` with the exact bound commits.
   - Preparation (`facts.rs`) reads every fact from Git and Core's records, never from agent output.
     The source must contain the target; conflicts are resolved in the workspace, never on the target.
-  - Core work in a workspace (commit, update, validation) holds the project `repo_lock` and marks the
-    workspace `integrating` (`begin_integration_op`/`end_integration_op`).
+  - Every Git-changing step (approve, workspace commit/update/abort, a validation run) is a Core-owned
+    operation (`operations.rs`, ADR 0032): start it with `run_op`/`spawn_op`, never do the work in the
+    request future (a client disconnect aborts that). One per integration; mark the workspace with
+    `begin_workspace_step` and release it on every path; shutdown waits, then stops; startup and
+    `refresh` settle stranded ones from Git.
+  - Merges in a working tree refuse when any untracked/ignored file is at, under, or an ancestor of a
+    path the merge writes (`paths_written_by_merge`, `untracked_files_at_risk`); commits refuse new
+    conflict blocks in any file (`files_with_new_conflict_blocks`). Read Git answers by exact exit
+    code, never "failed without output means no".
   - Validation commands go through `switchyard_policy::evaluate`; `ask` needs explicit operator
-    authorization. Never run them through a shell.
+    authorization bound to the exact command line. Never run them through a shell. Commands, decisions,
+    steps and the run's config are one transaction; the runner executes exactly those steps and a run
+    passes only with every step's success recorded. Settings/command changes are journaled in the same
+    transaction (`integration.settings_changed`, `integration.validation_command_changed`).
   - Record the merge commit before moving the target (`integrating`); recovery settles from the
     target branch tip.
 - Text edits made with ad-hoc scripts can silently no-op after `cargo fmt` reflows code. Verify

@@ -45,6 +45,8 @@ const REDIRECTING_ENV: &[&str] = &[
 
 pub(crate) struct Output {
     pub success: bool,
+    /// The exit code; `None` if Git was killed by a signal.
+    pub code: Option<i32>,
     pub status: String,
     pub stdout: String,
     pub stderr: String,
@@ -146,6 +148,7 @@ impl Git {
         tracing::debug!(args = %joined, dir = %dir.display(), status = %output.status, "git");
         Ok(Output {
             success: output.status.success(),
+            code: output.status.code(),
             status: output.status.to_string(),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),

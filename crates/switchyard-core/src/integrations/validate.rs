@@ -14,7 +14,9 @@ use std::time::Duration;
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 use switchyard_events::{DomainEvent, new_id, now_ms};
-use switchyard_integrations::{IntegrationStatus, MAX_OUTPUT_BYTES, RunStatus, StepStatus, command_line};
+use switchyard_integrations::{
+    IntegrationStatus, MAX_OUTPUT_BYTES, RunStatus, StepStatus, command_line, final_run_status,
+};
 use switchyard_policy::{Decision, EvaluationInput, Operation, OperationCategory, RequestScope, evaluate};
 use switchyard_protocol::methods::IntegrationDetail;
 use switchyard_protocol::model::{Integration, ValidationPlanEntry, ValidationRunInfo, ValidationStepInfo};
@@ -24,10 +26,10 @@ use switchyard_storage::integrations::{
 };
 use switchyard_storage::{Connection, StorageError, policies};
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::sync::watch;
+use tokio::sync::{oneshot, watch};
 use uuid::Uuid;
 
-use super::{IntegrationService, context, invalid_state, transition, wire_from_conn};
+use super::{IntegrationService, Op, OpKind, context, invalid_state, transition, wire_from_conn};
 use crate::handlers::errors;
 use crate::journal::{commit_checked, draft};
 
@@ -115,9 +117,32 @@ fn run_wire(c: &Connection, r: RunRecord) -> Result<ValidationRunInfo, StorageEr
     })
 }
 
+/// One line of a run's configuration: what it ran and why it was allowed.
+fn config_line(command_id: Uuid, command_line: &str, timeout_secs: u32, decision: &str) -> String {
+    format!("{command_id}\t{command_line}\t{timeout_secs}\t{decision}")
+}
+
+/// The configuration a run executed, from its steps: a passed run counts
+/// only while the project's current configuration ([`validation_config`])
+/// is identical.
+fn config_of_steps(steps: &[StepRecord]) -> String {
+    steps
+        .iter()
+        .map(|s| {
+            config_line(
+                s.command_id.unwrap_or_else(Uuid::nil),
+                &s.command_line,
+                s.timeout_secs,
+                &s.policy_decision,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// What a validation run is valid for besides the source commit: the enabled
 /// commands (exact command lines and timeouts) and the policy's decision for
-/// each. A passed run counts only while this is unchanged.
+/// each, as a run would record them now.
 pub(super) fn validation_config(
     c: &Connection,
     project_id: Uuid,
@@ -126,13 +151,7 @@ pub(super) fn validation_config(
     let mut lines = Vec::new();
     for cmd in store::commands(c, project_id)?.into_iter().filter(|cmd| cmd.enabled) {
         let e = evaluate_command(c, project_id, workspace_id, &cmd.argv)?;
-        lines.push(format!(
-            "{}\t{}\t{}\t{}",
-            cmd.id,
-            command_line(&cmd.argv),
-            cmd.timeout_secs,
-            e.decision.as_str()
-        ));
+        lines.push(config_line(cmd.id, &command_line(&cmd.argv), cmd.timeout_secs, e.decision.as_str()));
     }
     Ok(lines.join("\n"))
 }
@@ -324,17 +343,44 @@ impl IntegrationService {
             .map_err(errors::storage)
     }
 
-    /// Starts a validation run for the integration's current source commit.
+    /// Starts a validation run for the integration's current source commit,
+    /// as a Core-owned operation (ADR 0032) that lasts until the run ends.
     /// `authorize`: commands the policy asks about that the operator
-    /// authorizes for this run. If any command is refused (denied, or asked
-    /// about and not authorized), nothing runs.
+    /// authorizes for this run, each with the exact command line shown. If
+    /// any command is refused (denied, or asked about and not authorized),
+    /// nothing runs. Returns once the run is recorded.
     pub async fn validate(
         &self,
         id: Uuid,
         authorize: Vec<switchyard_protocol::methods::ValidationAuthorization>,
         actor: String,
     ) -> Result<(Integration, ValidationRunInfo), ProtocolError> {
-        let claim = self.claim(id)?;
+        let svc = self.clone();
+        let by = actor.clone();
+        let (started_tx, started_rx) = oneshot::channel();
+        let done = self
+            .spawn_op(id, OpKind::Validate, actor, move |op| async move {
+                svc.validate_work(op, id, authorize, by, started_tx).await
+            })
+            .await?;
+        match started_rx.await {
+            Ok(started) => started,
+            // The work ended before a run started: its result says why.
+            Err(_) => match done.await {
+                Ok(Err(e)) => Err(e),
+                _ => Err(ProtocolError::new(ErrorCode::Internal, "the validation stopped before it started")),
+            },
+        }
+    }
+
+    async fn validate_work(
+        &self,
+        op: Op,
+        id: Uuid,
+        authorize: Vec<switchyard_protocol::methods::ValidationAuthorization>,
+        actor: String,
+        started: oneshot::Sender<Result<(Integration, ValidationRunInfo), ProtocolError>>,
+    ) -> Result<(), ProtocolError> {
         let i = self.prepare(id).await?;
         let blocking: Vec<String> = super::blockers_of(&i)
             .into_iter()
@@ -345,28 +391,15 @@ impl IntegrationService {
             return Err(invalid_state(format!("the source cannot be validated yet: {}", blocking.join(" "))));
         }
         let project_id = i.project_id;
-        let commands: Vec<CommandRecord> = self
-            .inner
-            .storage
-            .call(move |c| Ok(store::commands(c, project_id)?.into_iter().filter(|c| c.enabled).collect()))
-            .await
-            .map_err(errors::storage)?;
-        if commands.is_empty() {
-            return Err(invalid_state("no validation commands are configured for this project"));
-        }
         let w = self.workspace_of(&i).await?;
         let cwd = PathBuf::from(&w.path);
         let run_id = new_id();
         let source = i.source_commit.clone();
 
         // Lock the workspace first: no session may start while commands run.
-        self.inner.workspaces.begin_integration_op(w.id).await.map_err(|e| {
-            if e.code == ErrorCode::WorkspaceOccupied {
-                invalid_state("an agent session is running in the workspace; stop it first")
-            } else {
-                e
-            }
-        })?;
+        self.begin_workspace_step(op, w.id).await?;
+        // One transaction: the commands, their policy decisions, the recorded
+        // configuration and the steps that will run are the same snapshot.
         let created = {
             let (actor, cwd, source) = (actor.clone(), cwd.display().to_string(), source.clone());
             commit_checked(&self.inner.storage, &self.inner.bus, move |tx| {
@@ -379,14 +412,64 @@ impl IntegrationService {
                         "the source commit changed meanwhile",
                     )));
                 }
-                let config = validation_config(tx, project_id, current.workspace_id)?;
+                let commands: Vec<CommandRecord> =
+                    store::commands(tx, project_id)?.into_iter().filter(|c| c.enabled).collect();
+                if commands.is_empty() {
+                    return Ok(Err(invalid_state("no validation commands are configured for this project")));
+                }
+                let mut steps = Vec::new();
+                for (pos, cmd) in commands.iter().enumerate() {
+                    let e = evaluate_command(tx, project_id, current.workspace_id, &cmd.argv)?;
+                    let line = command_line(&cmd.argv);
+                    let (authorized_by, status) = match e.decision {
+                        Decision::Allow => (Some("policy".to_owned()), StepStatus::Pending),
+                        // Authorization names the exact command line the operator saw.
+                        Decision::Ask
+                            if authorize.iter().any(|a| a.command_id == cmd.id && a.command_line == line) =>
+                        {
+                            (Some(actor.clone()), StepStatus::Pending)
+                        }
+                        Decision::Ask | Decision::Deny => (None, StepStatus::Refused),
+                    };
+                    steps.push(StepRecord {
+                        id: new_id(),
+                        run_id,
+                        position: pos as i64,
+                        command_id: Some(cmd.id),
+                        name: cmd.name.clone(),
+                        argv: cmd.argv.clone(),
+                        command_line: line,
+                        cwd: cwd.clone(),
+                        timeout_secs: cmd.timeout_secs,
+                        policy_decision: e.decision.as_str().into(),
+                        policy_reason: e.reason.as_str().into(),
+                        policy_explanation: e.explanation.clone(),
+                        policy_rule_id: e.deciding_rule.as_ref().map(|r| r.id),
+                        policy_revision: e.policy_revision,
+                        authorized_by,
+                        status,
+                        exit_code: None,
+                        signal: None,
+                        stdout: None,
+                        stderr: None,
+                        stdout_truncated: false,
+                        stderr_truncated: false,
+                        detail: (status == StepStatus::Refused).then(|| match e.decision {
+                            Decision::Deny => format!("denied by policy: {}", e.explanation),
+                            _ => "the policy asks for your authorization, which this run did not include"
+                                .into(),
+                        }),
+                        started_at_ms: None,
+                        ended_at_ms: None,
+                    });
+                }
                 store::insert_run(
                     tx,
                     &RunRecord {
                         id: run_id,
                         integration_id: id,
                         project_id,
-                        config,
+                        config: config_of_steps(&steps),
                         source_commit: source.clone(),
                         status: RunStatus::Running,
                         requested_by: Some(actor.clone()),
@@ -394,71 +477,21 @@ impl IntegrationService {
                         ended_at_ms: None,
                     },
                 )?;
-                let mut refused = 0;
-                for (pos, cmd) in commands.iter().enumerate() {
-                    let e = evaluate_command(tx, project_id, current.workspace_id, &cmd.argv)?;
-                    let (authorized_by, status) = match e.decision {
-                        Decision::Allow => (Some("policy".to_owned()), StepStatus::Pending),
-                        // Authorization names the exact command line the operator saw.
-                        Decision::Ask
-                            if authorize.iter().any(|a| {
-                                a.command_id == cmd.id && a.command_line == command_line(&cmd.argv)
-                            }) =>
-                        {
-                            (Some(actor.clone()), StepStatus::Pending)
-                        }
-                        Decision::Ask | Decision::Deny => (None, StepStatus::Refused),
-                    };
-                    if status == StepStatus::Refused {
-                        refused += 1;
-                    }
-                    store::insert_step(
-                        tx,
-                        &StepRecord {
-                            id: new_id(),
-                            run_id,
-                            position: pos as i64,
-                            command_id: Some(cmd.id),
-                            name: cmd.name.clone(),
-                            argv: cmd.argv.clone(),
-                            command_line: command_line(&cmd.argv),
-                            cwd: cwd.clone(),
-                            timeout_secs: cmd.timeout_secs,
-                            policy_decision: e.decision.as_str().into(),
-                            policy_reason: e.reason.as_str().into(),
-                            policy_explanation: e.explanation.clone(),
-                            policy_rule_id: e.deciding_rule.as_ref().map(|r| r.id),
-                            policy_revision: e.policy_revision,
-                            authorized_by,
-                            status,
-                            exit_code: None,
-                            signal: None,
-                            stdout: None,
-                            stderr: None,
-                            stdout_truncated: false,
-                            stderr_truncated: false,
-                            detail: (status == StepStatus::Refused).then(|| match e.decision {
-                                Decision::Deny => format!("denied by policy: {}", e.explanation),
-                                _ => "the policy asks for your authorization, which this run did not include"
-                                    .into(),
-                            }),
-                            started_at_ms: None,
-                            ended_at_ms: None,
-                        },
-                    )?;
+                for step in &steps {
+                    store::insert_step(tx, step)?;
                 }
                 drafts.push(draft(
                     DomainEvent::IntegrationValidationStarted {
                         integration_id: id,
                         run_id,
                         source_commit: source.clone(),
-                        commands: commands.iter().map(|c| command_line(&c.argv)).collect(),
+                        commands: steps.iter().map(|s| s.command_line.clone()).collect(),
                     },
                     &context(&current),
                 )?);
-                if refused > 0 {
+                if steps.iter().any(|s| s.status == StepStatus::Refused) {
                     // Nothing runs: every command needs its authorization.
-                    for s in store::steps_for_run(tx, run_id)? {
+                    for s in &steps {
                         if s.status == StepStatus::Pending {
                             store::finish_step(
                                 tx,
@@ -482,7 +515,7 @@ impl IntegrationService {
                         },
                         &context(&current),
                     )?);
-                    return Ok(Ok((false, drafts)));
+                    return Ok(Ok((None, drafts)));
                 }
                 let u = IntegrationUpdate {
                     status: Some(IntegrationStatus::Validating),
@@ -490,42 +523,55 @@ impl IntegrationService {
                     ..Default::default()
                 };
                 transition(tx, &current, u, now, &mut drafts)?;
-                Ok(Ok((true, drafts)))
+                Ok(Ok((Some(steps), drafts)))
             })
             .await
         };
-        let started = match created {
+        let steps = match created {
             Ok(s) => s,
             Err(e) => {
                 self.inner.workspaces.end_integration_op(w.id).await;
                 return Err(e);
             }
         };
-        if !started {
+        let run_info = |svc: IntegrationService| async move {
+            let run = svc
+                .inner
+                .storage
+                .call(move |c| {
+                    let r = store::get_run(c, run_id)?;
+                    run_wire(c, r)
+                })
+                .await
+                .map_err(errors::storage)?;
+            Ok::<_, ProtocolError>((svc.wire(id).await?, run))
+        };
+        let Some(steps) = steps else {
             self.inner.workspaces.end_integration_op(w.id).await;
             self.prepare(id).await?;
-        } else {
-            let (tx, rx) = watch::channel(false);
-            self.inner.cancels.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id, tx);
-            let svc = self.clone();
-            let workspace_id = w.id;
-            tokio::spawn(async move {
-                let _claim = claim;
-                svc.execute_run(id, run_id, workspace_id, cwd, source, rx).await;
-            });
+            let _ = started.send(run_info(self.clone()).await);
+            return Ok(());
+        };
+        let (tx, rx) = watch::channel(false);
+        self.inner.cancels.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(id, tx);
+        if self.inner.stopping.load(std::sync::atomic::Ordering::SeqCst) {
+            // Shutdown began meanwhile: the run is stopped like any other.
+            if let Some(c) =
+                self.inner.cancels.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id)
+            {
+                let _ = c.send(true);
+            }
         }
-        let run = self
-            .inner
-            .storage
-            .call(move |c| {
-                let r = store::get_run(c, run_id)?;
-                run_wire(c, r)
-            })
-            .await
-            .map_err(errors::storage)?;
-        Ok((self.wire(id).await?, run))
+        let _ = started.send(run_info(self.clone()).await);
+        self.execute_run(id, run_id, w.id, cwd, source, steps, rx).await;
+        Ok(())
     }
 
+    /// Runs exactly `steps` (the ones recorded with the run) in order. The
+    /// run is `passed` only if there was at least one step and every step's
+    /// success was both observed and recorded; any failure to record fails
+    /// it. Always releases the workspace and settles the integration.
+    #[allow(clippy::too_many_arguments)]
     async fn execute_run(
         &self,
         id: Uuid,
@@ -533,18 +579,19 @@ impl IntegrationService {
         workspace_id: Uuid,
         cwd: PathBuf,
         source: String,
+        steps: Vec<StepRecord>,
         mut cancel: watch::Receiver<bool>,
     ) {
         let git = self.inner.workspaces.git().clone();
-        let steps = match self.inner.storage.call(move |c| store::steps_for_run(c, run_id)).await {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::error!(%run_id, ?e, "cannot read validation steps");
-                Vec::new()
-            }
-        };
+        let expected = steps.len();
+        let mut confirmed = 0usize;
         let mut run_status = RunStatus::Passed;
+        let mut note: Option<String> = None;
         let mut stop = false;
+        if expected == 0 {
+            run_status = RunStatus::Failed;
+            note = Some("The run had no commands to execute; it does not count.".into());
+        }
         for step in steps {
             if stop {
                 let sid = step.id;
@@ -568,7 +615,7 @@ impl IntegrationService {
             }
             // The workspace must still be at the validated commit.
             let head = git.resolve_commit(&cwd, "HEAD").await.ok();
-            let (status, outcome) = if head.as_deref() != Some(source.as_str()) {
+            let (status, mut outcome) = if head.as_deref() != Some(source.as_str()) {
                 (
                     StepStatus::Error,
                     StepOutcome {
@@ -578,10 +625,34 @@ impl IntegrationService {
                 )
             } else {
                 let sid = step.id;
-                let _ = self.inner.storage.call(move |c| store::mark_step_running(c, sid, now_ms())).await;
-                run_command(&step.argv, &cwd, Duration::from_secs(u64::from(step.timeout_secs)), &mut cancel)
-                    .await
+                // A command whose start cannot be recorded does not run.
+                match self.inner.storage.call(move |c| store::mark_step_running(c, sid, now_ms())).await {
+                    Ok(true) => {
+                        run_command(
+                            &step.argv,
+                            &cwd,
+                            Duration::from_secs(u64::from(step.timeout_secs)),
+                            &mut cancel,
+                        )
+                        .await
+                    }
+                    other => {
+                        tracing::error!(%run_id, ?other, "cannot record the start of a validation step");
+                        (
+                            StepStatus::Error,
+                            StepOutcome {
+                                detail: Some("not run: its start could not be recorded".into()),
+                                ..Default::default()
+                            },
+                        )
+                    }
+                }
             };
+            if status == StepStatus::Cancelled
+                && self.inner.stopping.load(std::sync::atomic::Ordering::SeqCst)
+            {
+                outcome.detail = Some("stopped: Core is shutting down".into());
+            }
             if status != StepStatus::Passed {
                 stop = true;
                 run_status =
@@ -595,8 +666,10 @@ impl IntegrationService {
                 step.authorized_by.clone(),
             );
             let exit_code = outcome.exit_code;
-            let r = commit_checked(&self.inner.storage, &self.inner.bus, move |tx| {
-                store::finish_step(tx, sid, status, &outcome, now_ms())?;
+            let recorded = commit_checked(&self.inner.storage, &self.inner.bus, move |tx| {
+                if !store::finish_step(tx, sid, status, &outcome, now_ms())? {
+                    return Ok(Err(ProtocolError::new(ErrorCode::Internal, "the step was not running")));
+                }
                 let i = store::get_integration(tx, id)?;
                 let d = draft(
                     DomainEvent::IntegrationValidationStepFinished {
@@ -614,12 +687,26 @@ impl IntegrationService {
                 Ok(Ok(((), vec![d])))
             })
             .await;
-            if let Err(e) = r {
-                tracing::error!(%run_id, ?e, "cannot record a validation step");
+            match recorded {
+                Ok(()) if status == StepStatus::Passed => confirmed += 1,
+                Ok(()) => {}
+                Err(e) => {
+                    tracing::error!(%run_id, ?e, "cannot record a validation step");
+                    stop = true;
+                    if run_status == RunStatus::Passed {
+                        run_status = RunStatus::Failed;
+                    }
+                    note = Some("A command's result could not be recorded; the run does not count.".into());
+                }
             }
         }
+        let settled = final_run_status(expected, confirmed, run_status);
+        if settled != run_status {
+            run_status = settled;
+            note = note
+                .or_else(|| Some("Not every command's success was recorded; the run does not count.".into()));
+        }
         // The commands must not have changed what was validated.
-        let mut note = None;
         if run_status == RunStatus::Passed {
             let head = git.resolve_commit(&cwd, "HEAD").await.ok();
             let changed = match (head.as_deref(), self.inner.workspaces.record(workspace_id).await) {
@@ -640,34 +727,51 @@ impl IntegrationService {
             }
         }
         self.inner.cancels.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&id);
-        let note_for_reason = note.clone();
-        let finished = commit_checked(&self.inner.storage, &self.inner.bus, move |tx| {
-            let now = now_ms();
-            store::finish_run(tx, run_id, run_status, now)?;
+        if let Err(e) = self.end_run(id, run_id, &source, run_status).await {
+            tracing::error!(%run_id, ?e, "cannot record the end of a validation run");
+            // Never leave a pass that was not recorded as one: record a failure
+            // instead, or leave the run `running` (it then counts for nothing,
+            // and startup recovery marks it interrupted).
+            if run_status != RunStatus::Failed
+                && let Err(e) = self.end_run(id, run_id, &source, RunStatus::Failed).await
+            {
+                tracing::error!(%run_id, ?e, "cannot record the validation run as failed either");
+            }
+            note = Some("The validation result could not be recorded; the run does not count.".into());
+        }
+        self.inner.workspaces.end_integration_op(workspace_id).await;
+        self.prepare_or_fail(id, note).await;
+    }
+
+    async fn end_run(
+        &self,
+        id: Uuid,
+        run_id: Uuid,
+        source: &str,
+        status: RunStatus,
+    ) -> Result<(), ProtocolError> {
+        let source = source.to_owned();
+        commit_checked(&self.inner.storage, &self.inner.bus, move |tx| {
+            if !store::finish_run(tx, run_id, status, now_ms())? {
+                return Ok(Err(ProtocolError::new(ErrorCode::Internal, "the run was not running")));
+            }
             let i = store::get_integration(tx, id)?;
-            let drafts = vec![draft(
+            let d = draft(
                 DomainEvent::IntegrationValidationFinished {
                     integration_id: id,
                     run_id,
                     source_commit: source,
-                    status: run_status.as_str().into(),
+                    status: status.as_str().into(),
                 },
                 &context(&i),
-            )?];
-            let _ = (&i, now, IntegrationUpdate::default());
-            Ok(Ok(((), drafts)))
+            )?;
+            Ok(Ok(((), vec![d])))
         })
-        .await;
-        if let Err(e) = finished {
-            tracing::error!(%run_id, ?e, "cannot record the end of a validation run");
-        }
-        self.inner.workspaces.end_integration_op(workspace_id).await;
-        if let Err(e) = self.prepare_with(id, note_for_reason).await {
-            tracing::error!(integration = %id, ?e, "cannot prepare the integration after validation");
-        }
+        .await
     }
 
-    /// Stops the running validation (its commands are terminated).
+    /// Stops the running validation (its commands are terminated). This is
+    /// the only explicit cancellation of a Core-owned operation.
     pub async fn cancel_validation(&self, id: Uuid) -> Result<Integration, ProtocolError> {
         let sender =
             self.inner.cancels.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id).cloned();
@@ -678,7 +782,7 @@ impl IntegrationService {
             None => return Err(invalid_state("no validation is running for this integration")),
         }
         // Give the runner a moment to record the cancellation.
-        let deadline = tokio::time::Instant::now() + KILL_GRACE + Duration::from_secs(2);
+        let deadline = tokio::time::Instant::now() + KILL_GRACE + OUTPUT_GRACE + Duration::from_secs(2);
         while tokio::time::Instant::now() < deadline {
             if self.record(id).await?.status != IntegrationStatus::Validating {
                 break;

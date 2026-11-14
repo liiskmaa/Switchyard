@@ -599,12 +599,12 @@ pub fn steps_for_run(conn: &Connection, run: Uuid) -> Result<Vec<StepRecord>, St
     rows.map(|r| r?).collect()
 }
 
-pub fn mark_step_running(conn: &Connection, id: Uuid, now: i64) -> Result<(), StorageError> {
-    conn.execute(
+/// Marks a pending step running; `false` if it was not pending.
+pub fn mark_step_running(conn: &Connection, id: Uuid, now: i64) -> Result<bool, StorageError> {
+    Ok(conn.execute(
         "UPDATE validation_steps SET status = 'running', started_at = ?1 WHERE id = ?2 AND status = 'pending'",
         params![now, id.to_string()],
-    )?;
-    Ok(())
+    )? > 0)
 }
 
 /// The outcome of one step.
@@ -644,6 +644,127 @@ pub fn finish_step(
             id.to_string()
         ],
     )? > 0)
+}
+
+// --- operations (ADR 0032) ------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationRecord {
+    pub id: Uuid,
+    pub integration_id: Uuid,
+    pub project_id: Uuid,
+    /// `approve`, `commit_workspace`, `update_from_target`, `abort_resolution`, `validate`.
+    pub kind: String,
+    /// `running`, `completed`, `failed`, `interrupted`.
+    pub status: String,
+    pub requested_by: String,
+    pub workspace_before: Option<String>,
+    pub error: Option<String>,
+    pub started_at_ms: i64,
+    pub ended_at_ms: Option<i64>,
+}
+
+const OP_COLUMNS: &str = "id, integration_id, project_id, kind, status, requested_by, workspace_before, error, \
+                          started_at, ended_at";
+
+fn op_from_row(r: &Row<'_>) -> rusqlite::Result<Result<OperationRecord, StorageError>> {
+    let (id, integration, project): (String, String, String) = (r.get(0)?, r.get(1)?, r.get(2)?);
+    let rec = OperationRecord {
+        id: Uuid::nil(),
+        integration_id: Uuid::nil(),
+        project_id: Uuid::nil(),
+        kind: r.get(3)?,
+        status: r.get(4)?,
+        requested_by: r.get(5)?,
+        workspace_before: r.get(6)?,
+        error: r.get(7)?,
+        started_at_ms: r.get(8)?,
+        ended_at_ms: r.get(9)?,
+    };
+    Ok((|| {
+        Ok(OperationRecord {
+            id: parse_uuid(&id, "operation id")?,
+            integration_id: parse_uuid(&integration, "operation integration_id")?,
+            project_id: parse_uuid(&project, "operation project_id")?,
+            ..rec
+        })
+    })())
+}
+
+/// Records a running operation. [`StorageError::Conflict`] if one is
+/// already running for the integration.
+pub fn insert_operation(conn: &Connection, op: &OperationRecord) -> Result<(), StorageError> {
+    conn.execute(
+        &format!("INSERT INTO integration_operations ({OP_COLUMNS}) VALUES (?1, ?2, ?3, ?4, 'running', ?5, NULL, NULL, ?6, NULL)"),
+        params![
+            op.id.to_string(),
+            op.integration_id.to_string(),
+            op.project_id.to_string(),
+            op.kind,
+            op.requested_by,
+            op.started_at_ms
+        ],
+    )
+    .map_err(|e| constraint(e, "another operation on this integration is running"))?;
+    Ok(())
+}
+
+pub fn get_operation(conn: &Connection, id: Uuid) -> Result<OperationRecord, StorageError> {
+    conn.query_row(
+        &format!("SELECT {OP_COLUMNS} FROM integration_operations WHERE id = ?1"),
+        [id.to_string()],
+        op_from_row,
+    )
+    .optional()?
+    .ok_or_else(|| StorageError::NotFound(format!("integration operation {id}")))?
+}
+
+/// Records the workspace status an operation found before marking it `integrating`.
+pub fn set_operation_workspace_before(conn: &Connection, id: Uuid, status: &str) -> Result<(), StorageError> {
+    conn.execute(
+        "UPDATE integration_operations SET workspace_before = ?1 WHERE id = ?2 AND status = 'running'",
+        params![status, id.to_string()],
+    )?;
+    Ok(())
+}
+
+/// Ends a running operation exactly once; `false` if it was not running.
+pub fn finish_operation(
+    conn: &Connection,
+    id: Uuid,
+    status: &str,
+    error: Option<&str>,
+    now: i64,
+) -> Result<bool, StorageError> {
+    Ok(conn.execute(
+        "UPDATE integration_operations SET status = ?1, error = ?2, ended_at = ?3 WHERE id = ?4 AND status = 'running'",
+        params![status, error, now, id.to_string()],
+    )? > 0)
+}
+
+pub fn running_operations(conn: &Connection) -> Result<Vec<OperationRecord>, StorageError> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {OP_COLUMNS} FROM integration_operations WHERE status = 'running' ORDER BY started_at"
+    ))?;
+    let rows = stmt.query_map([], op_from_row)?;
+    rows.map(|r| r?).collect()
+}
+
+/// The most recent operation of an integration.
+pub fn latest_operation(
+    conn: &Connection,
+    integration: Uuid,
+) -> Result<Option<OperationRecord>, StorageError> {
+    conn.query_row(
+        &format!(
+            "SELECT {OP_COLUMNS} FROM integration_operations WHERE integration_id = ?1 \
+             ORDER BY started_at DESC, id DESC LIMIT 1"
+        ),
+        [integration.to_string()],
+        op_from_row,
+    )
+    .optional()?
+    .transpose()
 }
 
 // --- review content (M6 assignments) ---------------------------------------------

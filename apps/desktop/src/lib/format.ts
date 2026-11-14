@@ -224,6 +224,22 @@ export function describeEvent(event: EventEnvelope): string {
       return `Integrated: ${str(p, "target_branch") ?? "?"} is now at ${short(str(p, "merge_commit"))}${p["recovered"] === true ? " (confirmed after a Core restart)" : ""}`;
     case "integration.failed":
       return `Integration failed: ${str(p, "reason") ?? "?"}${p["target_moved"] === true ? " (the target branch is somewhere unexpected)" : ""}`;
+    case "integration.operation_started":
+      return `Core started ${(str(p, "kind") ?? "an operation").replaceAll("_", " ")} (requested by ${str(p, "requested_by") ?? "?"})`;
+    case "integration.operation_finished": {
+      const kind = (str(p, "kind") ?? "operation").replaceAll("_", " ");
+      const status = str(p, "status") ?? "?";
+      const error = str(p, "error");
+      return `${kind}: ${status}${error ? ` — ${error}` : ""}`;
+    }
+    case "integration.settings_changed":
+      return `${str(p, "changed_by") ?? "Operator"} ${p["require_review_after"] === true ? "required" : "stopped requiring"} an approved review for integrations`;
+    case "integration.validation_command_changed": {
+      const after = p["after"] as Record<string, unknown> | null | undefined;
+      const before = p["before"] as Record<string, unknown> | null | undefined;
+      const name = (after?.["name"] ?? before?.["name"] ?? "?") as string;
+      return `${str(p, "changed_by") ?? "Operator"} ${str(p, "action") ?? "changed"} validation command ${name}`;
+    }
     default:
       return event.event_type;
   }

@@ -55,24 +55,51 @@ pushed or deployed. Decisions: ADRs 0028–0031.
   `tree(S)`. Validation passed for `S`, and the approved review recorded `tree(S)`.
 - **No overwrites.** Core never touches the target branch to resolve conflicts. It integrates into
   a checked-out branch only when that checkout has no local changes to tracked files and is still on
-  the target at `T`. Git refuses rather than overwrite untracked files, and Core refuses any merge that
-  would replace an ignored file (for example `.env`). It never pushes, rebases, resets, force-updates or deletes.
+  the target at `T`. Core refuses any merge, fast-forward or abort that would replace or remove an
+  untracked or ignored file (for example `.env`), including a file where the merge needs a directory,
+  files under a directory the merge replaces, and files a directory rename would move onto (ADR 0029).
+  It never commits files that gained conflict blocks, staged or not. It never pushes, rebases, resets,
+  force-updates or deletes.
 - **No authorization from agents.** Agent reports and review verdicts never create, approve or
   execute an integration. Only the operator's IPC methods do.
-- **Recoverable.** Every step is journaled. After a crash, the target branch decides the outcome
-  (ADR 0031).
+- **Core owns authorized work.** Approving and every Git step in the workspace run as Core-owned
+  operations (ADR 0032): closing the app or losing the connection does not stop them, a reconnecting
+  client sees them on the integration, a retry cannot run them twice, and they always release the
+  repository lock and the workspace.
+- **Validation is evidence.** A run records exactly the commands, command lines, timeouts and policy
+  decisions it executed (read in one transaction), and is `passed` only if every step's success was
+  observed and recorded. Failures to record fail closed.
+- **Recoverable.** Every step and every settings change is journaled. After a crash, the target
+  branch decides the outcome (ADR 0031); Core never guesses when Git cannot be read.
+
+## Core-owned operations
+
+| Event | Effect |
+|---|---|
+| Client disconnects (app closed, socket lost) | The operation continues; reconnect to see it. |
+| *Cancel validation* | Stops the validation's commands; the run is `cancelled`. Git steps cannot be cancelled. |
+| Core shuts down | Validation runs are stopped. Other operations get up to `operation_shutdown_grace` (60 s), then are stopped and settled at the next start. |
+| Core crashes | At the next start the operation is `interrupted` and the integration is settled from Git. |
+| Git times out | The step fails. Core reports what Git shows now; for a checkout it says "nothing was changed" only after checking that. |
+| A checkout may be partially updated | The failure says so and to inspect it with `git status`. Switchyard does not undo or repair it. |
+| Recovery cannot decide (Git error, `index.lock` present) | The integration stays `integrating` with the reason; *Check again* settles it later. |
 
 ## Known limitations
 
 - **Only the ref update is atomic.** A fast-forward of a checked-out target updates files and then
-  the branch; it is as safe as `git merge --ff-only`, nothing more. If Core is killed in the middle,
-  the checkout can be left partially updated with the branch not yet moved; recovery then reports
-  the integration as failed, says the checkout may be partly updated, and changes nothing more.
-  Inspect the checkout with `git status`.
-- **Recovery after a crash** settles from the target branch: if it contains the recorded merge
-  commit, the integration is `integrated`. A workspace the operator had marked `completed` and that
-  was mid-step when Core stopped comes back as `ready` or `dirty`. A validation run that was
-  interrupted is marked `interrupted` without a journal event for each step.
+  the branch; it is as safe as `git merge --ff-only`, nothing more. A client disconnect no longer
+  interrupts it, but a Git timeout, a Core crash, or a shutdown whose grace runs out can still leave
+  the checkout partially updated with the branch not moved. Core then reports the integration as
+  failed, says the checkout may be partially updated, and changes nothing more. Inspect the checkout
+  with `git status` (and remove a leftover `.git/index.lock` only once no Git process is running).
+- **Checkout races are detected, not prevented.** If someone switches the target checkout to another
+  branch in the instant between Core's check and Git's fast-forward, Git fast-forwards that branch
+  instead; Core detects and reports it. If the target branch is checked out in the instant between the
+  check and the ref update, the integration records that the checkout's files still show `T`.
+- **Interrupted steps.** After a crash, an interrupted validation run's unfinished steps are marked
+  `cancelled` with one `integration.validation_finished` event for the run, not one per step.
+- **Panics** inside an operation are contained (the workspace is released and the state re-read
+  from Git), but they are bugs; the operation is recorded `failed`.
 - **Content checks scan the workspace.** Preparation computes the tree of the whole workspace
   content (with a private index), which reads every non-ignored file. Very large workspaces make
   preparation slower.
@@ -83,8 +110,11 @@ pushed or deployed. Decisions: ADRs 0028–0031.
   They inherit Core's environment; a desktop-started Core may have a minimal `PATH`. A process that
   leaves the command's process group is not tracked (a reused process-group id between the end of a
   command and its final kill is theoretically possible but not guarded against).
-- **Interrupted runs.** After a Core restart a running validation is `interrupted`; its processes
-  are not supervised any more.
+- **Interrupted runs.** After a Core crash a running validation is `interrupted`; processes that
+  survived the crash are not supervised any more. A graceful shutdown stops them first.
+- **Conflict-block detection is a rule, not a parser.** A file that gains a complete block
+  (`<<<<<<<` … `=======` … `>>>>>>>` at line starts) is refused even outside a merge; commit such content
+  in the workspace with Git directly if it is intended. Binary files are not scanned.
 - **Completed tasks cannot be re-reviewed.** If a completed task's content changes after its review
   (for example after an update from the target), the review requirement cannot be met again unless it
   is turned off for the project.
@@ -98,12 +128,14 @@ pushed or deployed. Decisions: ADRs 0028–0031.
 - **Git primitives:** `crates/switchyard-git/src/integrate.rs`.
 - **Domain (no I/O):** `crates/switchyard-integrations` (state machine, blockers, validation rules,
   merge message).
-- **Storage:** `crates/switchyard-storage/src/integrations.rs`; `migrations/0006_integrations.sql`.
+- **Storage:** `crates/switchyard-storage/src/integrations.rs`; `migrations/0006_integrations.sql`,
+  `migrations/0007_integration_operations.sql`.
 - **Core:** `crates/switchyard-core/src/integrations/`:
   - `facts.rs`: preparation;
   - `workspace_ops.rs`;
   - `validate.rs`;
   - `execute.rs`: approval and recovery;
+  - `operations.rs`: Core-owned operations, shutdown, settling stranded integrations;
   - `inspect.rs`.
 - **UI:** `apps/desktop/src/features/integrations/`; the Delivery panel in the task view.
 - **Tests:**
