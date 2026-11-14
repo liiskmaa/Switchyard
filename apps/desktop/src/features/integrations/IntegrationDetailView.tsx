@@ -119,7 +119,7 @@ function FileList({
   );
 }
 
-function Changes({ i }: { i: Integration }) {
+export function Changes({ i }: { i: Integration }) {
   const changes = useCoreQuery(`changes:${i.id}:${i.source_commit}:${i.target_commit}:${i.updated_at_ms}`, () =>
     integrationChanges(i.id),
   );
@@ -159,7 +159,7 @@ function Changes({ i }: { i: Integration }) {
   );
 }
 
-function Runs({ runs, source }: { runs: ValidationRunInfo[]; source: string }) {
+export function Runs({ runs, source }: { runs: ValidationRunInfo[]; source: string }) {
   if (runs.length === 0) return <p className="muted small">No validation has run.</p>;
   return (
     <ul className="mini-list">

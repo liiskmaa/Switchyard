@@ -123,10 +123,16 @@ pub async fn start(config: CoreConfig) -> Result<RunningCore, CoreError> {
         .map(|m| std::os::unix::fs::MetadataExt::uid(&m))
         .map_err(|source| CoreError::Listen { path: paths.socket.clone(), source })?;
 
-    let tasks =
-        crate::tasks::TaskService::new(storage.clone(), bus.clone(), agents.clone(), workspaces.clone());
     let integrations =
         crate::integrations::IntegrationService::new(storage.clone(), bus.clone(), workspaces.clone());
+    // Workflows deliver through the integration service (M8.2).
+    let tasks = crate::tasks::TaskService::new(
+        storage.clone(),
+        bus.clone(),
+        agents.clone(),
+        workspaces.clone(),
+        integrations.clone(),
+    );
     // After workspace reconciliation: settles integrations and validation
     // runs a previous Core left in progress.
     if let Err(err) = integrations.recover_on_startup().await {

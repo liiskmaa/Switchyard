@@ -29,8 +29,21 @@ previous session when the provider, model and workspace are the same and the CLI
 | You cancelled the step's assignment | the step again |
 | Core restarted while the step ran | the step again (agents are never restarted automatically) |
 
-Approved review → `completed`: the task stays *awaiting review*; prepare, validate and approve the
-integration under Delivery, and complete the task yourself. The workflow never does either.
+Approved review → **delivery** (M8.2, ADR 0034), shown on the task page:
+
+| Delivery phase | What happens | Your part |
+|---|---|---|
+| preparing | Core creates the task's integration (or adopts the open one) | — |
+| needs_commit | the reviewed work is uncommitted | *Commit reviewed changes* (Switchyard never commits) |
+| validating | policy-`allow` commands run by themselves, once per commit | — |
+| awaiting_validation_authorization | some commands are policy-`ask` | authorize them for this run |
+| validation_failed | the run did not pass | *Run validation again* or *Send back for correction* |
+| blocked | conflicts, a moved or dirty target, a denied command, … | resolve it, then *Check again* |
+| awaiting_approval | exact source and target commits, diff, validation, what approving does | *Approve these commits…* → *Integrate* |
+| integrating / delivered | M7 integrates; then the task is completed in the approver's name | — |
+
+Without validation commands the approval says nothing was validated. A delivered workflow is final;
+the merge commit is on the task.
 
 ## Roles and models
 
@@ -60,6 +73,8 @@ integration under Delivery, and complete the task yourself. The workflow never d
 ## Known limitations
 
 - Sequential: one step at a time per task; no parallel subtasks (M8.3).
+- Committing the reviewed work is a click (ADR 0029); the target branch is the project checkout's
+  branch when the integration is created.
 - No stage timeouts: a turn that never ends waits for you (M8.4).
 - No provider fallback.
 - Whether a full Claude model name exists is only known when the CLI starts; an unknown one fails

@@ -18,6 +18,7 @@ pub const MIGRATIONS: &[(u32, &str)] = &[
     (6, include_str!("../../../migrations/0006_integrations.sql")),
     (7, include_str!("../../../migrations/0007_integration_operations.sql")),
     (8, include_str!("../../../migrations/0008_workflows.sql")),
+    (9, include_str!("../../../migrations/0009_workflow_delivery.sql")),
 ];
 
 pub const LATEST_SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -265,6 +266,41 @@ mod tests {
     /// Upgrading an M6 database (schema 5) keeps tasks and assignments, adds
     /// no integration state and leaves earlier reviews without a recorded
     /// tree (so they cannot satisfy an integration's review requirement).
+    #[test]
+    fn upgrade_from_v8_keeps_workflows_and_allows_delivery() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.db");
+        {
+            let mut c = Connection::open(&path).unwrap();
+            apply_up_to(&mut c, 8);
+            c.execute_batch(V3_FIXTURE).unwrap();
+            c.execute_batch(
+                "INSERT INTO tasks (id, project_id, title, kind, priority, status, origin, created_at, updated_at)
+                     VALUES ('t1', 'p1', 'Fix it', 'implementation', 'normal', 'awaiting_review', 'operator', 1, 1);
+                 INSERT INTO task_workflows (task_id, project_id, definition, version, config, workspace_id, status,
+                     stage, step_key, reason, state, last_event_seq, revision, started_by, created_at, updated_at,
+                     ended_at)
+                     VALUES ('t1', 'p1', 'engineering', 1, '{}', 'w1', 'completed', 'delivery', 'review#2', 'r',
+                     '{\"status\":\"completed\"}', 42, 7, 'desktop', 1, 2, 3);",
+            )
+            .unwrap();
+        }
+        let storage = Storage::open(&path).unwrap();
+        storage
+            .with_conn(|c| {
+                let row: (String, String, i64, i64, Option<String>) = c.query_row(
+                    "SELECT status, step_key, last_event_seq, revision, integration_id FROM task_workflows",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )?;
+                assert_eq!(row, ("completed".into(), "review#2".into(), 42, 7, None), "the M8.1 row is kept");
+                c.execute_batch("UPDATE task_workflows SET status = 'delivered'")?;
+                assert!(c.execute_batch("UPDATE task_workflows SET status = 'bogus'").is_err());
+                Ok(())
+            })
+            .unwrap();
+    }
+
     #[test]
     fn upgrade_from_v5_keeps_tasks_and_records_no_review_tree() {
         let dir = tempfile::tempdir().unwrap();

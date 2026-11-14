@@ -571,3 +571,8 @@ details.advanced > summary { cursor: pointer; color: var(--muted); font-size: 13
   .role-row.role-row-tail { grid-template-columns: minmax(0, 1fr); }
 }
 .section > .role-table, .section > .save-bar, .section > .role-note, .section > .role-warning, .section > .notice { max-width: 800px; }
+
+/* Delivery (M8.2) */
+.delivery-head { display: inline-flex; align-items: center; gap: 10px; }
+.delivery-step { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+.delivery-commits code { overflow-wrap: anywhere; }

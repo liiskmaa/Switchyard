@@ -17,6 +17,7 @@ export const WORKFLOW_STATUS_LABEL: Record<WorkflowStatus, string> = {
   waiting: "Needs you",
   paused: "Paused",
   completed: "Ready for delivery",
+  delivered: "Delivered",
   cancelled: "Cancelled",
   failed: "Failed",
 };
@@ -54,14 +55,14 @@ export function stageOrder(w: WorkflowInfo): { key: string; label: string; state
     investigation: "Investigate",
     implementation: "Implement",
     review: "Review & correct",
-    delivery: "Ready for delivery",
+    delivery: "Deliver",
   };
   const current = w.stage === "correction" ? "review" : w.stage;
   const at = current ? stages.indexOf(current) : -1;
   return stages.map((s, i) => ({
     key: s,
     label: labels[s],
-    state: w.status === "completed" || i < at ? "done" : i === at ? "current" : "todo",
+    state: w.status === "completed" || w.status === "delivered" || i < at ? "done" : i === at ? "current" : "todo",
   }));
 }
 

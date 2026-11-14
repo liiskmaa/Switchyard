@@ -329,17 +329,26 @@ pub(crate) struct TaskService {
     stopping: Arc<Mutex<HashMap<Uuid, Uuid>>>,
     /// Assignments being started now; a second concurrent start is refused.
     starting: Arc<Mutex<std::collections::HashSet<Uuid>>>,
+    /// M7's integration service: the workflow delivers through it (M8.2).
+    integrations: crate::integrations::IntegrationService,
     /// Serializes the workflow decisions of each task (M8.1).
     workflow_locks: Arc<Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl TaskService {
-    pub fn new(storage: Storage, bus: EventBus, agents: AgentService, workspaces: WorkspaceService) -> Self {
+    pub fn new(
+        storage: Storage,
+        bus: EventBus,
+        agents: AgentService,
+        workspaces: WorkspaceService,
+        integrations: crate::integrations::IntegrationService,
+    ) -> Self {
         Self {
             storage,
             bus,
             agents,
             workspaces,
+            integrations,
             stopping: Arc::default(),
             starting: Arc::default(),
             workflow_locks: Arc::default(),

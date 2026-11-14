@@ -146,7 +146,7 @@ export function WorkflowPanel({ detail, onChanged }: { detail: TaskDetail; onCha
   }
   const steps = detail.assignments.filter((a) => a.step_key !== null);
   const running = steps.find((a) => a.status === "active" && a.session_id !== null);
-  const final = w.status === "completed" || w.status === "cancelled" || w.status === "failed";
+  const final = w.status === "completed" || w.status === "delivered" || w.status === "cancelled" || w.status === "failed";
   return (
     <Panel
       title={`Workflow ${w.definition}@${w.version}`}

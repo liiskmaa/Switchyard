@@ -434,6 +434,12 @@ pub enum DomainEvent {
     /// The review approved: ready for human-approved delivery.
     #[serde(rename = "workflow.completed")]
     WorkflowCompleted { reason: String },
+    /// Delivery progressed (M8.2): `phase` as in `WorkflowInfo.delivery`.
+    #[serde(rename = "workflow.delivery_changed")]
+    WorkflowDeliveryChanged { phase: String, reason: String, integration_id: Option<Uuid> },
+    /// The approved integration landed on the target branch (M8.2).
+    #[serde(rename = "workflow.delivered")]
+    WorkflowDelivered { reason: String, integration_id: Option<Uuid> },
     #[serde(rename = "workflow.failed")]
     WorkflowFailed { reason: String },
     #[serde(rename = "workflow.cancelled")]
@@ -522,6 +528,8 @@ impl DomainEvent {
             Self::WorkflowPaused { .. } => "workflow.paused",
             Self::WorkflowResumed { .. } => "workflow.resumed",
             Self::WorkflowCompleted { .. } => "workflow.completed",
+            Self::WorkflowDeliveryChanged { .. } => "workflow.delivery_changed",
+            Self::WorkflowDelivered { .. } => "workflow.delivered",
             Self::WorkflowFailed { .. } => "workflow.failed",
             Self::WorkflowCancelled { .. } => "workflow.cancelled",
             Self::WorkflowSettingsChanged { .. } => "workflow.settings_changed",
@@ -738,6 +746,12 @@ mod tests {
             DomainEvent::WorkflowResumed { by: "desktop".into() },
             DomainEvent::WorkflowCompleted { reason: "approved".into() },
             DomainEvent::WorkflowFailed { reason: "x".into() },
+            DomainEvent::WorkflowDeliveryChanged {
+                phase: "validating".into(),
+                reason: "x".into(),
+                integration_id: Some(new_id()),
+            },
+            DomainEvent::WorkflowDelivered { reason: "x".into(), integration_id: None },
             DomainEvent::WorkflowCancelled { reason: "x".into() },
             DomainEvent::WorkflowSettingsChanged {
                 project_id: new_id(),

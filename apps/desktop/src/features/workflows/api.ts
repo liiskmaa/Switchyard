@@ -11,6 +11,8 @@ export const startWorkflow = (taskId: string, overrides?: RoleBindingsPatch) =>
 export const pauseWorkflow = (taskId: string) => coreRequest("workflows.pause", { task_id: taskId });
 export const resumeWorkflow = (taskId: string) => coreRequest("workflows.resume", { task_id: taskId });
 export const cancelWorkflow = (taskId: string) => coreRequest("workflows.cancel", { task_id: taskId });
+export const requestCorrection = (taskId: string, note?: string) =>
+  coreRequest("workflows.request_correction", note ? { task_id: taskId, note } : { task_id: taskId });
 export const pendingApprovals = async (sessionId: string) =>
   (await coreRequest("approvals.list", { status: "pending", session_id: sessionId, limit: 20 })).approvals;
 

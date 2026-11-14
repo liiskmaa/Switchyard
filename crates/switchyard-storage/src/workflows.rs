@@ -27,10 +27,12 @@ pub struct WorkflowRecord {
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub ended_at_ms: Option<i64>,
+    /// The M7 integration the workflow delivers through (M8.2).
+    pub integration_id: Option<Uuid>,
 }
 
 const COLUMNS: &str = "task_id, project_id, definition, version, config, workspace_id, status, stage, step_key, \
-     reason, state, last_event_seq, revision, started_by, created_at, updated_at, ended_at";
+     reason, state, last_event_seq, revision, started_by, created_at, updated_at, ended_at, integration_id";
 
 fn json(s: &str, what: &'static str) -> Result<Value, StorageError> {
     serde_json::from_str(s).map_err(|e| StorageError::Corrupt(format!("{what}: {e}")))
@@ -49,6 +51,7 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<Result<WorkflowRecord, StorageError
     ) = (r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?);
     let (seq, revision, started_by): (i64, i64, String) = (r.get(11)?, r.get(12)?, r.get(13)?);
     let times: (i64, i64, Option<i64>) = (r.get(14)?, r.get(15)?, r.get(16)?);
+    let integration: Option<String> = r.get(17)?;
     Ok((|| {
         Ok(WorkflowRecord {
             task_id: parse_uuid(&task, "task_workflows.task_id")?,
@@ -68,13 +71,16 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<Result<WorkflowRecord, StorageError
             created_at_ms: times.0,
             updated_at_ms: times.1,
             ended_at_ms: times.2,
+            integration_id: integration
+                .map(|i| parse_uuid(&i, "task_workflows.integration_id"))
+                .transpose()?,
         })
     })())
 }
 
 pub fn insert_workflow(conn: &Connection, w: &WorkflowRecord) -> Result<(), StorageError> {
     conn.execute(
-        &format!("INSERT INTO task_workflows ({COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)"),
+        &format!("INSERT INTO task_workflows ({COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)"),
         params![
             w.task_id.to_string(),
             w.project_id.to_string(),
@@ -93,6 +99,7 @@ pub fn insert_workflow(conn: &Connection, w: &WorkflowRecord) -> Result<(), Stor
             w.created_at_ms,
             w.updated_at_ms,
             w.ended_at_ms,
+            w.integration_id.map(|i| i.to_string()),
         ],
     )
     .map_err(|e| match e {
@@ -170,6 +177,16 @@ pub fn update_workflow(
         return Err(StorageError::Conflict(format!("the workflow of task {task} changed meanwhile")));
     }
     get_workflow(conn, task)
+}
+
+/// Records the integration a workflow delivers through (M8.2). Only sets it
+/// when unset or when the previous one is closed (the caller checks).
+pub fn set_integration(conn: &Connection, task: Uuid, integration: Uuid) -> Result<(), StorageError> {
+    conn.execute(
+        "UPDATE task_workflows SET integration_id = ?2 WHERE task_id = ?1",
+        params![task.to_string(), integration.to_string()],
+    )?;
+    Ok(())
 }
 
 /// Records that the workflow processed journal event `seq`. `false` if it
@@ -259,6 +276,7 @@ mod tests {
                     created_at_ms: now,
                     updated_at_ms: now,
                     ended_at_ms: None,
+                    integration_id: None,
                 };
                 insert_workflow(c, &w)?;
                 assert!(matches!(insert_workflow(c, &w), Err(StorageError::Conflict(_))));

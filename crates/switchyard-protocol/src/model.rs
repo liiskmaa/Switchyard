@@ -756,7 +756,8 @@ pub struct WorkflowInfo {
     /// `engineering`.
     pub definition: String,
     pub version: u32,
-    /// `pending`, `running`, `waiting`, `paused`, `completed`, `cancelled`, `failed`.
+    /// `pending`, `running`, `waiting`, `paused`, `completed` (M8.1 runs),
+    /// `delivered`, `cancelled`, `failed`.
     pub status: String,
     /// `investigation`, `implementation`, `review`, `correction`, `delivery`.
     pub stage: Option<String>,
@@ -776,4 +777,13 @@ pub struct WorkflowInfo {
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub ended_at_ms: Option<i64>,
+    /// Delivery (M8.2): the integration the workflow delivers through.
+    #[serde(default)]
+    pub integration_id: Option<Uuid>,
+    /// Delivery phase: `preparing`, `needs_commit`, `validation_starting`,
+    /// `awaiting_validation_authorization`, `validating`, `validation_failed`,
+    /// `blocked`, `awaiting_approval`, `integrating`, `delivered`,
+    /// `delivery_failed`, `cancelled`.
+    #[serde(default)]
+    pub delivery: Option<String>,
 }

@@ -180,6 +180,7 @@ client detect a restart. `seq` stays continuous across restarts because it lives
 | `workflows.get` | `{task_id}` | `{workflow?}` (also in `tasks.get` as `workflow`) |
 | `workflows.pause` / `workflows.resume` | `{task_id}` | `{workflow}`; resume does what `resume_action` says |
 | `workflows.cancel` | `{task_id, reason?}` | `{workflow}`; cancels the workflow's open assignment |
+| `workflows.request_correction` | `{task_id, note?}` | `{workflow}`; while delivering (not validating/integrating): a correction round, then review and delivery again; `note` reaches the agent |
 | `live.subscribe` | `{session_id?}` | `{subscription_id}`. Delivers `live` frames. |
 | `live.unsubscribe` | `{subscription_id}` | `{}` |
 
@@ -353,7 +354,9 @@ the registration is kept and `projects.git_status` returns `repository_unavailab
 | `workflow.stage_changed` | `{stage, step_key, assignment_id, role, provider, model?}`: the workflow created its next step |
 | `workflow.waiting` | `{step_key?, reason}`: needs the operator |
 | `workflow.paused` / `workflow.resumed` | `{by}` |
-| `workflow.completed` | `{reason}`: ready for human-approved delivery |
+| `workflow.completed` | `{reason}`: M8.1 runs only (stopped at the delivery gate) |
+| `workflow.delivery_changed` | `{phase, reason, integration_id?}`: delivery progressed (M8.2) |
+| `workflow.delivered` | `{reason, integration_id?}`: the integration landed; the task is completed |
 | `workflow.failed` / `workflow.cancelled` | `{reason}` |
 | `workflow.settings_changed` | `{project_id, before?, after, revision, changed_by}` |
 | `files.changed` | `{changes: [{path, kind: created\|modified\|deleted\|renamed, from?}], dropped}`: what the filesystem reported in one workspace (debounced, `.git` and ignored paths excluded). Paths are relative to the workspace root; the context carries project, workspace and session. |

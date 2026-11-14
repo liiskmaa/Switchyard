@@ -17,8 +17,8 @@ use switchyard_protocol::methods::{
     WorkspacesGet, WorkspacesGitStatus, WorkspacesList, WorkspacesRestore, WorkspacesVerify,
 };
 use switchyard_protocol::methods::{
-    AgentsModels, WorkflowsCancel, WorkflowsGet, WorkflowsPause, WorkflowsResume, WorkflowsSetSettings,
-    WorkflowsSettings, WorkflowsStart,
+    AgentsModels, WorkflowsCancel, WorkflowsGet, WorkflowsPause, WorkflowsRequestCorrection, WorkflowsResume,
+    WorkflowsSetSettings, WorkflowsSettings, WorkflowsStart,
 };
 use switchyard_protocol::methods::{
     IntegrationsAbortResolution, IntegrationsApprove, IntegrationsCancel, IntegrationsCancelValidation,
@@ -115,6 +115,7 @@ const ALLOWED_METHODS: &[&str] = &[
     WorkflowsPause::NAME,
     WorkflowsResume::NAME,
     WorkflowsCancel::NAME,
+    WorkflowsRequestCorrection::NAME,
 ];
 
 #[derive(Debug, Serialize)]

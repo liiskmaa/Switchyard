@@ -619,7 +619,22 @@ export interface WorkflowSettingsInfo {
   warnings: string[];
 }
 
-export type WorkflowStatus = "pending" | "running" | "waiting" | "paused" | "completed" | "cancelled" | "failed";
+export type WorkflowStatus = "pending" | "running" | "waiting" | "paused" | "completed" | "delivered" | "cancelled" | "failed";
+
+/** Where delivery stands (M8.2), derived from the task's integration. */
+export type DeliveryPhase =
+  | "preparing"
+  | "needs_commit"
+  | "validation_starting"
+  | "awaiting_validation_authorization"
+  | "validating"
+  | "validation_failed"
+  | "blocked"
+  | "awaiting_approval"
+  | "integrating"
+  | "delivered"
+  | "delivery_failed"
+  | "cancelled";
 
 export interface WorkflowInfo {
   task_id: Uuid;
@@ -639,6 +654,8 @@ export interface WorkflowInfo {
   created_at_ms: number;
   updated_at_ms: number;
   ended_at_ms: number | null;
+  integration_id: Uuid | null;
+  delivery: DeliveryPhase | null;
 }
 
 export interface ModelOption {
@@ -1053,4 +1070,5 @@ export interface IntegrationMethods {
   "workflows.pause": { params: { task_id: Uuid }; result: { workflow: WorkflowInfo } };
   "workflows.resume": { params: { task_id: Uuid }; result: { workflow: WorkflowInfo } };
   "workflows.cancel": { params: { task_id: Uuid; reason?: string }; result: { workflow: WorkflowInfo } };
+  "workflows.request_correction": { params: { task_id: Uuid; note?: string }; result: { workflow: WorkflowInfo } };
 }

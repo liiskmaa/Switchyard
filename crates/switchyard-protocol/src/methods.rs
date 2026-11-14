@@ -1024,3 +1024,18 @@ pub struct WorkflowsCancelParams {
 }
 
 method!(WorkflowsCancel, "workflows.cancel", WorkflowsCancelParams, WorkflowResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowsRequestCorrectionParams {
+    pub task_id: Uuid,
+    /// Given to the correcting agent with the task context (for example what failed).
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+method!(
+    WorkflowsRequestCorrection,
+    "workflows.request_correction",
+    WorkflowsRequestCorrectionParams,
+    WorkflowResult
+);

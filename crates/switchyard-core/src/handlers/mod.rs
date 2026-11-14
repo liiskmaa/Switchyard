@@ -224,6 +224,12 @@ pub(crate) async fn dispatch(conn: &Connection, method: &str, params: Value) -> 
         methods::WorkflowsResume::NAME => {
             typed::<methods::WorkflowsResume, _, _>(params, |p| workflows::resume(conn, p)).await
         }
+        methods::WorkflowsRequestCorrection::NAME => {
+            typed::<methods::WorkflowsRequestCorrection, _, _>(params, |p| {
+                workflows::request_correction(conn, p)
+            })
+            .await
+        }
         methods::WorkflowsCancel::NAME => {
             typed::<methods::WorkflowsCancel, _, _>(params, |p| workflows::cancel(conn, p)).await
         }

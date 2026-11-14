@@ -28,6 +28,7 @@ import { AGENT_KINDS, ROLE_LABEL, SEVERITY_TONE, STATUS_LABEL, statusTone, taskA
 import { isWorkflowEvent } from "../workflows/api";
 import { modelLabel } from "../workflows/labels";
 import { WorkflowPanel } from "../workflows/WorkflowPanel";
+import { DeliveryPanel } from "../workflows/DeliveryPanel";
 
 function useAction(onDone: () => void) {
   const [busy, setBusy] = useState(false);
@@ -322,6 +323,7 @@ export function TaskDetailView({
       </Panel>
 
       <WorkflowPanel detail={d} onChanged={refresh} />
+      <DeliveryPanel detail={d} onChanged={refresh} />
 
       <Panel title={d.workflow ? "Assignments" : "Assignment"}>
         {open && d.workflow && open.origin === "workflow" ? (
@@ -475,7 +477,7 @@ export function TaskDetailView({
         ) : null}
       </Panel>
 
-      <Delivery task={t} />
+      {d.workflow && d.workflow.status !== "completed" ? null : <Delivery task={t} />}
 
       <Panel title="Dependencies">
         {d.dependencies.length === 0 ? <p className="muted small">This task does not wait for other tasks.</p> : null}

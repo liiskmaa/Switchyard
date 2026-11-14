@@ -4,7 +4,8 @@
 use switchyard_agents::AgentProvider;
 use switchyard_protocol::methods::{
     AgentsModelsParams, AgentsModelsResult, ProjectIdParams, TaskIdParams, WorkflowResult,
-    WorkflowsCancelParams, WorkflowsGetResult, WorkflowsSetSettingsParams, WorkflowsStartParams,
+    WorkflowsCancelParams, WorkflowsGetResult, WorkflowsRequestCorrectionParams, WorkflowsSetSettingsParams,
+    WorkflowsStartParams,
 };
 use switchyard_protocol::model::WorkflowSettingsInfo;
 use switchyard_protocol::{ErrorCode, ProtocolError};
@@ -64,4 +65,13 @@ pub(super) async fn cancel(
     p: WorkflowsCancelParams,
 ) -> Result<WorkflowResult, ProtocolError> {
     Ok(WorkflowResult { workflow: conn.state.tasks.cancel_workflow(p.task_id, p.reason, actor(conn)).await? })
+}
+
+pub(super) async fn request_correction(
+    conn: &Connection,
+    p: WorkflowsRequestCorrectionParams,
+) -> Result<WorkflowResult, ProtocolError> {
+    Ok(WorkflowResult {
+        workflow: conn.state.tasks.request_correction(p.task_id, p.note, actor(conn)).await?,
+    })
 }

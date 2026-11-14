@@ -97,8 +97,11 @@ pub enum WorkflowStatus {
     Waiting,
     /// The operator paused it: the current step finishes, nothing new starts.
     Paused,
-    /// The review approved: ready for human-approved delivery.
+    /// M8.1 runs only: the review approved and the workflow stopped at the
+    /// delivery gate (M8.2 workflows continue into delivery instead).
     Completed,
+    /// The approved integration landed on the target branch (M8.2).
+    Delivered,
     Cancelled,
     /// The task failed or was closed while the workflow was not done.
     Failed,
@@ -112,13 +115,14 @@ impl WorkflowStatus {
             Self::Waiting => "waiting",
             Self::Paused => "paused",
             Self::Completed => "completed",
+            Self::Delivered => "delivered",
             Self::Cancelled => "cancelled",
             Self::Failed => "failed",
         }
     }
 
     pub fn is_final(self) -> bool {
-        matches!(self, Self::Completed | Self::Cancelled | Self::Failed)
+        matches!(self, Self::Completed | Self::Delivered | Self::Cancelled | Self::Failed)
     }
 
     pub fn parse(s: &str) -> Option<Self> {
@@ -128,6 +132,7 @@ impl WorkflowStatus {
             "waiting" => Self::Waiting,
             "paused" => Self::Paused,
             "completed" => Self::Completed,
+            "delivered" => Self::Delivered,
             "cancelled" => Self::Cancelled,
             "failed" => Self::Failed,
             _ => return None,
@@ -185,10 +190,15 @@ pub enum Resume {
     Repair,
     /// Start this step.
     Start { step: Step },
+    /// Check the delivery again: prepare (or re-prepare) the integration.
+    Deliver,
+    /// Run the validation again.
+    Validate,
 }
 
 /// The durable state of one workflow run.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct WorkflowState {
     pub status: WorkflowStatus,
     pub stage: Option<Stage>,
@@ -199,6 +209,70 @@ pub struct WorkflowState {
     /// Why the workflow waits, stopped or finished.
     pub reason: Option<String>,
     pub on_resume: Option<Resume>,
+    /// Delivery (M8.2): the last delivery phase seen (see [`Delivery::phase`]).
+    pub delivery: Option<String>,
+    /// Delivery: the source commit the workflow already asked to validate
+    /// (validation is started at most once per commit automatically).
+    pub validated_source: Option<String>,
+}
+
+/// Where the delivery of the reviewed work stands, read by Core from the
+/// task's M7 integration record (its status, blockers, validation runs and
+/// the policy's decision for each validation command). Nothing here comes
+/// from an agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Delivery {
+    /// The reviewed changes are not committed; only the operator commits (ADR 0029).
+    NeedsCommit,
+    /// Validation commands are configured, all allowed by policy, and no run
+    /// exists for this source commit.
+    NeedsValidation {
+        source: String,
+    },
+    /// Some validation commands need the operator's authorization (policy `ask`).
+    NeedsAuthorization {
+        commands: usize,
+    },
+    Validating,
+    ValidationFailed {
+        reason: String,
+    },
+    /// Something the operator must resolve (conflicts, the target moved or is
+    /// dirty, a denied command, …).
+    Blocked {
+        reason: String,
+    },
+    /// Ready: waiting for the operator's approval of the exact commits.
+    AwaitingApproval {
+        validated: bool,
+    },
+    Integrating,
+    Integrated {
+        merge_commit: String,
+        target_branch: String,
+    },
+    Failed {
+        reason: String,
+    },
+    Cancelled,
+}
+
+impl Delivery {
+    pub fn phase(&self) -> &'static str {
+        match self {
+            Self::NeedsCommit => "needs_commit",
+            Self::NeedsValidation { .. } => "validation_starting",
+            Self::NeedsAuthorization { .. } => "awaiting_validation_authorization",
+            Self::Validating => "validating",
+            Self::ValidationFailed { .. } => "validation_failed",
+            Self::Blocked { .. } => "blocked",
+            Self::AwaitingApproval { .. } => "awaiting_approval",
+            Self::Integrating => "integrating",
+            Self::Integrated { .. } => "delivered",
+            Self::Failed { .. } => "delivery_failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
 }
 
 /// How a step's assignment ended with a report.
@@ -271,6 +345,11 @@ pub enum Input {
     TaskClosed {
         status: String,
     },
+    /// Delivery (M8.2): the integration's current state.
+    Delivery(Delivery),
+    /// Delivery (M8.2): the operator sends the work back for a correction
+    /// round (for example after a failed validation).
+    RequestCorrection,
 }
 
 /// What Core must do after committing the decision.
@@ -286,6 +365,12 @@ pub enum Action {
     },
     /// Cancel the current assignment, if it is open.
     CancelAssignment,
+    /// Delivery: create the task's integration, or prepare its existing one again.
+    Prepare,
+    /// Delivery: run the project's validation (only commands the policy allows).
+    Validate,
+    /// Delivery: the integration landed; record the task as completed.
+    CompleteTask,
 }
 
 /// A journal-worthy change the decision made.
@@ -297,6 +382,9 @@ pub enum Change {
     Paused,
     Resumed,
     Completed(String),
+    /// Delivery progressed: phase and explanation.
+    Delivery(&'static str, String),
+    Delivered(String),
     Cancelled(String),
     Failed(String),
 }
@@ -348,6 +436,15 @@ pub fn decide(state: &WorkflowState, input: &Input) -> Result<Decision, Workflow
                         d.action = Action::Repair { n: 1 };
                     }
                     Resume::Start { step } => begin(&mut d, step),
+                    Resume::Deliver => {
+                        run(&mut d);
+                        d.action = Action::Prepare;
+                    }
+                    Resume::Validate => {
+                        run(&mut d);
+                        d.state.validated_source = None;
+                        d.action = Action::Validate;
+                    }
                 }
             }
             s => return Err(WorkflowError::NotAllowed(s.as_str())),
@@ -377,6 +474,24 @@ pub fn decide(state: &WorkflowState, input: &Input) -> Result<Decision, Workflow
         Input::Reported { step, outcome } => {
             let Some(current) = current_for(state, step) else { return Ok(d) };
             reported(&mut d, &current, outcome);
+        }
+        Input::Delivery(fact) => {
+            if status.is_final() || state.stage != Some(Stage::Delivery) {
+                return Ok(d);
+            }
+            delivery(&mut d, fact);
+        }
+        Input::RequestCorrection => {
+            if status.is_final() || state.stage != Some(Stage::Delivery) {
+                return Err(WorkflowError::NotAllowed("not delivering"));
+            }
+            if matches!(state.delivery.as_deref(), Some("integrating" | "validating")) {
+                return Err(WorkflowError::NotAllowed("busy delivering (validating or integrating)"));
+            }
+            let round = state.current.as_ref().map(|s| s.round).unwrap_or(1);
+            d.state.validated_source = None;
+            d.state.delivery = None;
+            begin(&mut d, Step::new(Binding::Correct, Stage::Correction, round + 1));
         }
         Input::Unusable { step, error } => {
             if current_for(state, step).is_none() {
@@ -473,13 +588,21 @@ fn reported(d: &mut Decision, current: &Step, outcome: &Outcome) {
             start_or_hold(d, Step::new(Binding::Review, Stage::Review, current.round));
         }
         (Binding::Review, Outcome::Review(ReviewResult::Approved)) => {
+            // M8.2: the approved work goes on to delivery (prepare, validate,
+            // the operator's approval, integration).
             d.state.stage = Some(Stage::Delivery);
-            let reason = format!(
-                "{key} approved the implementation. Ready for delivery: inspect, validate and approve the \
-                 integration; completing the task is your decision."
-            );
-            finish(d, WorkflowStatus::Completed, reason.clone());
-            d.changes.push(Change::Completed(reason));
+            d.state.validated_source = None;
+            d.state.delivery = Some("preparing".into());
+            let reason = format!("{key} approved the implementation; preparing its integration.");
+            d.changes.push(Change::Delivery("preparing", reason.clone()));
+            if d.state.status == WorkflowStatus::Paused {
+                d.state.on_resume = Some(Resume::Deliver);
+                d.state.reason = Some("paused by the operator; delivery continues when you resume".into());
+            } else {
+                run(d);
+                d.state.reason = Some(reason);
+                d.action = Action::Prepare;
+            }
         }
         (Binding::Review, Outcome::Review(ReviewResult::ChangesRequested)) => {
             let correction = Step::new(Binding::Correct, Stage::Correction, current.round + 1);
@@ -522,6 +645,103 @@ fn reported(d: &mut Decision, current: &Step, outcome: &Outcome) {
                 format!("{key} ended without a verdict. Resume to review again."),
                 Resume::Start { step: current.retry() },
             );
+        }
+    }
+}
+
+/// The delivery stage: follows the integration's state (M8.2).
+fn delivery(d: &mut Decision, fact: &Delivery) {
+    let phase = fact.phase();
+    let unchanged = d.state.delivery.as_deref() == Some(phase);
+    d.state.delivery = Some(phase.into());
+    match fact {
+        Delivery::NeedsValidation { source } => {
+            if d.state.validated_source.as_deref() == Some(source.as_str()) {
+                return; // already asked for this commit; its run decides
+            }
+            if d.state.status == WorkflowStatus::Paused {
+                d.state.on_resume = Some(Resume::Validate);
+                return;
+            }
+            d.state.validated_source = Some(source.clone());
+            run(d);
+            let reason = "Validating the committed changes with the project's commands.".to_owned();
+            d.state.reason = Some(reason.clone());
+            d.changes.push(Change::Delivery(phase, reason));
+            d.action = Action::Validate;
+        }
+        Delivery::Validating | Delivery::Integrating => {
+            if unchanged && d.state.status == WorkflowStatus::Running {
+                return;
+            }
+            if d.state.status != WorkflowStatus::Paused {
+                run(d);
+            }
+            let reason = if matches!(fact, Delivery::Validating) {
+                "Validation is running."
+            } else {
+                "Integrating the approved commits into the target branch."
+            };
+            d.state.reason = Some(reason.into());
+            d.changes.push(Change::Delivery(phase, reason.into()));
+        }
+        Delivery::Integrated { merge_commit, target_branch } => {
+            let reason = format!("Delivered: {target_branch} is at merge commit {merge_commit}.");
+            finish(d, WorkflowStatus::Delivered, reason.clone());
+            d.changes.push(Change::Delivered(reason));
+            d.action = Action::CompleteTask;
+        }
+        other => {
+            let (reason, resume) = match other {
+                Delivery::NeedsCommit => (
+                    "The reviewed changes are not committed yet. Commit them to validate and deliver them \
+                     (Switchyard never commits on its own)."
+                        .to_owned(),
+                    Resume::Deliver,
+                ),
+                Delivery::NeedsAuthorization { commands } => (
+                    format!(
+                        "{commands} validation command(s) need your authorization before they run (project \
+                         policy: ask)."
+                    ),
+                    Resume::Deliver,
+                ),
+                Delivery::ValidationFailed { reason } => (
+                    format!(
+                        "Validation failed: {reason}. Send the work back for a correction, or run validation \
+                         again."
+                    ),
+                    Resume::Validate,
+                ),
+                Delivery::Blocked { reason } => (format!("Delivery is blocked: {reason}"), Resume::Deliver),
+                Delivery::AwaitingApproval { validated } => (
+                    if *validated {
+                        "Validated and ready: review the exact commits and approve the integration."
+                            .to_owned()
+                    } else {
+                        "Ready: no validation commands are configured for this project, so nothing was \
+                         validated. Review the exact commits and approve the integration if you accept that."
+                            .to_owned()
+                    },
+                    Resume::Deliver,
+                ),
+                Delivery::Failed { reason } => (format!("The integration failed: {reason}"), Resume::Deliver),
+                Delivery::Cancelled => (
+                    "The integration was cancelled. Resume to prepare a new one.".to_owned(),
+                    Resume::Deliver,
+                ),
+                Delivery::NeedsValidation { .. }
+                | Delivery::Validating
+                | Delivery::Integrating
+                | Delivery::Integrated { .. } => return,
+            };
+            if unchanged
+                && d.state.status == WorkflowStatus::Waiting
+                && d.state.reason.as_deref() == Some(&reason)
+            {
+                return;
+            }
+            wait(d, reason, resume);
         }
     }
 }
@@ -606,10 +826,95 @@ mod tests {
         let d = report(&d, Outcome::Done);
         assert_eq!(key(&d), "review#2");
         let d = report(&d, Outcome::Review(ReviewResult::Approved));
-        assert_eq!(d.state.status, WorkflowStatus::Completed);
-        assert_eq!(d.state.stage, Some(Stage::Delivery));
-        assert_eq!(d.action, Action::None);
-        assert!(matches!(d.changes.last(), Some(Change::Completed(_))));
+        // M8.2: an approved review starts the delivery; it does not finish the workflow.
+        assert_eq!((d.state.status, d.state.stage), (WorkflowStatus::Running, Some(Stage::Delivery)));
+        assert_eq!(d.action, Action::Prepare);
+    }
+
+    fn delivering() -> WorkflowState {
+        let mut d = apply(&WorkflowState::default(), Input::Start);
+        d = report(&d, Outcome::Done);
+        d = report(&d, Outcome::Done);
+        report(&d, Outcome::Review(ReviewResult::Approved)).state
+    }
+
+    fn deliver(s: &WorkflowState, fact: Delivery) -> Decision {
+        apply(s, Input::Delivery(fact))
+    }
+
+    #[test]
+    fn delivery_runs_validation_once_per_commit_and_waits_for_the_operator() {
+        let s = delivering();
+        // Uncommitted reviewed work: the operator commits (Switchyard never does).
+        let c = deliver(&s, Delivery::NeedsCommit);
+        assert_eq!((c.state.status, &c.action), (WorkflowStatus::Waiting, &Action::None));
+        assert!(c.state.reason.as_deref().unwrap().contains("never commits"));
+        // Committed, all commands allowed: validation starts automatically, once.
+        let v = deliver(&c.state, Delivery::NeedsValidation { source: "abc".into() });
+        assert_eq!((v.state.status, &v.action), (WorkflowStatus::Running, &Action::Validate));
+        let again = deliver(&v.state, Delivery::NeedsValidation { source: "abc".into() });
+        assert_eq!(again.action, Action::None, "the same commit is not validated twice automatically");
+        let running = deliver(&v.state, Delivery::Validating);
+        assert_eq!(running.state.delivery.as_deref(), Some("validating"));
+        // Ask-commands wait for authorization; nothing runs.
+        let ask = deliver(&s, Delivery::NeedsAuthorization { commands: 2 });
+        assert_eq!((ask.state.status, &ask.action), (WorkflowStatus::Waiting, &Action::None));
+        // A passed validation never integrates by itself: the operator approves.
+        let ready = deliver(&running.state, Delivery::AwaitingApproval { validated: true });
+        assert_eq!((ready.state.status, &ready.action), (WorkflowStatus::Waiting, &Action::None));
+        let integrating = deliver(&ready.state, Delivery::Integrating);
+        assert_eq!(integrating.state.status, WorkflowStatus::Running);
+        let done = deliver(
+            &integrating.state,
+            Delivery::Integrated { merge_commit: "m".into(), target_branch: "main".into() },
+        );
+        assert_eq!((done.state.status, &done.action), (WorkflowStatus::Delivered, &Action::CompleteTask));
+        let late = deliver(&done.state, Delivery::Failed { reason: "x".into() });
+        assert_eq!((late.state, late.action), (done.state.clone(), Action::None), "delivered is final");
+    }
+
+    #[test]
+    fn failed_validation_can_go_back_for_a_correction_or_run_again() {
+        let s = delivering();
+        let v = deliver(&s, Delivery::NeedsValidation { source: "abc".into() });
+        let failed = deliver(&v.state, Delivery::ValidationFailed { reason: "tests failed".into() });
+        assert_eq!(failed.state.status, WorkflowStatus::Waiting);
+        assert!(failed.state.reason.as_deref().unwrap().contains("tests failed"));
+        // Resume runs the validation again.
+        let rerun = apply(&failed.state, Input::Resume);
+        assert_eq!(rerun.action, Action::Validate);
+        // Or the operator sends it back: a correction round, then review, then delivery again.
+        let c = apply(&failed.state, Input::RequestCorrection);
+        assert_eq!(key(&c), "implement#2");
+        let r = report(&c, Outcome::Done);
+        assert_eq!(key(&r), "review#2");
+        let back = report(&r, Outcome::Review(ReviewResult::Approved));
+        assert_eq!(back.action, Action::Prepare);
+        // Delivery facts are ignored while the work is being corrected.
+        let ignored = deliver(&c.state, Delivery::AwaitingApproval { validated: true });
+        assert_eq!(ignored.action, Action::None);
+        assert_eq!(ignored.state, c.state);
+        // No correction while integrating.
+        let integrating = deliver(&s, Delivery::Integrating);
+        assert!(decide(&integrating.state, &Input::RequestCorrection).is_err());
+    }
+
+    #[test]
+    fn blocked_failed_and_cancelled_deliveries_wait_and_resume_prepares_again() {
+        let s = delivering();
+        for fact in [
+            Delivery::Blocked { reason: "the target branch moved".into() },
+            Delivery::Failed { reason: "ref changed".into() },
+            Delivery::Cancelled,
+        ] {
+            let w = deliver(&s, fact);
+            assert_eq!(w.state.status, WorkflowStatus::Waiting);
+            assert_eq!(apply(&w.state, Input::Resume).action, Action::Prepare);
+        }
+        // An M8.1-era state without delivery fields still deserializes.
+        let old: WorkflowState =
+            serde_json::from_str(r#"{"status":"completed","stage":"delivery"}"#).unwrap();
+        assert_eq!(old.status, WorkflowStatus::Completed);
     }
 
     #[test]

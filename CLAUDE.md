@@ -57,6 +57,7 @@ cargo test -p switchyard-core --test codex              # Codex sessions via the
 cargo test -p switchyard-core --test tasks              # tasks via both fakes ([fake:report:HEX] scenarios)
 cargo test -p switchyard-core --test integrations       # integration: inspection, validation, approval, operations, recovery
 cargo test -p switchyard-core --test workflows          # engineering@1 workflow via both fakes (models, limits, restarts)
+cargo test -p switchyard-core --test delivery           # M8.2: workflow → M7 integration → delivered (commit, validation, approval)
 cargo test -p switchyard-git --test integrate           # Git integration primitives on temp repos
 SWITCHYARD_REAL_CLAUDE=1 cargo test -p switchyard-core --test real_claude -- --ignored   # real CLI, paid
 SWITCHYARD_REAL_CODEX=1 cargo test -p switchyard-core --test real_codex -- --ignored     # real CLI, paid
@@ -198,7 +199,10 @@ When running Core or the app manually, set `SWITCHYARD_DATA_DIR` (and, if that p
   - Workflow assignments use `create_assignment`/`start_assignment` like the operator's, with a
     unique `step_key`; never bypass them. A Core restart makes a running step `interrupted` (wait);
     never restart agents automatically.
-  - The workflow never completes a task, touches an integration, commits or pushes.
+  - Delivery (M8.2, ADR 0034) goes only through `IntegrationService` (create/refresh/validate);
+    the delivery state is derived from the integration record (`delivery_fact`), never stored twice.
+    The workflow never commits, never approves an integration, never runs `ask`/`deny` commands,
+    never pushes; it completes the task only after M7 reports `integrated`.
   - Models are passed to the CLI exactly; choices come only from the installed CLI
     (`agents.models`). Never add a model list to Switchyard, never substitute a model.
 - Text edits made with ad-hoc scripts can silently no-op after `cargo fmt` reflows code. Verify

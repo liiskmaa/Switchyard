@@ -143,6 +143,23 @@ fn keys(d: &TaskDetail) -> Vec<String> {
     steps(d).into_iter().map(|(k, _)| k).collect()
 }
 
+/// The review approved and delivery reached its first gate (M8.2: the
+/// workflow continues into delivery instead of finishing).
+async fn wait_delivery(f: &Fixture, id: Uuid) -> TaskDetail {
+    wait_for(f, id, "the delivery gate", |d| {
+        d.workflow.as_ref().is_some_and(|w| {
+            w.stage.as_deref() == Some("delivery")
+                && w.status == "waiting"
+                && w.delivery.as_deref().is_some_and(|p| p != "preparing")
+        })
+    })
+    .await
+}
+
+fn delivery(d: &TaskDetail) -> &str {
+    d.workflow.as_ref().and_then(|w| w.delivery.as_deref()).unwrap_or("none")
+}
+
 async fn wait_status(f: &Fixture, id: Uuid, want: &str) -> TaskDetail {
     wait_for(f, id, &format!("workflow {want}"), |d| status(d) == want).await
 }
@@ -223,12 +240,13 @@ async fn one_task_reaches_the_delivery_gate_through_a_correction_round() {
 
     // Codex asks before writing: the normal approval path still applies.
     approve_step(&f, task, "implement#1").await;
-    let d = wait_status(&f, task, "completed").await;
+    let d = wait_delivery(&f, task).await;
     assert_eq!(keys(&d), ["investigate#1", "implement#1", "review#1", "implement#2", "review#2"]);
     assert!(d.assignments.iter().all(|a| a.origin == "workflow" && a.status.to_string() == "reported"));
     let w = d.workflow.as_ref().unwrap();
     assert_eq!((w.stage.as_deref(), w.corrections), (Some("delivery"), 1));
-    assert!(w.reason.as_deref().unwrap().contains("Ready for delivery"), "{:?}", w.reason);
+    // The reviewed work is uncommitted: only the operator commits (ADR 0029).
+    assert_eq!(delivery(&d), "needs_commit", "{:?}", w.reason);
 
     // The correction got the review's findings in its context.
     let correction = d.assignments.iter().find(|a| a.step_key.as_deref() == Some("implement#2")).unwrap();
@@ -244,18 +262,22 @@ async fn one_task_reaches_the_delivery_gate_through_a_correction_round() {
         assert_eq!(access, want, "{:?}", a.step_key);
     }
 
-    // The delivery gate: nothing was completed or integrated automatically.
+    // The delivery gate: an integration was prepared, nothing was committed,
+    // completed or integrated automatically.
     assert_eq!(d.task.status, TaskStatus::AwaitingReview);
     let integrations = f
         .client
         .call::<IntegrationsList>(IntegrationsListParams { task_id: Some(task), ..Default::default() })
         .await
         .unwrap();
-    assert!(integrations.integrations.is_empty());
+    assert_eq!(integrations.integrations.len(), 1);
+    assert_eq!(integrations.integrations[0].status.to_string(), "open");
+    assert_eq!(d.workflow.as_ref().unwrap().integration_id, Some(integrations.integrations[0].id));
     let events = workflow_events(&f, task).await;
     assert_eq!(events.first().map(String::as_str), Some("workflow.started"));
     assert_eq!(events.iter().filter(|e| *e == "workflow.stage_changed").count(), 5);
-    assert_eq!(events.last().map(String::as_str), Some("workflow.completed"));
+    assert!(events.contains(&"workflow.delivery_changed".to_owned()), "{events:?}");
+    assert_eq!(events.last().map(String::as_str), Some("workflow.waiting"));
     // The approved write really happened in the workflow's workspace.
     let written = std::fs::read_to_string(workspace_path(&f, &d).join("feature.txt")).unwrap();
     assert_eq!(written, "written by fake codex\n");
@@ -291,7 +313,7 @@ async fn correction_rounds_are_bounded_then_the_operator_decides() {
     assert!(w.reason.as_deref().unwrap().contains("2 correction rounds"), "{:?}", w.reason);
     assert_eq!(w.resume_action.as_deref(), Some("start implement#4"));
     f.client.call::<WorkflowsResume>(TaskIdParams { task_id: task }).await.unwrap();
-    let d = wait_status(&f, task, "completed").await;
+    let d = wait_delivery(&f, task).await;
     assert_eq!(keys(&d).last().map(String::as_str), Some("review#4"));
 }
 
@@ -325,7 +347,7 @@ async fn unusable_reports_get_two_repair_notes_then_wait() {
     assert_eq!(keys(&d), ["investigate#1"], "no new assignment for an unusable report");
     // Resuming sends one more repair note; the agent then reports.
     f.client.call::<WorkflowsResume>(TaskIdParams { task_id: task }).await.unwrap();
-    let d = wait_status(&f, task, "completed").await;
+    let d = wait_delivery(&f, task).await;
     assert_eq!(keys(&d), ["investigate#1", "implement#1", "review#1"]);
 }
 
@@ -359,7 +381,7 @@ async fn a_failed_session_is_retried_once_then_waits() {
     assert!(d.workflow.unwrap().reason.unwrap().contains("already retried"));
     std::fs::remove_file(ws.join(".fake-claude-fail")).unwrap();
     f.client.call::<WorkflowsResume>(TaskIdParams { task_id: task }).await.unwrap();
-    let d = wait_status(&f, task, "completed").await;
+    let d = wait_delivery(&f, task).await;
     assert_eq!(keys(&d)[..3], ["investigate#1", "investigate#1@2", "investigate#1@3"]);
 }
 
@@ -409,7 +431,7 @@ async fn a_restart_interrupts_without_duplicating_steps() {
     assert_eq!((status(&d), keys(&d).len()), ("waiting", 2));
 
     f.client.call::<WorkflowsResume>(TaskIdParams { task_id: task }).await.unwrap();
-    let d = wait_status(&f, task, "completed").await;
+    let d = wait_delivery(&f, task).await;
     assert_eq!(keys(&d), ["investigate#1", "implement#1", "implement#1@2", "review#1"]);
     // And after completion, a restart changes nothing.
     f.core.restart().await;
@@ -417,7 +439,12 @@ async fn a_restart_interrupts_without_duplicating_steps() {
     f.client = client;
     tokio::time::sleep(Duration::from_millis(500)).await;
     let after = detail(&f, task).await;
-    assert_eq!((status(&after), keys(&after)), ("completed", keys(&d)));
+    assert_eq!((status(&after), keys(&after)), ("waiting", keys(&d)));
+    assert_eq!(
+        after.workflow.unwrap().integration_id,
+        d.workflow.unwrap().integration_id,
+        "same integration"
+    );
 }
 
 /// Two resumes at the same moment: exactly one creates the next step.
@@ -439,7 +466,7 @@ async fn concurrent_resumes_create_one_step() {
         f.client.call::<WorkflowsResume>(TaskIdParams { task_id: task })
     );
     assert_eq!([a.is_ok(), b.is_ok()].iter().filter(|ok| **ok).count(), 1, "{a:?} {b:?}");
-    let d = wait_status(&f, task, "completed").await;
+    let d = wait_delivery(&f, task).await;
     assert_eq!(keys(&d), ["investigate#1", "implement#1", "review#1", "implement#2", "review#2"]);
 }
 
@@ -477,7 +504,7 @@ async fn configured_models_reach_the_native_adapters() {
         correct: None,
     };
     start(&f, task, overrides).await.unwrap();
-    let d = wait_status(&f, task, "completed").await;
+    let d = wait_delivery(&f, task).await;
     let models: Vec<_> = d
         .assignments
         .iter()
@@ -601,7 +628,7 @@ async fn project_bindings_are_snapshotted_when_a_workflow_starts() {
         .await
         .unwrap();
     approve_step(&f, task, "implement#1").await;
-    let d = wait_status(&f, task, "completed").await;
+    let d = wait_delivery(&f, task).await;
     let review = d.assignments.iter().find(|a| a.step_key.as_deref() == Some("review#1")).unwrap();
     assert_eq!((review.provider.as_str(), review.model.as_deref()), ("claude_code", Some("fable")));
     let events = f

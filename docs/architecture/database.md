@@ -133,5 +133,9 @@ Migration 0005 replaces the never-written milestone-1 placeholders `tasks`, `mes
 - `workflow_settings`: a project's provider + model per role.
 - `task_assignments.origin` (`operator` | `workflow`), `step_key` (unique per task) and `model`.
 
+### Workflow delivery (migration 0009)
+- `task_workflows` rebuilt (SQLite cannot change a CHECK): status `delivered` added, and
+  `integration_id`, the M7 integration the workflow delivers through. Existing rows are copied.
+
 ### Reserved, not written yet
 `decisions`.

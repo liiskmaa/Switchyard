@@ -257,6 +257,10 @@ export function describeEvent(event: EventEnvelope): string {
       return `Workflow resumed by ${str(p, "by") ?? "?"}`;
     case "workflow.completed":
       return `Workflow ready for delivery: ${str(p, "reason") ?? ""}`;
+    case "workflow.delivery_changed":
+      return `Delivery: ${str(p, "reason") ?? str(p, "phase") ?? "?"}`;
+    case "workflow.delivered":
+      return str(p, "reason") ?? "Delivered";
     case "workflow.failed":
       return `Workflow failed: ${str(p, "reason") ?? "?"}`;
     case "workflow.cancelled":

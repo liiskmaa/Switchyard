@@ -27,7 +27,9 @@ use std::time::Duration;
 use serde_json::json;
 use switchyard_agents::AgentProvider;
 use switchyard_events::{DomainEvent, EventDraft, EventEnvelope, EventFilter, RecvError, now_ms};
+use switchyard_integrations::IntegrationStatus;
 use switchyard_protocol::methods::WorkflowsStartParams;
+use switchyard_protocol::methods::{IntegrationDetail, IntegrationsCreateParams};
 use switchyard_protocol::model::{
     RoleBinding, RoleBindings, RoleBindingsPatch, WorkflowInfo, WorkflowSettingsInfo,
 };
@@ -36,8 +38,8 @@ use switchyard_storage::tasks as store;
 use switchyard_storage::workflows::{self as wf_store, WorkflowRecord, WorkflowUpdate};
 use switchyard_storage::{Connection, StorageError};
 use switchyard_tasks::workflow::{
-    self as wf, Action, Binding, Change, Input, MAX_CORRECTIONS, Outcome, Resume, Step, WorkflowState,
-    WorkflowStatus,
+    self as wf, Action, Binding, Change, Delivery, Input, MAX_CORRECTIONS, Outcome, Resume, Stage, Step,
+    WorkflowState, WorkflowStatus,
 };
 use switchyard_tasks::{AssignmentStatus, TaskStatus};
 use tokio::sync::{Mutex as AsyncMutex, watch};
@@ -51,7 +53,95 @@ use crate::journal::{commit_checked, draft};
 use crate::state::wait_shutdown;
 
 /// Events the driver follows.
-const WATCHED: [&str; 3] = ["task.assignment_ended", "task.message_recorded", "task.status_changed"];
+const WATCHED: [&str; 8] = [
+    "task.assignment_ended",
+    "task.message_recorded",
+    "task.status_changed",
+    // Delivery (M8.2): the task's integration changed.
+    "integration.prepared",
+    "integration.status_changed",
+    "integration.validation_finished",
+    "integration.integrated",
+    "integration.failed",
+];
+
+/// Blockers that only say the workspace is still being released after an
+/// agent reported (ADR 0032's known limitation): preparation is retried.
+const TRANSIENT_BLOCKERS: [&str; 2] = ["agent_working", "workspace_invalid"];
+
+/// The delivery state of an integration, read from M7's record only (its
+/// status, blockers, runs and the policy's decision for each command).
+pub(crate) fn delivery_fact(d: &IntegrationDetail) -> Delivery {
+    let i = &d.integration;
+    let codes: Vec<&str> = i.blockers.iter().map(|b| b.code.as_str()).collect();
+    match i.status {
+        IntegrationStatus::Integrated => Delivery::Integrated {
+            merge_commit: i.merge_commit.clone().unwrap_or_default(),
+            target_branch: i.target_branch.clone(),
+        },
+        IntegrationStatus::Integrating => Delivery::Integrating,
+        IntegrationStatus::Validating => Delivery::Validating,
+        IntegrationStatus::Cancelled => Delivery::Cancelled,
+        IntegrationStatus::Failed => Delivery::Failed {
+            reason: i.failure.clone().or_else(|| i.status_reason.clone()).unwrap_or_else(|| "unknown".into()),
+        },
+        IntegrationStatus::Conflicted | IntegrationStatus::Resolving => Delivery::Blocked {
+            reason: format!(
+                "the target branch {} has changes that conflict with the work; resolve them in the workspace \
+                 (Integrations view)",
+                i.target_branch
+            ),
+        },
+        IntegrationStatus::Ready => Delivery::AwaitingApproval { validated: !d.plan.is_empty() },
+        IntegrationStatus::Open => {
+            if codes.contains(&"uncommitted_changes") {
+                return Delivery::NeedsCommit;
+            }
+            if let Some(b) = i
+                .blockers
+                .iter()
+                .find(|b| !matches!(b.code.as_str(), "validation_required" | "validation_failed"))
+            {
+                return Delivery::Blocked { reason: b.message.clone() };
+            }
+            if codes.contains(&"validation_failed") {
+                let run = d.runs.iter().find(|r| r.source_commit == i.source_commit);
+                let failed = run.and_then(|r| {
+                    r.steps.iter().find(|s| !matches!(s.status.as_str(), "passed" | "skipped"))
+                });
+                let reason = match (run, failed) {
+                    (_, Some(s)) => format!(
+                        "`{}` {}{}",
+                        s.command_line,
+                        s.status,
+                        s.exit_code.map(|c| format!(" (exit {c})")).unwrap_or_default()
+                    ),
+                    (Some(r), None) => format!("the run ended {}", r.status),
+                    (None, None) => "the last run did not pass".into(),
+                };
+                return Delivery::ValidationFailed { reason };
+            }
+            if codes.contains(&"validation_required") {
+                if let Some(denied) = d.plan.iter().find(|p| p.policy_decision == "deny") {
+                    return Delivery::Blocked {
+                        reason: format!(
+                            "the validation command `{}` is denied by policy",
+                            denied.command_line
+                        ),
+                    };
+                }
+                let ask = d.plan.iter().filter(|p| p.policy_decision == "ask").count();
+                if ask > 0 {
+                    return Delivery::NeedsAuthorization { commands: ask };
+                }
+                return Delivery::NeedsValidation { source: i.source_commit.clone() };
+            }
+            Delivery::Blocked {
+                reason: i.status_reason.clone().unwrap_or_else(|| "the integration is not ready".into()),
+            }
+        }
+    }
+}
 
 /// Switchyard's defaults while a project has saved no bindings. They are
 /// shown as such; the CLI default model is an explicit choice (`None`).
@@ -125,6 +215,8 @@ fn resume_text(state: &WorkflowState) -> Option<String> {
         None | Some(Resume::Continue) => "continue".into(),
         Some(Resume::Repair) => "send the agent another repair note".into(),
         Some(Resume::Start { step }) => format!("start {}", step.key()),
+        Some(Resume::Deliver) => "check the delivery again".into(),
+        Some(Resume::Validate) => "run validation again".into(),
     })
 }
 
@@ -149,6 +241,8 @@ fn wire(w: &WorkflowRecord) -> Result<WorkflowInfo, StorageError> {
         created_at_ms: w.created_at_ms,
         updated_at_ms: w.updated_at_ms,
         ended_at_ms: w.ended_at_ms,
+        integration_id: w.integration_id,
+        delivery: state.delivery.clone(),
     })
 }
 
@@ -331,6 +425,7 @@ impl TaskService {
                 created_at_ms: now,
                 updated_at_ms: now,
                 ended_at_ms: None,
+                integration_id: None,
             };
             match wf_store::insert_workflow(tx, &record) {
                 Ok(()) => {}
@@ -479,9 +574,201 @@ impl TaskService {
                         tracing::warn!(%task_id, ?e, "cannot cancel the workflow's assignment");
                     }
                 }
+                Action::Prepare => {
+                    if let Err(e) = svc.deliver_prepare(task_id).await {
+                        tracing::warn!(%task_id, ?e, "cannot prepare the workflow's integration");
+                        svc.delivery_blocked(task_id, &e.message).await;
+                    }
+                }
+                Action::Validate => {
+                    if let Err(e) = svc.deliver_validate(task_id).await {
+                        tracing::warn!(%task_id, ?e, "cannot start the workflow's validation");
+                        svc.sync_delivery(task_id, None).await;
+                    }
+                }
+                Action::CompleteTask => {
+                    if let Err(e) = svc.deliver_complete(task_id).await {
+                        tracing::warn!(%task_id, ?e, "cannot record the delivered task as completed");
+                    }
+                }
                 Action::None => {}
             }
         });
+    }
+
+    // --- delivery (M8.2) ----------------------------------------------------------
+
+    /// The operator sends the delivering work back for a correction round
+    /// (for example after a failed validation); `note` goes to the agent.
+    pub async fn request_correction(
+        &self,
+        task_id: Uuid,
+        note: Option<String>,
+        actor: String,
+    ) -> Result<WorkflowInfo, ProtocolError> {
+        let w = self.workflow_required(task_id).await?;
+        if w.stage.as_deref() != Some("delivery")
+            || matches!(w.status.as_str(), "delivered" | "cancelled" | "failed")
+        {
+            return Err(invalid_state("the workflow is not delivering; nothing to send back"));
+        }
+        if let Some(text) = note.filter(|n| !n.trim().is_empty()) {
+            // Kept for the correction's assignment (delivered with its task context).
+            self.note(task_id, text, actor.clone()).await?;
+        }
+        self.operator_input(task_id, Input::RequestCorrection, actor).await
+    }
+
+    /// Creates the task's integration, or prepares its open one again, and
+    /// reads where delivery stands. Never creates a second open integration:
+    /// an open one for the workflow's workspace is adopted.
+    async fn deliver_prepare(&self, task_id: Uuid) -> Result<(), ProtocolError> {
+        let w =
+            self.storage.call(move |c| wf_store::get_workflow(c, task_id)).await.map_err(errors::storage)?;
+        let workspace = w.workspace_id.ok_or_else(|| invalid_state("the workflow has no workspace"))?;
+        // The reviewer's session is still being stopped: wait for that first.
+        self.wait_for_reported_stops(workspace).await;
+        let existing = match w.integration_id {
+            Some(id) => Some(self.integrations.wire(id).await?),
+            None => None,
+        }
+        .filter(|i| !matches!(i.status, IntegrationStatus::Integrated | IntegrationStatus::Cancelled));
+        let existing = match existing {
+            Some(i) => Some(i),
+            None => self
+                .integrations
+                .list(Some(w.project_id), Some(task_id), false, 50)
+                .await?
+                .into_iter()
+                .find(|i| i.workspace_id == workspace),
+        };
+        let integration = match existing {
+            Some(i) => i,
+            None => {
+                let params = IntegrationsCreateParams {
+                    task_id: Some(task_id),
+                    workspace_id: Some(workspace),
+                    target_branch: None,
+                };
+                match self.integrations.create(params, "workflow".into()).await {
+                    Ok(i) => i,
+                    // Created meanwhile (a replay or a concurrent step): adopt it.
+                    Err(e) if e.code == ErrorCode::Conflict => self
+                        .integrations
+                        .list(Some(w.project_id), Some(task_id), false, 50)
+                        .await?
+                        .into_iter()
+                        .find(|i| i.workspace_id == workspace)
+                        .ok_or(e)?,
+                    Err(e) => return Err(e),
+                }
+            }
+        };
+        let id = integration.id;
+        self.storage
+            .call(move |c| wf_store::set_integration(c, task_id, id))
+            .await
+            .map_err(errors::storage)?;
+        // Check again (a re-prepared integration reflects the latest commits and
+        // settings). The workspace may still show the reviewer as working for a
+        // moment after its report: retry that briefly.
+        let mut current = integration;
+        for attempt in 0..20 {
+            let transient = current.blockers.iter().any(|b| TRANSIENT_BLOCKERS.contains(&b.code.as_str()));
+            if attempt > 0 && !transient {
+                break;
+            }
+            match self.integrations.refresh(id).await {
+                Ok(i) => current = i,
+                // An operation is running on it: its own events drive the workflow.
+                Err(e) if e.code == ErrorCode::Conflict => break,
+                Err(e) => return Err(e),
+            }
+            if !current.blockers.iter().any(|b| TRANSIENT_BLOCKERS.contains(&b.code.as_str())) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        self.sync_delivery(task_id, None).await;
+        Ok(())
+    }
+
+    /// Starts the validation of the bound source commit. Only reached when
+    /// every enabled command is allowed by policy; `ask` commands wait for
+    /// the operator's own authorization, `deny` never runs (M7 enforces both).
+    async fn deliver_validate(&self, task_id: Uuid) -> Result<(), ProtocolError> {
+        let id = self.delivery_integration(task_id).await?;
+        let detail = self.integrations.detail(id).await?;
+        if !matches!(
+            delivery_fact(&detail),
+            Delivery::NeedsValidation { .. } | Delivery::ValidationFailed { .. }
+        ) {
+            // Something changed meanwhile; read it again instead of validating.
+            self.sync_delivery(task_id, None).await;
+            return Ok(());
+        }
+        if detail.plan.iter().any(|p| p.policy_decision != "allow") {
+            self.sync_delivery(task_id, None).await;
+            return Ok(());
+        }
+        self.integrations.validate(id, Vec::new(), "workflow".into()).await?;
+        Ok(())
+    }
+
+    /// After the integration landed: the operator approved the exact commits,
+    /// so the task is recorded as completed in their name.
+    async fn deliver_complete(&self, task_id: Uuid) -> Result<(), ProtocolError> {
+        let id = self.delivery_integration(task_id).await?;
+        let i = self.integrations.wire(id).await?;
+        if i.status != IntegrationStatus::Integrated {
+            return Err(invalid_state("the integration has not landed; the task is not completed"));
+        }
+        let by = i.approved_by.clone().unwrap_or_else(|| "operator".into());
+        let note = format!(
+            "Delivered by integration {id}: {} is at merge commit {} (approved by {by}).",
+            i.target_branch,
+            i.merge_commit.clone().unwrap_or_default()
+        );
+        let status =
+            self.storage.call(move |c| store::get_task(c, task_id)).await.map_err(errors::storage)?.status;
+        if status == TaskStatus::AwaitingReview {
+            self.complete(task_id, Some(note), by).await?;
+        }
+        Ok(())
+    }
+
+    async fn delivery_integration(&self, task_id: Uuid) -> Result<Uuid, ProtocolError> {
+        self.storage
+            .call(move |c| wf_store::get_workflow(c, task_id))
+            .await
+            .map_err(errors::storage)?
+            .integration_id
+            .ok_or_else(|| invalid_state("the workflow has no integration yet"))
+    }
+
+    /// Reads the integration and gives its state to the workflow.
+    async fn sync_delivery(&self, task_id: Uuid, seq: Option<i64>) {
+        let fact = match self.delivery_integration(task_id).await {
+            Ok(id) => match self.integrations.detail(id).await {
+                Ok(d) => delivery_fact(&d),
+                Err(e) => {
+                    Delivery::Blocked { reason: format!("the integration cannot be read: {}", e.message) }
+                }
+            },
+            Err(_) => return,
+        };
+        if let Err(e) = self.apply_input(task_id, Input::Delivery(fact), seq, "workflow".into()).await {
+            tracing::warn!(%task_id, ?e, "cannot record the delivery state");
+        }
+    }
+
+    /// Preparation itself failed (for example the target branch is gone):
+    /// the workflow waits with the reason instead of failing silently.
+    async fn delivery_blocked(&self, task_id: Uuid, reason: &str) {
+        let fact = Delivery::Blocked { reason: format!("the integration could not be prepared: {reason}") };
+        if let Err(e) = self.apply_input(task_id, Input::Delivery(fact), None, "workflow".into()).await {
+            tracing::warn!(%task_id, ?e, "cannot record the delivery state");
+        }
     }
 
     // --- following the journal ---------------------------------------------------
@@ -504,6 +791,15 @@ impl TaskService {
                 return;
             }
         };
+        if e.event_type.starts_with("integration.") {
+            // Only the workflow's own integration, and only while delivering.
+            let ours = e.payload.get("integration_id").and_then(|v| v.as_str()).map(str::to_owned);
+            let delivering = state_of(&w).is_ok_and(|s| s.stage == Some(Stage::Delivery));
+            if delivering && w.integration_id.map(|i| i.to_string()) == ours {
+                self.sync_delivery(task_id, Some(seq)).await;
+            }
+            return;
+        }
         let Ok(event) = e.decode() else { return };
         let input = match self.input_for(&event).await {
             Ok(i) => i,
@@ -587,6 +883,21 @@ impl TaskService {
         };
         for w in active {
             let Ok(state) = state_of(&w) else { continue };
+            if state.stage == Some(Stage::Delivery) {
+                // M7 settled its integrations at startup; read where delivery stands.
+                let task_id = w.task_id;
+                if w.integration_id.is_none() && state.status == WorkflowStatus::Running {
+                    let svc = self.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = svc.deliver_prepare(task_id).await {
+                            svc.delivery_blocked(task_id, &e.message).await;
+                        }
+                    });
+                } else if w.integration_id.is_some() {
+                    self.sync_delivery(task_id, None).await;
+                }
+                continue;
+            }
             if state.status != WorkflowStatus::Running {
                 continue;
             }
@@ -717,6 +1028,14 @@ fn decide_in_tx(
             Change::Paused => DomainEvent::WorkflowPaused { by: by.into() },
             Change::Resumed => DomainEvent::WorkflowResumed { by: by.into() },
             Change::Completed(reason) => DomainEvent::WorkflowCompleted { reason: reason.clone() },
+            Change::Delivery(phase, reason) => DomainEvent::WorkflowDeliveryChanged {
+                phase: (*phase).into(),
+                reason: reason.clone(),
+                integration_id: w.integration_id,
+            },
+            Change::Delivered(reason) => {
+                DomainEvent::WorkflowDelivered { reason: reason.clone(), integration_id: w.integration_id }
+            }
             Change::Failed(reason) => DomainEvent::WorkflowFailed { reason: reason.clone() },
             Change::Cancelled(reason) => DomainEvent::WorkflowCancelled { reason: reason.clone() },
         };
