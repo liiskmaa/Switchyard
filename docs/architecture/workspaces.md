@@ -128,7 +128,8 @@ See ADR 0014 for the full rules and the reconciliation table. In short:
   **Clean up…** after archiving another, sometimes times out. Playwright finds the button, but it is
   repeatedly replaced in the DOM for 30 s, while Core has already archived the workspace and the UI
   makes no unusual requests. Observed on 2026-11-14 in 3 of 9 full runs at normal machine load (on
-  the M6 and M7 code alike), and twice more under heavy load. Archiving switches the panel to "Show
+  the M6 and M7 code alike), and four more times under heavy load (twice during the M7 review
+  remediation, at load averages of 15 to 48). Archiving switches the panel to "Show
   archived", which reloads the list and remounts the detail panel once. The failure did not
   reproduce in isolation (10 of 10 archive/restore cycles restored in 0.4–0.7 s). It is unclear
   whether it is a test timing assumption or a UI race; it affects only the buttons, not Core's
