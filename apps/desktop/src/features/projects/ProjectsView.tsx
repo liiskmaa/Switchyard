@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { Badge, Button, EmptyState, ErrorNotice, KeyValue, PageHeader, Panel } from "../../components/ui";
+import { Badge, Button, EmptyState, ErrorNotice, PageHeader, Panel } from "../../components/ui";
 import { toCoreError, type CoreRequestError } from "../../lib/core";
 import { formatTimestamp } from "../../lib/format";
 import { useCoreQuery } from "../../stores/useCoreQuery";
@@ -35,59 +35,52 @@ export function ProjectsView() {
         }
       />
       {projects.error ? <ErrorNotice title="Cannot load projects" message={projects.error.message} code={projects.error.code} /> : null}
-      <div className="split">
-        <div className="list" role="listbox" aria-label="Projects">
-          {list.length === 0 && projects.data ? (
-            <EmptyState icon="projects" title="No repositories registered">
-              Add an existing local Git repository to get started.
-            </EmptyState>
-          ) : null}
+      {list.length > 1 ? (
+        <nav className="project-tabs" role="tablist" aria-label="Projects">
           {list.map((p) => (
             <button
               key={p.id}
               type="button"
-              role="option"
+              role="tab"
               aria-selected={p.id === selectedId && !adding}
-              className={`list-item${p.id === selectedId && !adding ? " active" : ""}`}
+              title={p.root_path}
+              className={`project-tab${p.id === selectedId && !adding ? " active" : ""}`}
               onClick={() => {
                 setAdding(false);
                 setSelectedId(p.id);
               }}
             >
-              <span className="list-item-title">
-                {p.name}
-                {!p.accessible ? <Badge tone="error">missing</Badge> : null}
-              </span>
-              <span className="list-item-sub mono">{p.root_path}</span>
+              {p.name}
+              {!p.accessible ? <Badge tone="error">missing</Badge> : null}
             </button>
           ))}
-        </div>
-        <div className="detail">
-          {adding ? (
-            <Panel title="Add repository">
-              <AddProjectForm
-                onCancel={() => setAdding(false)}
-                onAdded={(p) => {
-                  setAdding(false);
-                  setSelectedId(p.id);
-                  projects.refresh();
-                }}
-              />
-            </Panel>
-          ) : selected ? (
-            <ProjectDetail
-              key={selected.id}
-              project={selected}
-              onRemoved={() => {
-                setSelectedId(null);
-                projects.refresh();
-              }}
-            />
-          ) : projects.data && list.length > 0 ? null : (
-            <EmptyState icon="folder" title="Nothing selected" />
-          )}
-        </div>
-      </div>
+        </nav>
+      ) : null}
+      {adding ? (
+        <Panel title="Add repository">
+          <AddProjectForm
+            onCancel={() => setAdding(false)}
+            onAdded={(p) => {
+              setAdding(false);
+              setSelectedId(p.id);
+              projects.refresh();
+            }}
+          />
+        </Panel>
+      ) : selected ? (
+        <ProjectDetail
+          key={selected.id}
+          project={selected}
+          onRemoved={() => {
+            setSelectedId(null);
+            projects.refresh();
+          }}
+        />
+      ) : list.length === 0 && projects.data ? (
+        <EmptyState icon="projects" title="No repositories registered">
+          Add an existing local Git repository to get started.
+        </EmptyState>
+      ) : null}
     </div>
   );
 }
@@ -110,17 +103,20 @@ function ProjectDetail({ project, onRemoved }: { project: Project; onRemoved: ()
   }
 
   return (
-    <>
-      <Panel title={project.name}>
-        <KeyValue
-          rows={[
-            ["Repository", <code className="path">{project.root_path}</code>],
-            ["Status", project.accessible ? <Badge tone="ok">Accessible</Badge> : <Badge tone="error">Path not accessible</Badge>],
-            ["Registered", formatTimestamp(project.created_at_ms)],
-            ["Project ID", <code>{project.id}</code>],
-          ]}
-        />
-      </Panel>
+    <div className="project-detail">
+      <header className="project-head">
+        <div className="project-title">
+          <h2>{project.name}</h2>
+          <code className="path project-path">{project.root_path}</code>
+        </div>
+        <div className="project-meta small">
+          {project.accessible ? <Badge tone="ok">Accessible</Badge> : <Badge tone="error">Path not accessible</Badge>}
+          <span>Registered {formatTimestamp(project.created_at_ms)}</span>
+          <span className="mono" title={`Project ID ${project.id}`}>
+            ID {project.id.slice(0, 8)}…
+          </span>
+        </div>
+      </header>
       <WorkflowRolesPanel project={project} />
       <WorkspacesPanel project={project} />
       <GitStatusPanel project={project} />
@@ -148,6 +144,6 @@ function ProjectDetail({ project, onRemoved }: { project: Project; onRemoved: ()
           )}
         </div>
       </Panel>
-    </>
+    </div>
   );
 }
