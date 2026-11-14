@@ -7,9 +7,13 @@ export interface Navigation {
   sessionId: string | null;
   /** Selected project in the Projects section. */
   projectId: string | null;
+  /** Selected task in the Tasks section. */
+  taskId: string | null;
+  /** Project shown in the Tasks section (kept with `taskId` across navigation). */
+  taskProjectId: string | null;
 }
 
-export const navigationStore = createStore<Navigation>({ section: "dashboard", sessionId: null, projectId: null });
+export const navigationStore = createStore<Navigation>({ section: "dashboard", sessionId: null, projectId: null, taskId: null, taskProjectId: null });
 
 export const useNavigation = (): Navigation => useStore(navigationStore);
 

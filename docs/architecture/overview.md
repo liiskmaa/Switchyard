@@ -4,8 +4,8 @@ Switchyard is a local-first orchestration platform for native AI coding agents (
 Codex). It is not an agent itself. It supervises agent processes, coordinates their work, persists
 what happens, and gives a human operator control.
 
-This document describes what exists **today** (milestones 1–5: the foundation, native Claude Code
-sessions, workspace isolation, approval policies, and native Codex sessions) and the boundaries that later milestones build on.
+This document describes what exists **today** (milestones 1–6: the foundation, native Claude Code
+sessions, workspace isolation, approval policies, native Codex sessions, and task orchestration) and the boundaries that later milestones build on.
 
 ## Processes
 
@@ -45,6 +45,7 @@ sessions, workspace isolation, approval policies, and native Codex sessions) and
 | `switchyard-agents` | Vendor-neutral agent model; process supervision (no shell, controlled environment, bounded lines, SIGTERM/SIGKILL escalation); the provider-neutral `AgentSession` handle; Claude Code and Codex adapters. | — |
 | `switchyard-workspaces` | Workspace domain rules without I/O: lifecycle and transitions, branch and path naming, cleanup safety evaluation. | — |
 | `switchyard-policy` | Approval policy without I/O: normalized operations, rules and their validation, deterministic evaluation with explanations. | — |
+| `switchyard-tasks` | Task domain without I/O: lifecycle and transitions, the dependency graph (cycles, readiness), the `switchyard-report` parser and the versioned task context. | — |
 | `switchyard-core` | The executable: config, lifecycle (lock, socket, signals), connection server, request handlers, workspaces (`src/workspaces`), agent sessions (`src/agents`), and the `switchyard-fake-claude` test binary. | all of the above |
 | `apps/desktop/src-tauri` | Desktop shell: Core bridge (connect, reconnect, replay, forward events), launcher, Tauri commands. | client, protocol |
 
@@ -214,8 +215,18 @@ request ─► classify(provider) ─► Operation ─► path facts (Core, I/O)
 - Details: [policies.md](policies.md), ADRs 0016–0019. **Policies are an authorization and
   workflow mechanism, not an OS-level sandbox.**
 
+## Tasks (milestone 6)
+
+- Tasks are durable work, independent of sessions. An assignment gives one role (investigate,
+  implement, review) to one provider in one workspace.
+- Core sends a versioned task context. The agent answers with a `switchyard-report` block, which
+  becomes structured messages, findings and proposals. None of these authorizes anything.
+- Review sessions cannot change files, and the workspace is fingerprinted around each review.
+- The operator publishes, assigns, completes, fails and approves proposals.
+- Details: [tasks.md](tasks.md), ADRs 0023–0027.
+
 ## What is intentionally absent
 
 There is no support for Codex sub-agents (their requests are denied), no integration of workspace branches (merge, rebase, cherry-pick), no
-task, message or finding workflow, no automatic branch deletion or workspace pruning, no global
+agent-initiated task creation or assignment (agents only propose), no automatic branch deletion or workspace pruning, no global
 (cross-project) policy rules, and no OS-level sandbox yet.

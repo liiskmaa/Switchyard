@@ -1,7 +1,7 @@
 //! Agent sessions.
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
-use switchyard_agents::{AgentProvider, SessionState};
+use switchyard_agents::{AgentProvider, SessionAccess, SessionState};
 use uuid::Uuid;
 
 use crate::{StorageError, parse_enum, parse_uuid};
@@ -26,11 +26,13 @@ pub struct SessionRecord {
     pub exit_signal: Option<i32>,
     pub failure: Option<String>,
     pub resume_count: u32,
+    /// `review` sessions cannot change files (ADR 0027).
+    pub access: SessionAccess,
 }
 
 const COLUMNS: &str = "id, project_id, workspace_id, agent_id, provider, native_session_id, cwd, state, pid, \
                        cli_version, model, started_at, ended_at, last_activity_at, exit_code, exit_signal, \
-                       failure, resume_count";
+                       failure, resume_count, access";
 
 fn from_row(r: &Row<'_>) -> rusqlite::Result<Result<SessionRecord, StorageError>> {
     let id: String = r.get(0)?;
@@ -41,6 +43,7 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<Result<SessionRecord, StorageError>
     let state: String = r.get(7)?;
     let pid: Option<i64> = r.get(8)?;
     let resume_count: i64 = r.get(17)?;
+    let access: String = r.get(18)?;
     let partial = SessionRecord {
         id: Uuid::nil(),
         project_id: Uuid::nil(),
@@ -60,6 +63,7 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<Result<SessionRecord, StorageError>
         exit_signal: r.get(15)?,
         failure: r.get(16)?,
         resume_count: u32::try_from(resume_count).unwrap_or(0),
+        access: SessionAccess::Write,
     };
     Ok((|| {
         Ok(SessionRecord {
@@ -69,6 +73,7 @@ fn from_row(r: &Row<'_>) -> rusqlite::Result<Result<SessionRecord, StorageError>
             agent_id: parse_uuid(&agent, "sessions.agent_id")?,
             provider: parse_enum(&provider, "sessions.provider")?,
             state: parse_enum(&state, "sessions.state")?,
+            access: parse_enum(&access, "sessions.access")?,
             ..partial
         })
     })())
@@ -84,7 +89,7 @@ fn collect(
 
 pub fn insert(conn: &Connection, s: &SessionRecord) -> Result<(), StorageError> {
     conn.execute(
-        &format!("INSERT INTO sessions ({COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)"),
+        &format!("INSERT INTO sessions ({COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)"),
         params![
             s.id.to_string(),
             s.project_id.to_string(),
@@ -104,6 +109,7 @@ pub fn insert(conn: &Connection, s: &SessionRecord) -> Result<(), StorageError> 
             s.exit_signal,
             s.failure,
             s.resume_count,
+            s.access.as_str(),
         ],
     )
     .map_err(|e| StorageError::from_unique(e, || format!("session {} already exists", s.id)))?;
@@ -283,6 +289,7 @@ pub(crate) mod tests {
             exit_signal: None,
             failure: None,
             resume_count: 0,
+            access: SessionAccess::Write,
         }
     }
 

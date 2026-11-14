@@ -163,10 +163,49 @@ export function describeEvent(event: EventEnvelope): string {
       const more = changes.length > 3 ? ` and ${changes.length - 3} more` : "";
       return `Files: ${head}${more}`;
     }
+    case "task.created":
+      return `Task “${str(p, "title") ?? "?"}” created${str(p, "origin") === "proposal" ? " from an approved proposal" : ""} (${str(p, "status") ?? "?"})`;
+    case "task.updated":
+      return `Task edited: ${Array.isArray(p["fields"]) ? (p["fields"] as string[]).join(", ") : ""}`;
+    case "task.status_changed":
+      return `Task ${str(p, "from") ?? "?"} → ${str(p, "to") ?? "?"}${str(p, "reason") ? ` (${str(p, "reason")})` : ""}`;
+    case "task.dependency_added":
+      return "Dependency added";
+    case "task.dependency_removed":
+      return "Dependency removed";
+    case "task.assigned":
+      return `${str(p, "role") ?? "Work"} assigned to ${providerName(str(p, "provider") ?? "claude_code")}`;
+    case "task.assignment_started":
+      return `${p["resumed"] === true ? "Resumed" : "Started"} a ${str(p, "access") === "review" ? "read-only review" : "working"} session with task context v${String(p["context_version"] ?? "?")}`;
+    case "task.assignment_ended":
+      return `Assignment ${str(p, "status") ?? "ended"}${str(p, "outcome") ? `: ${str(p, "outcome")}` : ""}`;
+    case "task.message_recorded":
+      return `${MESSAGE_LABEL[str(p, "kind") ?? ""] ?? str(p, "kind") ?? "Message"} from ${str(p, "sender") ?? "?"}${str(p, "summary") ? `: ${str(p, "summary")}` : ""}`;
+    case "task.review_recorded":
+      return p["workspace_changed"] === true
+        ? `Review recorded as ${str(p, "result") ?? "?"}: the workspace changed during the review (reviewer said ${str(p, "reported_result") ?? "?"})`
+        : `Review: ${str(p, "result") ?? "?"} (${String(p["findings"] ?? 0)} findings)`;
+    case "task.proposal_decided":
+      return `Proposed subtask ${str(p, "decision") ?? "decided"}`;
     default:
       return event.event_type;
   }
 }
+
+/** Human names of task message kinds. */
+export const MESSAGE_LABEL: Record<string, string> = {
+  task_assignment: "Assignment",
+  status_update: "Status update",
+  info_request: "Question",
+  findings: "Findings",
+  proposal: "Proposal",
+  review_result: "Review",
+  blocker: "Blocker",
+  delegation_request: "Delegation request",
+  completion_report: "Completion report",
+  operator_note: "Operator note",
+  malformed_report: "Unusable report",
+};
 
 /** Merges events by sequence number, keeping the newest `limit`, ascending. */
 export function mergeEvents(current: EventEnvelope[], incoming: EventEnvelope[], limit: number): EventEnvelope[] {

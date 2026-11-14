@@ -154,10 +154,14 @@ export interface Session {
   exit_signal: number | null;
   failure: string | null;
   resume_count: number;
+  /** `review` sessions cannot change files (M6, ADR 0027). */
+  access: SessionAccess;
   attached: boolean;
   pending_approvals: number;
   capabilities: Capabilities;
 }
+
+export type SessionAccess = "write" | "review";
 
 export type ApprovalStatus = "pending" | "approved" | "denied" | "expired" | "cancelled";
 
@@ -419,7 +423,7 @@ export interface CleanupReport {
 type NoParams = Record<string, never>;
 
 /** Methods the desktop bridge allows the UI to call. */
-export interface CoreMethods {
+export interface CoreMethods extends TaskMethods {
   "system.health": { params: NoParams; result: HealthReport };
   "projects.list": { params: NoParams; result: { projects: Project[] } };
   "projects.get": { params: { project_id: Uuid }; result: { project: Project } };
@@ -427,7 +431,14 @@ export interface CoreMethods {
   "projects.remove": { params: { project_id: Uuid }; result: { project_id: Uuid } };
   "projects.git_status": { params: { project_id: Uuid }; result: GitStatusReport };
   "events.list": {
-    params: { after_seq?: number; project_id?: Uuid; session_id?: Uuid; event_types?: string[]; limit?: number };
+    params: {
+      after_seq?: number;
+      project_id?: Uuid;
+      session_id?: Uuid;
+      task_id?: Uuid;
+      event_types?: string[];
+      limit?: number;
+    };
     result: { events: EventEnvelope[] };
   };
   "agents.list": { params: { refresh?: boolean }; result: { agents: AgentAvailability[] } };
@@ -524,3 +535,201 @@ export interface CoreMethods {
 }
 
 export type CoreMethod = keyof CoreMethods;
+
+// --- tasks (M6, ADRs 0023-0027) -------------------------------------------------
+
+export type TaskStatus =
+  | "draft"
+  | "ready"
+  | "blocked"
+  | "assigned"
+  | "in_progress"
+  | "awaiting_review"
+  | "in_review"
+  | "completed"
+  | "failed"
+  | "cancelled";
+export type TaskKind = "investigation" | "implementation" | "general";
+export type TaskPriority = "low" | "normal" | "high" | "urgent";
+export type TaskRole = "investigate" | "implement" | "review";
+export type AssignmentStatus = "pending" | "active" | "reported" | "failed" | "cancelled";
+export type MessageKind =
+  | "task_assignment"
+  | "status_update"
+  | "info_request"
+  | "findings"
+  | "proposal"
+  | "review_result"
+  | "blocker"
+  | "delegation_request"
+  | "completion_report"
+  | "operator_note"
+  | "malformed_report";
+export type Severity = "info" | "low" | "medium" | "high" | "critical";
+export type ProposalStatus = "pending" | "approved" | "rejected";
+export type TaskReadiness = "satisfied" | "waiting" | "broken";
+
+export interface TaskAssignment {
+  id: Uuid;
+  task_id: Uuid;
+  role: TaskRole;
+  provider: AgentProvider;
+  workspace_id: Uuid;
+  session_id: Uuid | null;
+  status: AssignmentStatus;
+  context: Record<string, unknown> | null;
+  context_version: number | null;
+  outcome: string | null;
+  created_at_ms: number;
+  started_at_ms: number | null;
+  ended_at_ms: number | null;
+}
+
+export interface Task {
+  id: Uuid;
+  project_id: Uuid;
+  parent_task_id: Uuid | null;
+  title: string;
+  description: string | null;
+  kind: TaskKind;
+  priority: TaskPriority;
+  acceptance_criteria: string[];
+  status: TaskStatus;
+  status_reason: string | null;
+  result: Record<string, unknown> | null;
+  failure: string | null;
+  origin: "operator" | "proposal";
+  origin_proposal_id: Uuid | null;
+  revision: number;
+  created_at_ms: number;
+  updated_at_ms: number;
+  completed_at_ms: number | null;
+  open_assignment: TaskAssignment | null;
+  dependency_ids: Uuid[];
+  pending_proposals: number;
+  open_findings: number;
+}
+
+/** A structured message. A message from an agent is a claim or a request; it never authorizes anything. */
+export interface TaskMessage {
+  id: Uuid;
+  task_id: Uuid;
+  assignment_id: Uuid | null;
+  kind: MessageKind;
+  sender: "agent" | "operator" | "core";
+  sender_session_id: Uuid | null;
+  recipient: "operator" | "agent" | "task";
+  payload: Record<string, unknown>;
+  causation_id: string | null;
+  delivery: "recorded" | "pending" | "delivered";
+  delivered_at_ms: number | null;
+  created_at_ms: number;
+}
+
+export interface TaskFinding {
+  id: Uuid;
+  task_id: Uuid;
+  message_id: Uuid;
+  assignment_id: Uuid | null;
+  severity: Severity;
+  title: string;
+  explanation: string | null;
+  suggestion: string | null;
+  path: string | null;
+  line: number | null;
+  status: "open" | "resolved" | "dismissed";
+  created_at_ms: number;
+  resolved_at_ms: number | null;
+}
+
+export interface ProposedSubtask {
+  title: string;
+  description?: string | null;
+  kind?: TaskKind;
+  acceptance_criteria?: string[];
+  depends_on?: (number | Uuid)[];
+}
+
+export interface TaskProposal {
+  id: Uuid;
+  task_id: Uuid;
+  message_id: Uuid;
+  position: number;
+  proposal: ProposedSubtask;
+  status: ProposalStatus;
+  decided_by: string | null;
+  decision_note: string | null;
+  created_task_id: Uuid | null;
+  created_at_ms: number;
+  decided_at_ms: number | null;
+}
+
+export interface TaskRef {
+  id: Uuid;
+  title: string;
+  status: TaskStatus;
+}
+
+export interface TaskDetail {
+  task: Task;
+  dependencies: TaskRef[];
+  dependents: TaskRef[];
+  readiness: TaskReadiness;
+  assignments: TaskAssignment[];
+  messages: TaskMessage[];
+  findings: TaskFinding[];
+  proposals: TaskProposal[];
+}
+
+type TaskResult = { task: Task };
+type TaskAssignmentResult = { task: Task; assignment: TaskAssignment };
+type TaskDecision = { task_id: Uuid; note?: string };
+
+export interface TaskMethods {
+  "tasks.list": { params: { project_id?: Uuid; include_closed?: boolean; limit?: number }; result: { tasks: Task[] } };
+  "tasks.get": { params: { task_id: Uuid }; result: TaskDetail };
+  "tasks.create": {
+    params: {
+      project_id: Uuid;
+      title: string;
+      description?: string;
+      kind?: TaskKind;
+      priority?: TaskPriority;
+      acceptance_criteria?: string[];
+      depends_on?: Uuid[];
+      parent_task_id?: Uuid;
+      publish?: boolean;
+    };
+    result: TaskResult;
+  };
+  "tasks.update": {
+    params: {
+      task_id: Uuid;
+      expected_revision: number;
+      title?: string;
+      description?: string;
+      kind?: TaskKind;
+      priority?: TaskPriority;
+      acceptance_criteria?: string[];
+    };
+    result: TaskResult;
+  };
+  "tasks.publish": { params: { task_id: Uuid }; result: TaskResult };
+  "tasks.add_dependency": { params: { task_id: Uuid; depends_on: Uuid }; result: TaskResult };
+  "tasks.remove_dependency": { params: { task_id: Uuid; depends_on: Uuid }; result: TaskResult };
+  "tasks.assign": {
+    params: { task_id: Uuid; role: TaskRole; provider: AgentProvider; workspace_id: Uuid; start?: boolean };
+    result: TaskAssignmentResult;
+  };
+  "tasks.start_assignment": { params: { assignment_id: Uuid }; result: TaskAssignmentResult };
+  "tasks.cancel_assignment": { params: { assignment_id: Uuid; reason?: string }; result: TaskAssignmentResult };
+  "tasks.note": { params: { task_id: Uuid; text: string }; result: { message: TaskMessage; delivered: boolean } };
+  "tasks.complete": { params: TaskDecision; result: TaskResult };
+  "tasks.fail": { params: TaskDecision; result: TaskResult };
+  "tasks.cancel": { params: TaskDecision; result: TaskResult };
+  "tasks.retry": { params: TaskDecision; result: TaskResult };
+  "tasks.decide_proposal": {
+    params: { proposal_id: Uuid; approve: boolean; note?: string };
+    result: { proposal: TaskProposal; created_task: Task | null };
+  };
+}

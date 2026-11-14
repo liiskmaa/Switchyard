@@ -113,7 +113,7 @@ client detect a restart. `seq` stays continuous across restarts because it lives
 | `projects.add` | `{path: string}` (absolute) | `{project: Project}` |
 | `projects.remove` | `{project_id}` | `{project_id}`. Removes the registration only; files are untouched. `conflict` while a session is attached or while any worktree workspace is not `removed`. |
 | `projects.git_status` | `{project_id}` | `GitStatusReport` |
-| `events.list` | `{after_seq?, project_id?, session_id?, event_types?: string[], limit?: 1..=1000 (default 100)}` | `{events: EventEnvelope[]}` in ascending `seq` order. Without any filter it returns the **latest** `limit` events; with filters it returns the first `limit` events after `after_seq`. |
+| `events.list` | `{after_seq?, project_id?, session_id?, task_id?, event_types?: string[], limit?: 1..=1000 (default 100)}` | `{events: EventEnvelope[]}` in ascending `seq` order. Without any filter it returns the **latest** `limit` events; with filters it returns the first `limit` events after `after_seq`. |
 | `events.subscribe` | `{after_seq?, project_id?, event_types?}` | `{subscription_id}` |
 | `events.unsubscribe` | `{subscription_id}` | `{}` |
 | `agents.list` | `{refresh?: bool}` | `{agents: [AgentAvailability]}` One entry per provider (`claude_code`, `codex`): installed, version, tested version, executable, error, auth `{logged_in, method, provider}` (never account identity), capabilities |
@@ -144,6 +144,20 @@ client detect a restart. `seq` stays continuous across restarts because it lives
 | `policies.archive` | `{rule_id, expected_revision}` | `{rule, policy_revision}`. The rule stops applying; its history remains. |
 | `policies.effective` | `{project_id, workspace_id?}` | `EffectivePolicy`: system restrictions, per-category defaults and capabilities, active project rules and (with a workspace) that workspace's rules |
 | `policies.evaluations` | `{project_id?, workspace_id?, session_id?, rule_id?, decision?, limit?}` | `{evaluations: [PolicyEvaluation]}`, newest first. `rule_id` matches evaluations the rule decided or matched. |
+| `tasks.list` | `{project_id?, include_closed?, limit?}` | `{tasks: [Task]}`, newest first; completed and cancelled tasks only with `include_closed` |
+| `tasks.get` | `{task_id}` | `TaskDetail`: `{task, dependencies: [TaskRef], dependents: [TaskRef], readiness: satisfied\|waiting\|broken, assignments, messages, findings, proposals}` |
+| `tasks.create` | `{project_id, title, description?, kind?, priority?, acceptance_criteria?, depends_on?: [task_id], parent_task_id?, publish?}` | `{task}`: a `draft`, or with `publish` `ready`/`blocked`. Dependencies must be in the project; `invalid_params` for a cycle. `project_not_found`. |
+| `tasks.update` | `{task_id, expected_revision, title?, description?, kind?, priority?, acceptance_criteria?}` | `{task}`. `conflict` on a stale revision; `invalid_state` while an agent works on it or once it is closed. |
+| `tasks.publish` | `{task_id}` | `{task}`: `draft` → `ready` (or `blocked` while dependencies are open) |
+| `tasks.add_dependency` / `tasks.remove_dependency` | `{task_id, depends_on}` | `{task}`. Only before work starts; cycles are refused (`invalid_params`). |
+| `tasks.assign` | `{task_id, role: investigate\|implement\|review, provider, workspace_id, start?: bool (default true)}` | `{task, assignment}`. `review` needs `awaiting_review`; the others `ready` or `awaiting_review`. `agent_unavailable`; `unsupported` (no permission routing); `conflict` (open assignment, or the workspace is in use by another task's assignment, `data.task_id`). With `start`, as `tasks.start_assignment`. |
+| `tasks.start_assignment` | `{assignment_id}` | `{task, assignment}`: starts (or resumes the task's earlier session for the same role, provider and workspace) a session (`access: review` for reviews), records the context, then sends it. It waits for Core's own stop of a session that just reported in that workspace; any other live session there is never stopped and the start fails (`workspace_occupied`). On failure the assignment fails and the task returns. |
+| `tasks.cancel_assignment` | `{assignment_id, reason?}` | `{task, assignment}`; stops its session; pending approvals are cancelled with it |
+| `tasks.note` | `{task_id, text}` | `{message, delivered}`: sent to the working agent now, otherwise kept for the next assignment |
+| `tasks.complete` | `{task_id, note?}` | `{task}`: `awaiting_review` → `completed`, operator only; the last report becomes `result` |
+| `tasks.fail` / `tasks.cancel` | `{task_id, note?}` | `{task}`; an open assignment is cancelled and its session stopped |
+| `tasks.retry` | `{task_id, note?}` | `{task}`: `failed` → `ready`/`blocked`, or `blocked` → `ready` once dependencies are completed |
+| `tasks.decide_proposal` | `{proposal_id, approve, note?}` | `{proposal, created_task}`: approving creates a draft subtask; once only (`conflict`) |
 | `live.subscribe` | `{session_id?}` | `{subscription_id}`. Delivers `live` frames. |
 | `live.unsubscribe` | `{subscription_id}` | `{}` |
 
@@ -188,6 +202,32 @@ Session / Approval  see crates/switchyard-protocol/src/model.rs; both carry work
                    "unrestricted".
                    Session.capabilities / AgentAvailability.capabilities (v4): every field is
                    "supported" | "unsupported" | "unknown".
+                   Session.access (v4, additive, M6): "write" | "review". Review sessions cannot
+                   change files (ADR 0027); absent in older payloads means "write".
+Task             { id, project_id, parent_task_id?, title, description?, kind: investigation|
+                   implementation|general, priority: low|normal|high|urgent, acceptance_criteria,
+                   status: draft|ready|blocked|assigned|in_progress|awaiting_review|in_review|
+                   completed|failed|cancelled, status_reason?, result?, failure?, origin:
+                   operator|proposal, origin_proposal_id?, revision, created_at_ms, updated_at_ms,
+                   completed_at_ms?, open_assignment?: TaskAssignment, dependency_ids,
+                   pending_proposals, open_findings }
+TaskAssignment   { id, task_id, role: investigate|implement|review, provider, workspace_id,
+                   session_id?, status: pending|active|reported|failed|cancelled, context?
+                   (the TaskContext exactly as sent), context_version?, outcome?, created_at_ms,
+                   started_at_ms?, ended_at_ms? }
+TaskMessage      { id, task_id, assignment_id?, kind, sender: agent|operator|core,
+                   sender_session_id?, recipient: operator|agent|task, payload, causation_id?,
+                   delivery: recorded|pending|delivered, delivered_at_ms?, created_at_ms }
+                   kind: task_assignment | status_update | info_request | findings | proposal |
+                   review_result | blocker | delegation_request | completion_report |
+                   operator_note | malformed_report
+TaskFinding      { id, task_id, message_id, assignment_id?, severity: info|low|medium|high|critical,
+                   title, explanation?, suggestion?, path?, line?, status: open|resolved|dismissed,
+                   created_at_ms, resolved_at_ms? }
+TaskProposal     { id, task_id, message_id, position, proposal: {title, description?, kind,
+                   acceptance_criteria, depends_on: [index|task_id]}, status: pending|approved|
+                   rejected, decided_by?, decision_note?, created_task_id?, created_at_ms,
+                   decided_at_ms? }
 PolicyRule       { id, project_id, workspace_id?, workspace_name?, scope: "project"|"workspace",
                    category, decision, conditions: {path_prefix?, command?}, description, enabled,
                    archived, revision, created_at_ms, updated_at_ms, archived_at_ms? }
@@ -248,9 +288,19 @@ the registration is kept and `projects.git_status` returns `repository_unavailab
 | `workspace.cleanup_requested` | `{allowed, blockers: [code], warnings: [code], will_remove_directory, tree_fingerprint, entries}` |
 | `workspace.removed` | `{path, branch, directory_removed, branch_kept: true}` |
 | `workspace.cleanup_failed` | `{reason, detail}`; the workspace was preserved |
+| `task.created` | `{title, kind, priority, status, origin: operator\|proposal, parent_task_id, origin_proposal_id}` |
+| `task.updated` | `{revision, fields: [string]}` |
+| `task.status_changed` | `{from, to, reason}` |
+| `task.dependency_added` / `task.dependency_removed` | `{depends_on}` |
+| `task.assigned` | `{assignment_id, role, provider, workspace_id}` |
+| `task.assignment_started` | `{assignment_id, session_id, access: write\|review, context_version, resumed}` |
+| `task.assignment_ended` | `{assignment_id, status: reported\|failed\|cancelled, outcome}` |
+| `task.message_recorded` | `{message_id, kind, sender: agent\|operator\|core, assignment_id, summary}`; a message from an agent never authorizes anything |
+| `task.review_recorded` | `{assignment_id, reported_result, result, workspace_changed, findings}`; `result` is `blocked` when the workspace changed during the review |
+| `task.proposal_decided` | `{proposal_id, decision: approved\|rejected, created_task_id}` |
 | `files.changed` | `{changes: [{path, kind: created\|modified\|deleted\|renamed, from?}], dropped}`: what the filesystem reported in one workspace (debounced, `.git` and ignored paths excluded). Paths are relative to the workspace root; the context carries project, workspace and session. |
 
-Agent events carry `project_id`, `workspace_id`, `session_id` and `agent_id` in the envelope; workspace events carry `project_id` and `workspace_id`. `events.list` also accepts `session_id`.
+Agent events carry `project_id`, `workspace_id`, `session_id` and `agent_id` in the envelope; workspace events carry `project_id` and `workspace_id`; task events carry `project_id` and `task_id` (and `workspace_id` for assignment events). `events.list` also accepts `session_id` and `task_id`.
 
 Clients must tolerate unknown event types and payload fields.
 

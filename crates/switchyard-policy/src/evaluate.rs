@@ -204,6 +204,12 @@ fn caps(input: &EvaluationInput, deciding: Option<&Rule>) -> Vec<Restriction> {
             ),
         ));
     }
+    if op.category == OperationCategory::Shell && input.scope.review_session {
+        out.push(restriction(
+            "review_session",
+            "this is a review session: commands are never allowed automatically, and an approved command could still change files",
+        ));
+    }
     if op.category == OperationCategory::Shell {
         if op.background {
             out.push(restriction("background_command", "the command would keep running in the background"));
@@ -259,6 +265,9 @@ pub fn evaluate(input: &EvaluationInput, rules: &[Rule], policy_revision: i64) -
             "scope_mismatch",
             "the session's workspace does not belong to its project".into(),
         );
+    }
+    if scope.review_session && op.category.is_mutation() {
+        return system_deny(policy_revision, "review_session", "a review session cannot change files".into());
     }
     if op.category.is_path_category() && (input.paths.is_empty() || input.paths.len() < op.paths.len()) {
         return system_deny(policy_revision, "malformed", "the request has no resolvable target path".into());
@@ -367,6 +376,10 @@ pub fn system_restrictions() -> Vec<Restriction> {
             "Shell commands are allowed automatically only by an exact, plain command rule; background commands always ask.",
         ),
         restriction("unexpected_fields", "Requests with input fields Switchyard does not know always ask."),
+        restriction(
+            "review_session",
+            "Review sessions cannot change files, and their shell commands always ask.",
+        ),
         restriction("fail_closed", "If a request cannot be evaluated or recorded, it is denied."),
     ]
 }

@@ -114,6 +114,16 @@ impl SessionState {
 }
 
 string_enum!(
+    /// What a session may do to its workspace (ADR 0027). `Review` sessions
+    /// cannot change files: Switchyard's policy evaluation denies every file
+    /// change and never allows a shell command automatically.
+    SessionAccess {
+        Write => "write",
+        Review => "review",
+    }
+);
+
+string_enum!(
     /// Status of a centralized approval.
     ApprovalStatus {
         Pending => "pending",

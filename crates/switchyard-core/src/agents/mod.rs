@@ -20,7 +20,7 @@ use std::time::Duration;
 use switchyard_agents::claude::{self, ClaudeConfig, ClaudeInstallation, NativeSession};
 use switchyard_agents::codex::{self, CodexConfig, CodexInstallation};
 use switchyard_agents::{
-    AgentProvider, AgentSession, ApprovalStatus, DecisionSource, SessionState, SessionUpdate,
+    AgentProvider, AgentSession, ApprovalStatus, DecisionSource, SessionAccess, SessionState, SessionUpdate,
 };
 use switchyard_events::{DomainEvent, EventBus, EventContext, EventDraft, new_id, now_ms};
 use switchyard_git::Git;
@@ -473,6 +473,7 @@ impl AgentService {
     pub async fn start(
         &self,
         provider: AgentProvider,
+        access: SessionAccess,
         workspace_id: Uuid,
         project_id: Option<Uuid>,
         prompt: Option<String>,
@@ -531,6 +532,7 @@ impl AgentService {
                     exit_signal: None,
                     failure: None,
                     resume_count: 0,
+                    access,
                 };
                 sessions::insert(tx, &record)?;
                 Ok(Ok((record, ws_drafts)))

@@ -500,3 +500,4 @@ span.findings { padding-left: 0; }
   .rule-form-grid { grid-template-columns: minmax(0, 1fr); }
   .rule-scope, .evaluation-where { margin-left: 0; }
 }
+.task-description { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }

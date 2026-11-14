@@ -33,6 +33,7 @@ pub(super) fn session(
         attached,
         pending_approvals,
         capabilities: switchyard_agents::capabilities(r.provider),
+        access: r.access,
     }
 }
 

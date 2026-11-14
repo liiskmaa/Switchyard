@@ -30,6 +30,7 @@
 //! | `unmediated` | an `mcpToolCall` item that never asks |
 //! | `whoami` | replies with its thread id |
 //! | `remember` | replies with every earlier user message of the thread |
+//! | `report:HEX` | task scenario: see `fake_support/report.rs` (a role's steps: an optional tool, then a report block) |
 //! | `crash` | streams a little, writes to stderr, exits with code 3 |
 //! | `exit` | completes the turn, then exits 0 |
 //!
@@ -43,6 +44,9 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::Duration;
 
 use serde_json::{Value, json};
+
+#[path = "fake_support/report.rs"]
+mod report;
 
 const VERSION: &str = "codex-cli 0.166.0";
 
@@ -81,6 +85,8 @@ struct Fake {
     next_request: u64,
     /// Requests that arrived while a turn ran.
     backlog: Vec<Value>,
+    /// The task scenario of this process (`[fake:report:HEX]`).
+    task: report::TaskScript,
 }
 
 enum Wait {
@@ -285,133 +291,161 @@ impl Fake {
         self.save();
         let (scenario, arg) = marker(&text);
         let mut interrupted: Option<Value> = None;
-        match scenario {
-            "write" => {
-                if let Some(m) = self.patch(&turn, vec![(arg.unwrap_or("out.txt").to_owned(), "add")]) {
-                    interrupted = serde_json::from_str(&m).ok();
-                }
+        if scenario == "report" {
+            self.task.start(&text, arg);
+        }
+        if self.task.active() {
+            let step =
+                self.task.next().unwrap_or(report::Step { tool: None, text: "Nothing more to do.".into() });
+            if let Some(tool) = &step.tool {
+                let (name, arg) = tool.split_once(':').unwrap_or((tool.as_str(), ""));
+                let r = match name {
+                    "write" => self
+                        .patch(&turn, vec![(arg.to_owned(), "add")])
+                        .and_then(|m| serde_json::from_str(&m).ok()),
+                    "edit" => self
+                        .patch(&turn, vec![(arg.to_owned(), "update")])
+                        .and_then(|m| serde_json::from_str(&m).ok()),
+                    _ => self.command(&turn, arg, None),
+                };
+                interrupted = r;
             }
-            "edit" => {
-                if let Some(m) = self.patch(&turn, vec![(arg.unwrap_or("README.md").to_owned(), "update")]) {
-                    interrupted = serde_json::from_str(&m).ok();
-                }
+            if interrupted.is_none() {
+                self.message(&turn, &step.text);
             }
-            "mixed" => {
-                if let Some(m) =
-                    self.patch(&turn, vec![("a.txt".to_owned(), "add"), ("b.txt".to_owned(), "update")])
-                {
-                    interrupted = serde_json::from_str(&m).ok();
+        } else {
+            match scenario {
+                "write" => {
+                    if let Some(m) = self.patch(&turn, vec![(arg.unwrap_or("out.txt").to_owned(), "add")]) {
+                        interrupted = serde_json::from_str(&m).ok();
+                    }
                 }
-            }
-            "cmd" => interrupted = self.command(&turn, arg.unwrap_or("true"), None),
-            "move" => {
-                if let Some(m) = self.patch(&turn, vec![("README.md".to_owned(), "move")]) {
-                    interrupted = serde_json::from_str(&m).ok();
+                "edit" => {
+                    if let Some(m) =
+                        self.patch(&turn, vec![(arg.unwrap_or("README.md").to_owned(), "update")])
+                    {
+                        interrupted = serde_json::from_str(&m).ok();
+                    }
                 }
-            }
-            "newreq" => {
-                let answer = self.ask(
-                    "item/brandNew/requestApproval",
-                    json!({ "threadId": t, "turnId": turn, "itemId": "n1" }),
-                );
-                if let Wait::Interrupted(m) = answer {
-                    interrupted = Some(m);
-                } else {
-                    self.message(&turn, "Unknown request answered.");
+                "mixed" => {
+                    if let Some(m) =
+                        self.patch(&turn, vec![("a.txt".to_owned(), "add"), ("b.txt".to_owned(), "update")])
+                    {
+                        interrupted = serde_json::from_str(&m).ok();
+                    }
                 }
-            }
-            "garbage" => {
-                out(&json!("not an object"));
-                {
-                    let mut stdout = std::io::stdout().lock();
-                    let _ = writeln!(
-                        stdout,
-                        "{{\"id\": 77, \"method\": \"item/commandExecution/requestApproval\", \"params\": {{\"kind\""
+                "cmd" => interrupted = self.command(&turn, arg.unwrap_or("true"), None),
+                "move" => {
+                    if let Some(m) = self.patch(&turn, vec![("README.md".to_owned(), "move")]) {
+                        interrupted = serde_json::from_str(&m).ok();
+                    }
+                }
+                "newreq" => {
+                    let answer = self.ask(
+                        "item/brandNew/requestApproval",
+                        json!({ "threadId": t, "turnId": turn, "itemId": "n1" }),
                     );
-                    let _ = writeln!(stdout, "this is not json");
-                    let _ = stdout.flush();
+                    if let Wait::Interrupted(m) = answer {
+                        interrupted = Some(m);
+                    } else {
+                        self.message(&turn, "Unknown request answered.");
+                    }
                 }
-                self.notify("item/brandNewNotification", json!({ "threadId": t, "x": 1 }));
-                self.notify(
+                "garbage" => {
+                    out(&json!("not an object"));
+                    {
+                        let mut stdout = std::io::stdout().lock();
+                        let _ = writeln!(
+                            stdout,
+                            "{{\"id\": 77, \"method\": \"item/commandExecution/requestApproval\", \"params\": {{\"kind\""
+                        );
+                        let _ = writeln!(stdout, "this is not json");
+                        let _ = stdout.flush();
+                    }
+                    self.notify("item/brandNewNotification", json!({ "threadId": t, "x": 1 }));
+                    self.notify(
                     "item/started",
                     json!({ "threadId": t, "turnId": turn, "item": { "type": "brandNewItem", "id": "z1" } }),
                 );
-                self.notify("item/completed", json!({ "threadId": t, "turnId": turn, "item": { "type": "brandNewItem", "id": "z1", "status": "completed" } }));
-                out(&json!({ "id": 9999, "result": { "unexpected": true } }));
-                self.message(&turn, "Still here.");
-            }
-            "crashpending" => {
-                out(
-                    &json!({ "id": self.next_request, "method": "item/commandExecution/requestApproval", "params": {
-                    "kind": "command", "threadId": t, "turnId": turn, "itemId": "c9", "command": "/bin/zsh -lc 'touch crashed.txt'", "cwd": self.cwd } }),
-                );
-                std::thread::sleep(Duration::from_millis(500));
-                eprintln!("fake codex: crashed with a pending approval");
-                std::process::exit(3);
-            }
-            "dupid" => {
-                for _ in 0..2 {
-                    out(&json!({ "id": 42, "method": "item/commandExecution/requestApproval", "params": {
-                        "kind": "command", "threadId": t, "turnId": turn, "itemId": "d1", "command": "/bin/zsh -lc 'touch dup.txt'", "cwd": self.cwd } }));
+                    self.notify("item/completed", json!({ "threadId": t, "turnId": turn, "item": { "type": "brandNewItem", "id": "z1", "status": "completed" } }));
+                    out(&json!({ "id": 9999, "result": { "unexpected": true } }));
+                    self.message(&turn, "Still here.");
                 }
-                // Wait for the adapter to give up (stdin closes).
-                while self.input.recv().is_ok() {}
-                return;
-            }
-            "pending" => interrupted = self.command(&turn, "sleep 100", None),
-            "subagent" => {
-                let child = new_id();
-                // Like Codex: the child thread's turn starts before its first request.
-                self.notify(
+                "crashpending" => {
+                    out(
+                        &json!({ "id": self.next_request, "method": "item/commandExecution/requestApproval", "params": {
+                    "kind": "command", "threadId": t, "turnId": turn, "itemId": "c9", "command": "/bin/zsh -lc 'touch crashed.txt'", "cwd": self.cwd } }),
+                    );
+                    std::thread::sleep(Duration::from_millis(500));
+                    eprintln!("fake codex: crashed with a pending approval");
+                    std::process::exit(3);
+                }
+                "dupid" => {
+                    for _ in 0..2 {
+                        out(
+                            &json!({ "id": 42, "method": "item/commandExecution/requestApproval", "params": {
+                        "kind": "command", "threadId": t, "turnId": turn, "itemId": "d1", "command": "/bin/zsh -lc 'touch dup.txt'", "cwd": self.cwd } }),
+                        );
+                    }
+                    // Wait for the adapter to give up (stdin closes).
+                    while self.input.recv().is_ok() {}
+                    return;
+                }
+                "pending" => interrupted = self.command(&turn, "sleep 100", None),
+                "subagent" => {
+                    let child = new_id();
+                    // Like Codex: the child thread's turn starts before its first request.
+                    self.notify(
                     "turn/started",
                     json!({ "threadId": child, "turn": { "id": format!("child-turn-{child}"), "status": "inProgress", "items": [] } }),
                 );
-                interrupted = self.command(&turn, "touch from-subagent.txt", Some(child));
-                if interrupted.is_none() {
-                    self.message(&turn, "Sub-agent finished.");
+                    interrupted = self.command(&turn, "touch from-subagent.txt", Some(child));
+                    if interrupted.is_none() {
+                        self.message(&turn, "Sub-agent finished.");
+                    }
                 }
-            }
-            "perm" => {
-                let answer = self.ask(
+                "perm" => {
+                    let answer = self.ask(
                     "item/permissions/requestApproval",
                     json!({ "threadId": t, "turnId": turn, "itemId": "p1", "environmentId": null, "startedAtMs": 0, "cwd": self.cwd, "reason": "more access", "permissions": { "network": { "enabled": true } } }),
                 );
-                if let Wait::Interrupted(m) = answer {
-                    interrupted = Some(m);
-                } else {
-                    self.message(&turn, "Permissions answered.");
-                }
-            }
-            "unmediated" => {
-                self.notify("item/started", json!({ "threadId": t, "turnId": turn, "item": { "type": "mcpToolCall", "id": "mcp1", "server": "x", "tool": "y", "status": "inProgress", "arguments": {} } }));
-                self.notify("item/completed", json!({ "threadId": t, "turnId": turn, "item": { "type": "mcpToolCall", "id": "mcp1", "server": "x", "tool": "y", "status": "completed", "arguments": {} } }));
-                self.message(&turn, "Called a tool.");
-            }
-            "slow" => {
-                let item = format!("msg_{}", new_id());
-                self.notify("item/started", json!({ "threadId": t, "turnId": turn, "item": { "type": "agentMessage", "id": item, "text": "" } }));
-                for i in 0..60 {
-                    if let Some(m) = self.interrupted(Duration::from_millis(50)) {
-                        interrupted = Some(json!({ "request": m }));
-                        break;
+                    if let Wait::Interrupted(m) = answer {
+                        interrupted = Some(m);
+                    } else {
+                        self.message(&turn, "Permissions answered.");
                     }
-                    self.notify("item/agentMessage/delta", json!({ "threadId": t, "turnId": turn, "itemId": item, "delta": format!("chunk{i} ") }));
                 }
-                if interrupted.is_none() {
-                    self.notify("item/completed", json!({ "threadId": t, "turnId": turn, "item": { "type": "agentMessage", "id": item, "text": "slow done" } }));
+                "unmediated" => {
+                    self.notify("item/started", json!({ "threadId": t, "turnId": turn, "item": { "type": "mcpToolCall", "id": "mcp1", "server": "x", "tool": "y", "status": "inProgress", "arguments": {} } }));
+                    self.notify("item/completed", json!({ "threadId": t, "turnId": turn, "item": { "type": "mcpToolCall", "id": "mcp1", "server": "x", "tool": "y", "status": "completed", "arguments": {} } }));
+                    self.message(&turn, "Called a tool.");
                 }
+                "slow" => {
+                    let item = format!("msg_{}", new_id());
+                    self.notify("item/started", json!({ "threadId": t, "turnId": turn, "item": { "type": "agentMessage", "id": item, "text": "" } }));
+                    for i in 0..60 {
+                        if let Some(m) = self.interrupted(Duration::from_millis(50)) {
+                            interrupted = Some(json!({ "request": m }));
+                            break;
+                        }
+                        self.notify("item/agentMessage/delta", json!({ "threadId": t, "turnId": turn, "itemId": item, "delta": format!("chunk{i} ") }));
+                    }
+                    if interrupted.is_none() {
+                        self.notify("item/completed", json!({ "threadId": t, "turnId": turn, "item": { "type": "agentMessage", "id": item, "text": "slow done" } }));
+                    }
+                }
+                "whoami" => self.message(&turn, &format!("thread {t}")),
+                "remember" => self.message(&turn, &format!("earlier: {}", earlier.join(" | "))),
+                "crash" => {
+                    self.notify(
+                        "item/agentMessage/delta",
+                        json!({ "threadId": t, "turnId": turn, "itemId": "m", "delta": "about to crash" }),
+                    );
+                    eprintln!("fake codex: simulated crash");
+                    std::process::exit(3);
+                }
+                _ => self.message(&turn, "Hello from fake codex."),
             }
-            "whoami" => self.message(&turn, &format!("thread {t}")),
-            "remember" => self.message(&turn, &format!("earlier: {}", earlier.join(" | "))),
-            "crash" => {
-                self.notify(
-                    "item/agentMessage/delta",
-                    json!({ "threadId": t, "turnId": turn, "itemId": "m", "delta": "about to crash" }),
-                );
-                eprintln!("fake codex: simulated crash");
-                std::process::exit(3);
-            }
-            _ => self.message(&turn, "Hello from fake codex."),
         }
         if let Some(i) = interrupted {
             if let Some(req) = i.get("request") {
@@ -522,6 +556,7 @@ fn serve() {
         history: Vec::new(),
         next_request: 0,
         backlog: Vec::new(),
+        task: report::TaskScript::default(),
     };
     loop {
         let next =

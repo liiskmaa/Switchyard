@@ -18,6 +18,10 @@ Rust process, **Switchyard Core**. The Tauri desktop app is only a client.
 - Milestone 5: Codex sessions through `codex app-server` (JSON-RPC over stdio) in
   `crates/switchyard-agents/src/codex` (`protocol.rs` is a pure state machine, `classify.rs` maps
   approvals to operations). See `docs/architecture/codex-integration.md` and ADRs 0020–0022.
+- Milestone 6: tasks and multi-agent collaboration (`crates/switchyard-tasks` is pure: state machine,
+  graph, report parser, context renderer; `crates/switchyard-storage/src/tasks.rs`,
+  `crates/switchyard-core/src/tasks/`, `migrations/0005_tasks.sql`, `apps/desktop/src/features/tasks`).
+  See `docs/architecture/tasks.md` and ADRs 0023–0027.
 
 The verified Claude CLI behaviour is in `docs/architecture/agent-integration.md`, the verified Codex
 app-server behaviour (0.166.0) in `docs/architecture/codex-integration.md`, and the contract in
@@ -41,8 +45,10 @@ cargo test -p switchyard-agents claude::wire            # parser against recorde
 cargo test -p switchyard-core --test workspaces         # worktrees, concurrent sessions, cleanup, recovery
 cargo test -p switchyard-git --test worktrees           # git worktree operations on temp repos
 cargo test -p switchyard-core --test codex              # Codex sessions via the fake app-server
+cargo test -p switchyard-core --test tasks              # tasks via both fakes ([fake:report:HEX] scenarios)
 SWITCHYARD_REAL_CLAUDE=1 cargo test -p switchyard-core --test real_claude -- --ignored   # real CLI, paid
 SWITCHYARD_REAL_CODEX=1 cargo test -p switchyard-core --test real_codex -- --ignored     # real CLI, paid
+SWITCHYARD_REAL_CLAUDE=1 SWITCHYARD_REAL_CODEX=1 cargo test -p switchyard-core --test real_tasks -- --ignored
 ```
 
 Rust is pinned to 1.99.1 (`rust-toolchain.toml`), edition 2024. Clippy warns on `unwrap`/`expect`
@@ -135,6 +141,17 @@ When running Core or the app manually, set `SWITCHYARD_DATA_DIR` (and, if that p
     temp dir is allowed). Real-CLI tests go through `TestCore::start_real`, which requires
     `SWITCHYARD_REAL_CLAUDE=1` / `SWITCHYARD_REAL_CODEX=1` exactly. Never start a test Core with
     `switchyard_core::start` directly; use `common::start_core`.
+- **Tasks.**
+  - Task changes go through `TaskService` (`journal::commit_checked`, rows plus `task.*` events in one
+    transaction; status via `tasks::set_status`, which validates `TaskStatus::transition` and
+    re-evaluates dependents). Never update `tasks`/`task_assignments` rows elsewhere.
+  - The reactor (`tasks/reactor.rs`) follows `agent.turn_completed`/`agent.exited`/`agent.failed`
+    through the bus; every reaction calls `advance_assignment_seq` in its transaction (replay-safe).
+  - Agent reports are claims: never complete, assign, create tasks or approve anything from a report.
+    Only operator methods do. Review sessions (`SessionAccess::Review`) are denied file mutations by
+    the system policy and are fingerprinted before/after; keep both.
+  - Changes to the task context or report format bump `CONTEXT_VERSION` and keep the fakes'
+    `src/bin/fake_support/report.rs` in sync.
 - Text edits made with ad-hoc scripts can silently no-op after `cargo fmt` reflows code. Verify
   behaviour-only edits (guards, checks) with a test.
 

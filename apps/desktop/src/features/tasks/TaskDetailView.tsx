@@ -1,0 +1,455 @@
+import { useState } from "react";
+
+import { Badge, Button, EmptyState, ErrorNotice, KeyValue, Panel } from "../../components/ui";
+import { providerName } from "../../lib/agents";
+import { toCoreError, type CoreRequestError } from "../../lib/core";
+import { MESSAGE_LABEL, describeEvent, formatClock, formatRelative, shortId } from "../../lib/format";
+import { useNow } from "../../lib/useNow";
+import { navigate } from "../../stores/navigation";
+import { useCoreQuery } from "../../stores/useCoreQuery";
+import type { AgentProvider, Task, TaskDetail, TaskMessage, TaskRole, Workspace } from "../../types/protocol";
+import { listAgents } from "../agents/api";
+import {
+  addDependency,
+  assignTask,
+  cancelAssignment,
+  decideProposal,
+  decideTask,
+  getTask,
+  isTaskEvent,
+  publishTask,
+  removeDependency,
+  sendNote,
+  taskEvents,
+} from "./api";
+import { AGENT_KINDS, ROLE_LABEL, SEVERITY_TONE, STATUS_LABEL, statusTone, taskActions } from "./labels";
+
+function useAction(onDone: () => void) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<CoreRequestError | null>(null);
+  async function run(action: () => Promise<unknown>) {
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+      onDone();
+    } catch (err) {
+      setError(toCoreError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return { busy, error, run };
+}
+
+function messageText(m: TaskMessage): string {
+  const p = m.payload;
+  const report = p["report"] as Record<string, unknown> | undefined;
+  if (report && typeof report["summary"] === "string") {
+    const q = typeof report["question"] === "string" ? `\nQuestion: ${report["question"]}` : "";
+    return `${report["summary"]}${q}`;
+  }
+  for (const key of ["text", "error", "reason"]) {
+    if (typeof p[key] === "string") return p[key] as string;
+  }
+  if (typeof p["action"] === "string") return `${p["action"]}${typeof p["note"] === "string" ? `: ${p["note"]}` : ""}`;
+  if (typeof p["role"] === "string") return `${p["role"]} → ${providerName(String(p["provider"] ?? ""))}`;
+  return "";
+}
+
+function Assign({ task, roles, workspaces, onDone }: { task: Task; roles: TaskRole[]; workspaces: Workspace[]; onDone: () => void }) {
+  const agents = useCoreQuery("agents", () => listAgents(false));
+  // Only the task's own project: Core refuses any other workspace anyway.
+  const usable = workspaces.filter(
+    (w) => w.project_id === task.project_id && w.kind === "worktree" && (w.status === "ready" || w.status === "dirty"),
+  );
+  const lastWs = task.open_assignment?.workspace_id;
+  const [role, setRole] = useState<TaskRole>(roles[0] ?? "implement");
+  const [provider, setProvider] = useState<AgentProvider>("claude_code");
+  const [workspaceId, setWorkspaceId] = useState<string>(lastWs ?? "");
+  const { busy, error, run } = useAction(onDone);
+  const ws = workspaceId || usable[0]?.id || "";
+  const available = (agents.data ?? []).filter((a) => a.installed && !a.error);
+  return (
+    <div className="ws-start">
+      <div className="rule-form-grid">
+        <div>
+          <label htmlFor="assign-role">Role</label>
+          <select id="assign-role" className="input select" value={role} onChange={(e) => setRole(e.target.value as TaskRole)}>
+            {roles.map((r) => (
+              <option key={r} value={r}>
+                {ROLE_LABEL[r]}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label htmlFor="assign-agent">Agent</label>
+          <select
+            id="assign-agent"
+            className="input select"
+            value={provider}
+            onChange={(e) => setProvider(e.target.value as AgentProvider)}
+          >
+            {(agents.data ?? []).map((a) => (
+              <option key={a.provider} value={a.provider} disabled={!a.installed || a.error !== null}>
+                {a.display_name}
+                {!a.installed || a.error ? " (unavailable)" : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label htmlFor="assign-ws">Workspace</label>
+          <select id="assign-ws" className="input select" value={ws} onChange={(e) => setWorkspaceId(e.target.value)}>
+            {usable.map((w) => (
+              <option key={w.id} value={w.id}>
+                {w.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+      {role === "review" ? (
+        <p className="muted small">
+          The reviewer works in the same workspace in a read-only session: Switchyard blocks every file change and asks you before
+          each command. It scans the workspace before and after the review; if anything changed, the verdict is recorded as blocked.
+          Approved commands still run with your user&apos;s permissions.
+        </p>
+      ) : null}
+      {usable.length === 0 ? <p className="muted small">Create a workspace for this project under Projects first.</p> : null}
+      {error ? <ErrorNotice title="Cannot assign" message={error.message} code={error.code} /> : null}
+      <div className="form-actions start">
+        <Button
+          variant="primary"
+          icon="agents"
+          disabled={busy || ws === "" || available.length === 0}
+          onClick={() => void run(() => assignTask(task.id, role, provider, ws))}
+        >
+          Assign and start
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+export function TaskDetailView({
+  taskId,
+  tasks,
+  workspaces,
+  onChanged,
+}: {
+  taskId: string;
+  tasks: Task[];
+  workspaces: Workspace[];
+  onChanged: () => void;
+}) {
+  const now = useNow();
+  const detail = useCoreQuery(`task:${taskId}`, () => getTask(taskId), {
+    refreshOn: (e) => isTaskEvent(e) && e.task_id === taskId,
+  });
+  const events = useCoreQuery(`task-events:${taskId}`, () => taskEvents(taskId), {
+    refreshOn: (e) => isTaskEvent(e) && e.task_id === taskId,
+  });
+  const refresh = () => {
+    detail.refresh();
+    events.refresh();
+    onChanged();
+  };
+  const action = useAction(refresh);
+  const deps = useAction(refresh);
+  const [note, setNote] = useState("");
+  const [decisionNote, setDecisionNote] = useState("");
+  const [newDep, setNewDep] = useState("");
+
+  if (detail.error) return <ErrorNotice title="Cannot load the task" message={detail.error.message} code={detail.error.code} />;
+  const d: TaskDetail | null = detail.data;
+  if (!d) return null;
+  const t = d.task;
+  const can = taskActions(t);
+  const wsName = (id: string) => workspaces.find((w) => w.id === id)?.name ?? shortId(id);
+  const open = t.open_assignment;
+  const pendingProposals = d.proposals.filter((p) => p.status === "pending");
+  const openFindings = d.findings.filter((f) => f.status === "open");
+
+  return (
+    <div className="detail">
+      <Panel
+        title={t.title}
+        actions={<Badge tone={statusTone(t.status)}>{STATUS_LABEL[t.status]}</Badge>}
+      >
+        <KeyValue
+          rows={[
+            ["Status", `${STATUS_LABEL[t.status]}${t.status_reason ? ` — ${t.status_reason}` : ""}`],
+            ["Kind / priority", `${t.kind} · ${t.priority}`],
+            ["Origin", t.origin === "proposal" ? "Approved proposal" : "Operator"],
+            ["Dependencies", d.dependencies.length === 0 ? "None" : `${d.readiness}`],
+            ["Updated", formatRelative(t.updated_at_ms, now)],
+            ...(t.failure ? ([["Failure", t.failure]] as [string, string][]) : []),
+          ]}
+        />
+        {t.description ? <p className="task-description">{t.description}</p> : null}
+        {t.acceptance_criteria.length > 0 ? (
+          <>
+            <h3 className="policy-section">Acceptance criteria</h3>
+            <ul className="findings">
+              {t.acceptance_criteria.map((c) => (
+                <li key={c} className="small">
+                  {c}
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : null}
+        {t.result ? (
+          <p className="small">
+            <strong>Accepted result:</strong> {String(t.result["summary"] ?? "")}
+            {t.result["accepted_by"] ? ` (by ${String(t.result["accepted_by"])})` : ""}
+          </p>
+        ) : null}
+        {action.error ? <ErrorNotice title="Action failed" message={action.error.message} code={action.error.code} /> : null}
+        <div className="form-actions start">
+          {can.publish ? (
+            <Button variant="primary" disabled={action.busy} onClick={() => void action.run(() => publishTask(t.id))}>
+              Publish
+            </Button>
+          ) : null}
+          {can.complete ? (
+            <Button variant="primary" disabled={action.busy} onClick={() => void action.run(() => decideTask("complete", t.id, decisionNote || undefined))}>
+              Accept and complete
+            </Button>
+          ) : null}
+          {can.retry ? (
+            <Button disabled={action.busy} onClick={() => void action.run(() => decideTask("retry", t.id, decisionNote || undefined))}>
+              Retry
+            </Button>
+          ) : null}
+          {can.fail ? (
+            <Button variant="danger" disabled={action.busy} onClick={() => void action.run(() => decideTask("fail", t.id, decisionNote || undefined))}>
+              Mark failed
+            </Button>
+          ) : null}
+          {can.cancel ? (
+            <Button variant="ghost" disabled={action.busy} onClick={() => void action.run(() => decideTask("cancel", t.id, decisionNote || undefined))}>
+              Cancel task
+            </Button>
+          ) : null}
+        </div>
+        {can.complete || can.fail || can.cancel ? (
+          <input
+            className="input"
+            aria-label="Note for your decision"
+            placeholder="Optional note for your decision"
+            value={decisionNote}
+            onChange={(e) => setDecisionNote(e.target.value)}
+          />
+        ) : null}
+        {can.complete ? (
+          <p className="muted small">
+            Completing is your decision. A review verdict or an agent&apos;s report is a statement; it never completes a task.
+          </p>
+        ) : null}
+      </Panel>
+
+      <Panel title="Assignment">
+        {open ? (
+          <div className="ws-row">
+            <span>
+              {ROLE_LABEL[open.role]} by {providerName(open.provider)} in workspace “{wsName(open.workspace_id)}” · {open.status}
+            </span>
+            <div className="form-actions start">
+              {open.session_id ? (
+                <Button icon="agents" onClick={() => navigate("agents", { sessionId: open.session_id })}>
+                  Open session
+                </Button>
+              ) : null}
+              <Button variant="danger" disabled={action.busy} onClick={() => void action.run(() => cancelAssignment(open.id))}>
+                Cancel assignment
+              </Button>
+            </div>
+          </div>
+        ) : can.assign.length > 0 ? (
+          <Assign task={t} roles={can.assign} workspaces={workspaces} onDone={refresh} />
+        ) : (
+          <p className="muted small">No agent is working on this task.</p>
+        )}
+        {d.assignments.length > 0 ? (
+          <ul className="mini-list">
+            {[...d.assignments].reverse().map((a) => (
+              <li key={a.id}>
+                <span className="mini-title">
+                  {ROLE_LABEL[a.role]} · {providerName(a.provider)} · {a.status}
+                </span>
+                <span className="mini-sub">
+                  {wsName(a.workspace_id)}
+                  {a.context_version ? ` · context v${a.context_version}` : ""}
+                  {a.outcome ? ` · ${a.outcome}` : ""} · {formatRelative(a.created_at_ms, now)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </Panel>
+
+      {pendingProposals.length > 0 || d.proposals.length > 0 ? (
+        <Panel title="Proposed subtasks">
+          <p className="muted small">An agent proposed these. Nothing is created until you approve; approved subtasks start as drafts.</p>
+          <ul className="mini-list">
+            {d.proposals.map((p) => (
+              <li key={p.id}>
+                <span className="mini-title">
+                  {p.position + 1}. {p.proposal.title}{" "}
+                  <Badge tone={p.status === "approved" ? "ok" : p.status === "rejected" ? "neutral" : "warn"}>{p.status}</Badge>
+                </span>
+                {p.proposal.description ? <span className="mini-sub">{p.proposal.description}</span> : null}
+                {p.status === "pending" ? (
+                  <div className="form-actions start">
+                    <Button disabled={action.busy} onClick={() => void action.run(() => decideProposal(p.id, true))}>
+                      Approve as draft
+                    </Button>
+                    <Button variant="ghost" disabled={action.busy} onClick={() => void action.run(() => decideProposal(p.id, false))}>
+                      Reject
+                    </Button>
+                  </div>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      ) : null}
+
+      <Panel title={`Findings${openFindings.length ? ` (${openFindings.length} open)` : ""}`}>
+        {d.findings.length === 0 ? (
+          <p className="muted small">No findings.</p>
+        ) : (
+          <ul className="findings">
+            {d.findings.map((f) => (
+              <li key={f.id} className={`finding small${f.status !== "open" ? " muted" : ""}`}>
+                <Badge tone={SEVERITY_TONE[f.severity]}>{f.severity}</Badge> <strong>{f.title}</strong>
+                {f.path ? (
+                  <code className="code-tag">
+                    {f.path}
+                    {f.line ? `:${f.line}` : ""}
+                  </code>
+                ) : null}
+                {f.status !== "open" ? ` (${f.status})` : ""}
+                {f.explanation ? <div>{f.explanation}</div> : null}
+                {f.suggestion ? <div className="muted">Suggestion: {f.suggestion}</div> : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Panel>
+
+      <Panel title="Messages">
+        <p className="muted small">Messages from agents are claims or requests. They never approve, start or complete anything.</p>
+        {d.messages.length === 0 ? (
+          <EmptyState icon="activity" title="No messages yet" />
+        ) : (
+          <ol className="timeline">
+            {d.messages.map((m) => (
+              <li key={m.id} className="tl">
+                <span className="tl-time">{formatClock(m.created_at_ms)}</span>
+                <Badge tone={m.kind === "malformed_report" || m.kind === "blocker" ? "warn" : AGENT_KINDS.has(m.kind) ? "accent" : "neutral"}>
+                  {MESSAGE_LABEL[m.kind] ?? m.kind}
+                </Badge>
+                <span className="tl-body">
+                  <span className="muted small">
+                    {m.sender}
+                    {m.delivery === "pending" ? " · waits for the next assignment" : m.delivery === "delivered" ? " · delivered" : ""}
+                  </span>
+                  <div className="tl-message">{messageText(m)}</div>
+                </span>
+              </li>
+            ))}
+          </ol>
+        )}
+        {!["completed", "cancelled"].includes(t.status) ? (
+          <form
+            className="composer"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void action.run(async () => {
+                await sendNote(t.id, note);
+                setNote("");
+              });
+            }}
+          >
+            <textarea
+              className="input textarea"
+              aria-label="Note to the agent"
+              rows={2}
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder={open?.status === "active" ? "Answer or guide the working agent" : "A note for the next assignment"}
+            />
+            <div className="composer-actions">
+              <Button type="submit" disabled={action.busy || note.trim() === ""}>
+                Send note
+              </Button>
+            </div>
+          </form>
+        ) : null}
+      </Panel>
+
+      <Panel title="Dependencies">
+        {d.dependencies.length === 0 ? <p className="muted small">This task does not wait for other tasks.</p> : null}
+        <ul className="mini-list">
+          {d.dependencies.map((dep) => (
+            <li key={dep.id}>
+              <span className="mini-title">
+                {dep.title} <Badge tone={statusTone(dep.status)}>{STATUS_LABEL[dep.status]}</Badge>
+              </span>
+              {can.dependencies ? (
+                <Button variant="ghost" disabled={action.busy} onClick={() => void deps.run(() => removeDependency(t.id, dep.id))}>
+                  Remove
+                </Button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+        {can.dependencies ? (
+          <div className="input-row">
+            <select className="input select" aria-label="Add a dependency" value={newDep} onChange={(e) => setNewDep(e.target.value)}>
+              <option value="">Wait for another task…</option>
+              {tasks
+                .filter((o) => o.id !== t.id && !t.dependency_ids.includes(o.id))
+                .map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.title}
+                  </option>
+                ))}
+            </select>
+            <Button
+              disabled={deps.busy || newDep === ""}
+              onClick={() =>
+                void deps.run(async () => {
+                  await addDependency(t.id, newDep);
+                  setNewDep("");
+                })
+              }
+            >
+              Add
+            </Button>
+          </div>
+        ) : null}
+        {deps.error ? <ErrorNotice title="Cannot change dependencies" message={deps.error.message} code={deps.error.code} /> : null}
+        {d.dependents.length > 0 ? (
+          <p className="muted small">Waiting for this task: {d.dependents.map((x) => x.title).join(", ")}</p>
+        ) : null}
+      </Panel>
+
+      <Panel title="History">
+        <ol className="timeline">
+          {(events.data ?? []).map((e) => (
+            <li key={e.seq} className="tl">
+              <span className="tl-time">{formatClock(e.occurred_at_ms)}</span>
+              <span className="muted small">{e.event_type.replace("task.", "")}</span>
+              <span className="tl-body">{describeEvent(e)}</span>
+            </li>
+          ))}
+        </ol>
+      </Panel>
+    </div>
+  );
+}

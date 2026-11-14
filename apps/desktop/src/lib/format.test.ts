@@ -123,3 +123,26 @@ describe("turnCostText", () => {
     expect(turnCostText({})).toBe("");
   });
 });
+
+describe("task events", () => {
+  it("describes the task lifecycle", () => {
+    expect(describeEvent(event(1, "task.status_changed", { from: "ready", to: "assigned", reason: "implement assigned to codex" }))).toBe(
+      "Task ready → assigned (implement assigned to codex)",
+    );
+    expect(describeEvent(event(2, "task.assigned", { role: "review", provider: "claude_code" }))).toBe(
+      "review assigned to Claude Code",
+    );
+    expect(describeEvent(event(3, "task.assignment_started", { access: "review", context_version: 1, resumed: false }))).toBe(
+      "Started a read-only review session with task context v1",
+    );
+    expect(describeEvent(event(4, "task.message_recorded", { kind: "proposal", sender: "agent", summary: "Split it" }))).toBe(
+      "Proposal from agent: Split it",
+    );
+  });
+
+  it("says when Core overrode a review verdict", () => {
+    expect(
+      describeEvent(event(5, "task.review_recorded", { result: "blocked", reported_result: "approved", workspace_changed: true, findings: 1 })),
+    ).toBe("Review recorded as blocked: the workspace changed during the review (reviewer said approved)");
+  });
+});

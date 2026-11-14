@@ -21,8 +21,8 @@ pub mod session;
 
 pub use event::{AdapterOutput, AgentEvent, LiveChunk, LiveKind, PermissionRequest, TokenUsage, ToolOutcome};
 pub use model::{
-    AgentProvider, ApprovalStatus, Capabilities, DecisionSource, PermissionDecision, SessionState,
-    StateError, Support,
+    AgentProvider, ApprovalStatus, Capabilities, DecisionSource, PermissionDecision, SessionAccess,
+    SessionState, StateError, Support,
 };
 pub use session::{AgentSession, ExitReport, SessionError, SessionUpdate};
 

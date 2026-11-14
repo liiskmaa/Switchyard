@@ -40,6 +40,7 @@ pub(crate) async fn list(
     if params.after_seq.is_none()
         && params.project_id.is_none()
         && params.session_id.is_none()
+        && params.task_id.is_none()
         && params.event_types.is_empty()
     {
         let events = state
@@ -53,6 +54,7 @@ pub(crate) async fn list(
         after_seq: params.after_seq,
         project_id: params.project_id,
         session_id: params.session_id,
+        task_id: params.task_id,
         event_types: params.event_types,
         limit,
     };

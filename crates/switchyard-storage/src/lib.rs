@@ -16,6 +16,7 @@ pub mod policies;
 pub mod projects;
 pub mod sessions;
 pub mod stats;
+pub mod tasks;
 pub mod workspaces;
 
 use std::path::{Path, PathBuf};

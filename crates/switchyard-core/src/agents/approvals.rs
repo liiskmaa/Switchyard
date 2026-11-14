@@ -217,6 +217,7 @@ impl AgentService {
             session_id,
             workspace_id: workspace.as_ref().map(|w| w.id),
             workspace_project_id: workspace.as_ref().map(|w| w.project_id),
+            review_session: session.access == switchyard_agents::SessionAccess::Review,
         };
         let paths = match &workspace {
             Some(ws) => {

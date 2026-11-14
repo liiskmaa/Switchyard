@@ -53,6 +53,7 @@ impl World {
             session_id: self.session,
             workspace_id: Some(self.workspace),
             workspace_project_id: Some(self.project),
+            review_session: false,
         }
     }
 
@@ -387,4 +388,43 @@ fn explanations_name_the_rule_and_survive_serialization() {
     assert_eq!(json["policy_revision"], 12);
     let back: switchyard_policy::Evaluation = serde_json::from_value(json).unwrap();
     assert_eq!(back, e);
+}
+
+/// ADR 0027: a review session cannot change files, whatever the rules say,
+/// and its commands always need a person.
+#[test]
+fn review_sessions_cannot_change_files_and_commands_always_ask() {
+    let w = world();
+    let review = |mut i: EvaluationInput| {
+        i.scope.review_session = true;
+        i
+    };
+    let allow_all = [
+        w.rule(FileWrite, Allow),
+        w.rule(FileEdit, Allow),
+        w.rule(FileDelete, Allow),
+        with_command(w.rule(Shell, Allow), "cargo test"),
+    ];
+    for category in [FileWrite, FileEdit, FileDelete] {
+        let e = evaluate(&review(w.file(category, "src/a.rs")), &allow_all, 0);
+        assert_eq!((e.decision, e.reason), (Deny, ReasonCode::SystemRestriction), "{category}");
+        assert!(e.explanation.contains("review session"));
+    }
+    let shell = evaluate(&review(w.shell("cargo test")), &allow_all, 0);
+    assert_eq!((shell.decision, shell.reason), (Ask, ReasonCode::Capped), "an exact rule cannot auto-allow");
+    assert!(shell.restrictions.iter().any(|r| r.code == "review_session"));
+    let read = evaluate(&review(w.file(FileRead, "src/a.rs")), &[], 0);
+    assert_eq!(read.decision, Allow, "reading stays allowed");
+    // Outside review sessions the same rules still apply.
+    assert_eq!(evaluate(&w.file(FileWrite, "src/a.rs"), &allow_all, 0).decision, Allow);
+    assert_eq!(evaluate(&w.shell("cargo test"), &allow_all, 0).decision, Allow);
+}
+
+#[test]
+fn evaluations_recorded_before_review_sessions_still_load() {
+    let w = world();
+    let mut v = serde_json::to_value(w.file(FileRead, "a")).unwrap();
+    v["scope"].as_object_mut().unwrap().remove("review_session");
+    let back: EvaluationInput = serde_json::from_value(v).unwrap();
+    assert!(!back.scope.review_session);
 }

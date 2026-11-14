@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="Status: milestone 4" src="https://img.shields.io/badge/status-milestone%204-orange">
+  <img alt="Status: milestone 6" src="https://img.shields.io/badge/status-milestone%206-orange">
   <img alt="Platform: macOS" src="https://img.shields.io/badge/platform-macOS-lightgrey">
   <img alt="Rust 1.99" src="https://img.shields.io/badge/rust-1.99-b7410e">
   <img alt="Tauri 2" src="https://img.shields.io/badge/tauri-2-24c8db">
@@ -65,12 +65,29 @@ every action that matters. The desktop app is a client: closing it never stops y
   - After a Core crash, workspaces and their changes are preserved and nothing restarts on its own.
 - **Observed file changes:** real filesystem events per workspace, kept separate from what the
   agent says it did.
+- **Tasks across agents** (milestone 6):
+  - Tasks are durable work with dependencies (cycles are refused) and acceptance criteria. They
+    are independent of any session.
+  - Assign a task to Claude Code or Codex to **investigate**, **implement** or **review** it. Core
+    starts or resumes the session and sends it a versioned task context.
+  - Agents answer with a structured `switchyard-report` block, which Core records as messages,
+    findings and proposed subtasks. **A report never authorizes anything.** You complete tasks,
+    approve proposed subtasks (as drafts) and decide every tool request as before.
+  - **Reviewers work read-only:** file changes are blocked in a review session and every command
+    asks you. The workspace is scanned before and after the review; if it changed, the verdict is
+    recorded as blocked.
+  - Task history is journaled and recovers after a Core restart.
+  - Limits: a report after more than 8 KB of final text is lost, agents can ignore the format,
+    approved review commands run with your permissions, the workspace scan does not see changes
+    outside the workspace, one task per workspace, and nothing is scheduled or merged
+    automatically. See [Tasks: known limitations](docs/architecture/tasks.md#known-limitations).
 
 > **Isolation is about source trees, and policies are about what Switchyard answers; neither is a
 > sandbox.** An allowed or approved shell command runs with your user's permissions and can reach
 > files outside its workspace. Approve, and write rules, accordingly.
 
-Not yet: merging workspace branches back, OS-level sandboxing, Codex sub-agents (denied).
+Not yet: merging workspace branches back, OS-level sandboxing, Codex sub-agents (denied), and
+agents creating or assigning tasks themselves (they can only propose).
 See the [architecture overview](docs/architecture/overview.md).
 
 ## How it fits together
@@ -79,7 +96,7 @@ See the [architecture overview](docs/architecture/overview.md).
 ┌──────────────────────────┐   Unix socket    ┌───────────────────────────────────────────┐
 │ Switchyard Desktop       │   (0600, JSON    │ Switchyard Core (long-running)            │
 │ Tauri 2 · React 19       │◄────lines)──────►│  projects · workspaces · sessions         │
-│ a client, nothing more   │                  │  approvals · event journal (SQLite WAL)   │
+│ a client, nothing more   │                  │  tasks · approvals · journal (SQLite WAL) │
 └──────────────────────────┘                  │        │ supervises                       │
                                               │        ▼                                  │
                                               │  claude -p (stream-json)  cwd = worktree  │
@@ -148,6 +165,7 @@ cargo run -p switchyard-core -- --log-format text # run Core by itself; the app 
   ```sh
   SWITCHYARD_REAL_CLAUDE=1 cargo test -p switchyard-core --test real_claude -- --ignored --nocapture
   SWITCHYARD_REAL_CODEX=1 cargo test -p switchyard-core --test real_codex -- --ignored --nocapture
+  SWITCHYARD_REAL_CLAUDE=1 SWITCHYARD_REAL_CODEX=1 cargo test -p switchyard-core --test real_tasks -- --ignored --nocapture
   ```
 
 ### Configuration
@@ -173,6 +191,7 @@ Core CLI: `switchyard-core [--data-dir PATH] [--socket PATH] [--log-format text|
 apps/desktop/                Tauri 2 app: React UI (src/) and the Rust bridge to Core (src-tauri/)
 crates/switchyard-core/      Core executable: lifecycle, IPC server, workspaces, agent sessions
 crates/switchyard-workspaces/ Workspace lifecycle, naming and cleanup-safety rules (no I/O)
+crates/switchyard-tasks/     Task lifecycle, dependency graph, report parser, task context (no I/O)
 crates/switchyard-policy/    Approval policy: operations, rules, deterministic evaluation (no I/O)
 crates/switchyard-agents/    Agent model, process supervision, Claude Code and Codex adapters
 crates/switchyard-git/       Git CLI: inspection and worktree management
@@ -189,6 +208,7 @@ docs/                        Architecture, ADRs, protocol specs
 - [Architecture overview](docs/architecture/overview.md)
 - [Workspaces: lifecycle, isolation, cleanup](docs/architecture/workspaces.md)
 - [Approval policies](docs/architecture/policies.md)
+- [Tasks and multi-agent collaboration](docs/architecture/tasks.md)
 - [Database schema](docs/architecture/database.md)
 - [Core IPC protocol](docs/protocols/core-ipc.md)
 - [Claude Code integration (verified CLI behaviour)](docs/architecture/agent-integration.md)
@@ -200,7 +220,7 @@ docs/                        Architecture, ADRs, protocol specs
 
 This is early, milestone-based work. Milestone 1 built the foundation, milestone 2 added native
 Claude Code sessions, milestone 3 added workspace isolation, milestone 4 added approval policies,
-and milestone 5 added native Codex sessions.
+milestone 5 added native Codex sessions, and milestone 6 added task orchestration across agents.
 
 What each kind of check covers:
 
@@ -208,7 +228,8 @@ What each kind of check covers:
   workspaces, against real Git repositories and deterministic fake Claude and Codex CLIs that speak
   the recorded protocols. The fake CLIs never decide policy; Core does.
 - **Real CLI tests** (opt-in, paid): sessions, two concurrent workspaces and policy decisions
-  against `claude` 2.1.322 and `codex-cli` 0.166.0.
+  against `claude` 2.1.322 and `codex-cli` 0.166.0, and a task investigated by Claude, implemented
+  by Codex and reviewed by Claude (`tests/real_tasks.rs`, needs both opt-ins).
 - **Browser end-to-end tests** (a development harness kept outside the repository): the real React
   UI against a real Core, through a stand-in for the Tauri bridge, with the fake CLIs.
 - **Native app** (macOS, bundled `Switchyard.app`): Core auto-launch and reuse, the native IPC
