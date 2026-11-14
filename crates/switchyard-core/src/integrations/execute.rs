@@ -29,7 +29,9 @@ use switchyard_storage::integrations::{self as store, IntegrationRecord, Integra
 use switchyard_storage::tasks as task_store;
 use uuid::Uuid;
 
-use super::{IntegrationService, OpKind, blockers_of, context, git_err, invalid_state, transition};
+use super::{
+    Ending, IntegrationService, Op, OpKind, blockers_of, context, git_err, invalid_state, transition,
+};
 use crate::handlers::errors;
 use crate::journal::{commit_checked, draft};
 
@@ -118,14 +120,15 @@ impl IntegrationService {
         }
         let svc = self.clone();
         let by = actor.clone();
-        self.run_op(id, OpKind::Approve, actor, move |_op| async move {
-            svc.approve_work(id, source_commit, target_commit, by).await
+        self.run_op(id, OpKind::Approve, actor, move |op| async move {
+            svc.approve_work(op, id, source_commit, target_commit, by).await
         })
         .await
     }
 
     async fn approve_work(
         &self,
+        op: Op,
         id: Uuid,
         source_commit: String,
         target_commit: String,
@@ -152,11 +155,13 @@ impl IntegrationService {
             } else {
                 "something changed since you reviewed it"
             };
-            let i = self.store_prepared(i, prepared, Some(format!("Approval refused: {reason}."))).await?;
-            return Err(stale(
-                &format!("{reason}; inspect the integration again and approve the new commits"),
-                &i,
-            ));
+            let message = format!("{reason}; inspect the integration again and approve the new commits");
+            // The refusal and the end of this operation are one transaction.
+            let ending = Ending { op, error: Some(message.clone()) };
+            let i = self
+                .store_prepared(i, prepared, Some(format!("Approval refused: {reason}.")), Some(ending))
+                .await?;
+            return Err(stale(&message, &i));
         }
 
         // 2. The merge commit, created but not yet referenced by any branch.
@@ -337,12 +342,22 @@ impl IntegrationService {
                 }
             }
         };
-        self.finish(id, outcome, false).await?;
+        // The outcome and the end of this operation are one transaction.
+        self.finish(id, outcome, false, Some(Ending::completed(op))).await?;
         self.wire(id).await
     }
 
     /// Records the end of an integration that was `integrating`.
-    async fn finish(&self, id: Uuid, outcome: Outcome, recovered: bool) -> Result<(), ProtocolError> {
+    /// With `ending`, the operation that did the work ends in the same
+    /// transaction, so `integrated`/`failed` is never visible with that
+    /// operation still `running`.
+    async fn finish(
+        &self,
+        id: Uuid,
+        outcome: Outcome,
+        recovered: bool,
+        ending: Option<Ending>,
+    ) -> Result<(), ProtocolError> {
         commit_checked(&self.inner.storage, &self.inner.bus, move |tx| {
             let now = now_ms();
             let mut drafts = Vec::new();
@@ -389,6 +404,10 @@ impl IntegrationService {
                         &context(&after),
                     )?);
                 }
+            }
+            if let Some(ending) = &ending {
+                let i = store::get_integration(tx, id)?;
+                drafts.extend(ending.record(tx, &i)?);
             }
             Ok(Ok(((), drafts)))
         })
@@ -489,7 +508,7 @@ impl IntegrationService {
             }
         };
         tracing::warn!(integration = %i.id, ok = outcome.is_ok(), "settled an interrupted integration");
-        self.finish(i.id, outcome, true).await
+        self.finish(i.id, outcome, true, None).await
     }
 
     /// Updates the status reason without changing the status.

@@ -43,7 +43,7 @@ use crate::journal::{commit_checked, draft};
 use crate::workspaces::WorkspaceService;
 
 pub(crate) use facts::Prepared;
-pub(crate) use operations::{Op, OpKind};
+pub(crate) use operations::{Ending, Op, OpKind};
 
 fn invalid_state(m: impl Into<String>) -> ProtocolError {
     ProtocolError::new(ErrorCode::InvalidState, m)
@@ -412,6 +412,17 @@ impl IntegrationService {
         id: Uuid,
         reason: Option<String>,
     ) -> Result<IntegrationRecord, ProtocolError> {
+        self.prepare_ending(id, reason, None).await
+    }
+
+    /// [`Self::prepare_with`], ending `ending`'s operation in the same
+    /// transaction that stores the preparation (ADR 0032).
+    pub(crate) async fn prepare_ending(
+        &self,
+        id: Uuid,
+        reason: Option<String>,
+        ending: Option<Ending>,
+    ) -> Result<IntegrationRecord, ProtocolError> {
         let i = self.record(id).await?;
         if !matches!(
             i.status,
@@ -426,7 +437,7 @@ impl IntegrationService {
         }
         let w = self.inner.workspaces.record(i.workspace_id).await?;
         let prepared = self.gather(&w, &i.target_branch, i.task_id, Some(i.id)).await?;
-        self.store_prepared(i, prepared, reason).await
+        self.store_prepared(i, prepared, reason, ending).await
     }
 
     async fn store_prepared(
@@ -434,6 +445,7 @@ impl IntegrationService {
         i: IntegrationRecord,
         prepared: Prepared,
         reason: Option<String>,
+        ending: Option<Ending>,
     ) -> Result<IntegrationRecord, ProtocolError> {
         let to = status_for(&prepared, prepared.workspace_merge_in_progress);
         commit_checked(&self.inner.storage, &self.inner.bus, move |tx| {
@@ -460,6 +472,9 @@ impl IntegrationService {
             };
             let after = transition(tx, &current, u, now, &mut drafts)?;
             drafts.push(draft(prepared.event(after.id), &context(&after))?);
+            if let Some(ending) = &ending {
+                drafts.extend(ending.record(tx, &after)?);
+            }
             Ok(Ok((after, drafts)))
         })
         .await

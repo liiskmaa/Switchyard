@@ -22,6 +22,18 @@ Every integration step that changes Git is an **operation** owned by Core, not b
   When the work ends, whatever the outcome, it records `completed`, `failed` (with the error) or
   `interrupted`, with `integration.operation_finished`. The integration carries its latest operation
   (`Integration.operation`), so a client that reconnects sees what is running and how it ended.
+- **The end is atomic with the result.** The transaction that commits an operation's final change to the
+  integration also ends the operation:
+  - `approve`: recording `integrated` or `failed`, or the refusal's re-preparation;
+  - `validate`: leaving `validating` (as prepared again, or as `failed` if that is impossible);
+  - workspace steps: the preparation after the Git step, `failed` with the step's error if it failed.
+
+  So no client can observe that final state with its operation still `running`. In particular, an
+  integration is `integrated` only together with a finished `approve` operation, and leaves `validating`
+  only together with a finished `validate` operation. The supervisor ends an operation itself only when
+  its work stopped without such a commit (an error before any change, a panic, a failed final commit).
+  In those cases the integration may still be `integrating`/`validating` with its operation `failed`;
+  that state is settled from Git by `integrations.refresh` or at the next start, never left running.
 - **Supervision:** the work runs in a task Core spawns and tracks. The request only waits for its
   result. If the request is aborted (client disconnect), the work continues. If the work panics, Core
   releases the workspace, settles the integration from Git, and records the operation `failed`.

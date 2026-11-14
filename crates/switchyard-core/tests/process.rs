@@ -27,11 +27,26 @@ fn spawn_core(data: &Path) -> Child {
         .unwrap()
 }
 
+/// Waits until Core accepts connections. The socket file alone is not
+/// enough: Core binds the socket (creating the file) and then listens, and a
+/// connection in between is refused (`ECONNREFUSED`). So this connects, and
+/// retries only while the socket is missing or refused.
 async fn wait_for_socket(socket: &Path) {
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !socket.exists() {
-        assert!(Instant::now() < deadline, "Core did not create its socket");
-        tokio::time::sleep(Duration::from_millis(25)).await;
+    loop {
+        match std::os::unix::net::UnixStream::connect(socket) {
+            Ok(_probe) => return,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                ) =>
+            {
+                assert!(Instant::now() < deadline, "Core did not start accepting connections: {e}");
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Err(e) => panic!("cannot connect to Core's socket: {e}"),
+        }
     }
 }
 

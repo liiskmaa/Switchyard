@@ -1658,3 +1658,108 @@ async fn recovery_waits_while_a_git_process_may_still_be_writing() {
     assert!(failure.contains("Checked afterwards") && failure.contains("nothing was changed"), "{failure}");
     assert_eq!(git(&f.repo, &["rev-parse", "main"]), i.target_commit);
 }
+
+/// An integration's result and the end of the operation that produced it are
+/// one transaction (ADR 0032): if the operation's end cannot be recorded,
+/// the result is not recorded either. Proven with an injected SQLite
+/// failure, not timing; recovery then settles both from Git.
+#[tokio::test]
+async fn an_operations_end_and_its_result_commit_together() {
+    let f = fixture().await;
+    let i = ready_integration(&f).await;
+    let block = "CREATE TRIGGER no_completed_operation BEFORE UPDATE OF status ON integration_operations \
+                 WHEN NEW.status = 'completed' BEGIN SELECT RAISE(ABORT, 'injected'); END;";
+
+    // Approval: Git moves the branch, but `integrated` cannot commit without
+    // the operation's `completed`; the integration stays `integrating`.
+    f.db().execute_batch(block).unwrap();
+    let _ = approve(&f, &i).await;
+    let d = get(&f, i.id).await.integration;
+    assert_eq!(d.status, IntegrationStatus::Integrating, "integrated was not recorded alone");
+    assert!(op_is(&d, "approve", "failed"), "{:?}", d.operation);
+    let merge = d.merge_commit.clone().unwrap();
+    assert_eq!(git(&f.repo, &["rev-parse", "main"]), merge, "Git did move the branch");
+    let events = events_of(&f, i.id).await;
+    assert!(!events.contains(&"integration.integrated".to_owned()), "{events:?}");
+    f.db().execute_batch("DROP TRIGGER no_completed_operation;").unwrap();
+    // Recovery semantics unchanged: a refresh settles it from the target branch.
+    let d = refresh(&f, i.id).await;
+    assert_eq!(d.status, IntegrationStatus::Integrated, "{:?}", d.status_reason);
+    assert_eq!(events_of(&f, i.id).await.iter().filter(|e| *e == "integration.integrated").count(), 1);
+}
+
+#[tokio::test]
+async fn leaving_validating_and_ending_the_validation_commit_together() {
+    let f = fixture().await;
+    no_review(&f).await;
+    std::fs::write(f.ws.join("a.txt"), "a\n").unwrap();
+    let i = create(&f, None).await;
+    let i = commit_ws(&f, i.id, "a").await.unwrap();
+    let ok = add_command(&f, "ok", &["/usr/bin/true"], 10).await;
+    f.db()
+        .execute_batch(
+            "CREATE TRIGGER no_completed_operation BEFORE UPDATE OF status ON integration_operations \
+             WHEN NEW.status = 'completed' BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+        )
+        .unwrap();
+    f.c.call::<IntegrationsValidate>(IntegrationsValidateParams {
+        integration_id: i.id,
+        authorize: auth(&f, &[ok]).await,
+    })
+    .await
+    .unwrap();
+    let d = wait_for(&f, i.id, "the validation to end", |x| x.status != IntegrationStatus::Validating).await;
+    // It could not leave `validating` as `ready` (that commit included the
+    // operation's `completed`); it left as `failed` together with the
+    // operation's `failed`, never with the operation still running.
+    assert_eq!(d.status, IntegrationStatus::Failed, "{:?}", d.status_reason);
+    assert!(op_is(&d, "validate", "failed"), "{:?}", d.operation);
+    f.db().execute_batch("DROP TRIGGER no_completed_operation;").unwrap();
+    assert_eq!(refresh(&f, i.id).await.status, IntegrationStatus::Ready, "the passed run still counts");
+}
+
+/// Supplementary to the transactional tests above: an observer polling
+/// throughout an approval never sees a final status with the approval
+/// operation still running, or `integrating` without an approval operation.
+#[tokio::test]
+async fn an_observer_never_sees_a_result_with_its_operation_running() {
+    let f = fixture_hooked(|_| {}).await;
+    let i = ready_integration(&f).await;
+    f.hook("ff", "merge --ff-only", "sleep 1");
+    let (observer, _rx) = f.core.connect().await;
+    let id = i.id;
+    let watch = tokio::spawn(async move {
+        let mut seen = Vec::new();
+        loop {
+            let x = observer
+                .call::<IntegrationsGet>(IntegrationIdParams { integration_id: id })
+                .await
+                .unwrap()
+                .integration;
+            let op = x.operation.as_ref().map(|o| (o.kind.clone(), o.status.clone()));
+            let done =
+                x.status == IntegrationStatus::Integrated && op.as_ref().is_some_and(|(_, s)| s != "running");
+            seen.push((x.status, op));
+            if done || seen.len() > 20_000 {
+                return seen;
+            }
+        }
+    });
+    approve(&f, &i).await.unwrap();
+    let seen = watch.await.unwrap();
+    let integrating_seen = seen.iter().filter(|(s, _)| *s == IntegrationStatus::Integrating).count();
+    println!("{} observations, {integrating_seen} while integrating", seen.len());
+    for (status, op) in &seen {
+        let running = op.as_ref().is_some_and(|(k, s)| k == "approve" && s == "running");
+        match status {
+            IntegrationStatus::Integrated | IntegrationStatus::Failed => {
+                assert!(!running, "{status:?} observed with the approval still running");
+            }
+            IntegrationStatus::Integrating => {
+                assert!(running, "integrating observed without its operation: {op:?}")
+            }
+            _ => {}
+        }
+    }
+    assert!(integrating_seen > 0, "the observer saw the integration in progress");
+}

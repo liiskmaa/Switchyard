@@ -29,7 +29,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::{oneshot, watch};
 use uuid::Uuid;
 
-use super::{IntegrationService, Op, OpKind, context, invalid_state, transition, wire_from_conn};
+use super::{Ending, IntegrationService, Op, OpKind, context, invalid_state, transition, wire_from_conn};
 use crate::handlers::errors;
 use crate::journal::{commit_checked, draft};
 
@@ -548,7 +548,8 @@ impl IntegrationService {
         };
         let Some(steps) = steps else {
             self.inner.workspaces.end_integration_op(w.id).await;
-            self.prepare(id).await?;
+            // A refused run: the preparation and the end of this operation are one transaction.
+            self.prepare_ending(id, None, Some(Ending::completed(op))).await?;
             let _ = started.send(run_info(self.clone()).await);
             return Ok(());
         };
@@ -563,7 +564,7 @@ impl IntegrationService {
             }
         }
         let _ = started.send(run_info(self.clone()).await);
-        self.execute_run(id, run_id, w.id, cwd, source, steps, rx).await;
+        self.execute_run(op, id, run_id, w.id, cwd, source, steps, rx).await;
         Ok(())
     }
 
@@ -574,6 +575,7 @@ impl IntegrationService {
     #[allow(clippy::too_many_arguments)]
     async fn execute_run(
         &self,
+        op: Op,
         id: Uuid,
         run_id: Uuid,
         workspace_id: Uuid,
@@ -740,7 +742,8 @@ impl IntegrationService {
             note = Some("The validation result could not be recorded; the run does not count.".into());
         }
         self.inner.workspaces.end_integration_op(workspace_id).await;
-        self.prepare_or_fail(id, note).await;
+        // Leaving `validating` and ending this operation are one transaction.
+        self.prepare_or_fail(id, note, Some(op)).await;
     }
 
     async fn end_run(

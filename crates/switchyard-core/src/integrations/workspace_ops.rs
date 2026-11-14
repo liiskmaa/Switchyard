@@ -17,7 +17,9 @@ use switchyard_protocol::model::Integration;
 use switchyard_storage::integrations::{self as store, IntegrationUpdate};
 use uuid::Uuid;
 
-use super::{IntegrationService, Op, OpKind, context, git_err, invalid_params, invalid_state, transition};
+use super::{
+    Ending, IntegrationService, Op, OpKind, context, git_err, invalid_params, invalid_state, transition,
+};
 use crate::journal::{commit_checked, draft};
 
 const MAX_MESSAGE: usize = 5000;
@@ -114,8 +116,10 @@ impl IntegrationService {
             Err(e) => Err(workspace_step_error(e, &w.path)),
         };
         drop(repo);
-        // Whatever happened, the integration shows what Git shows now.
-        let prepared = self.prepare(id).await;
+        // Whatever happened, the integration shows what Git shows now; that
+        // preparation and the end of this operation are one transaction.
+        let ending = Ending { op, error: recorded.as_ref().err().map(|e| e.message.clone()) };
+        let prepared = self.prepare_ending(id, None, Some(ending)).await;
         recorded?;
         prepared?;
         self.wire(id).await
@@ -203,7 +207,8 @@ impl IntegrationService {
             Err(e) => Err(workspace_step_error(e, &w.path)),
         };
         drop(repo);
-        let prepared = self.prepare(id).await;
+        let ending = Ending { op, error: recorded.as_ref().err().map(|e| e.message.clone()) };
+        let prepared = self.prepare_ending(id, None, Some(ending)).await;
         recorded?;
         prepared?;
         self.wire(id).await
@@ -242,7 +247,8 @@ impl IntegrationService {
             Err(e) => Err(workspace_step_error(e, &w.path)),
         };
         drop(repo);
-        let prepared = self.prepare(id).await;
+        let ending = Ending { op, error: recorded.as_ref().err().map(|e| e.message.clone()) };
+        let prepared = self.prepare_ending(id, None, Some(ending)).await;
         recorded?;
         prepared?;
         self.wire(id).await

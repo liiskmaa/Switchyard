@@ -13,6 +13,13 @@
 //!   stop it, and a reconnecting client finds it on the integration;
 //! * at most one runs per integration (an in-memory claim plus a unique
 //!   index), so a retried request cannot start the same work twice;
+//! * **its end is atomic with its result**: the transaction that commits the
+//!   operation's final change to the integration (approve: `integrated` or
+//!   `failed`; validate: leaving `validating`; workspace steps: the
+//!   preparation after the Git step) also ends the operation ([`Ending`]).
+//!   No client can observe that final state with the operation `running`.
+//!   The supervisor ends an operation itself only when its work stopped
+//!   without such a commit (an error before any change, a panic);
 //! * if its work panics, the workspace is released and the integration is
 //!   settled from Git;
 //! * Core shutdown first cancels validation runs (their process groups are
@@ -72,6 +79,44 @@ impl OpKind {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Op {
     pub id: Uuid,
+    pub kind: OpKind,
+}
+
+/// Ends an operation inside the transaction that commits its final change:
+/// `completed`, or `failed` with `error`.
+#[derive(Debug, Clone)]
+pub(crate) struct Ending {
+    pub op: Op,
+    pub error: Option<String>,
+}
+
+impl Ending {
+    pub fn completed(op: Op) -> Self {
+        Self { op, error: None }
+    }
+
+    /// Records the end in `tx`; returns its journal event, or nothing if the
+    /// operation had already ended.
+    pub fn record(
+        &self,
+        tx: &switchyard_storage::Connection,
+        i: &switchyard_storage::integrations::IntegrationRecord,
+    ) -> Result<Option<switchyard_events::EventDraft>, StorageError> {
+        let status = if self.error.is_some() { "failed" } else { "completed" };
+        if !store::finish_operation(tx, self.op.id, status, self.error.as_deref(), now_ms())? {
+            return Ok(None);
+        }
+        Ok(Some(draft(
+            DomainEvent::IntegrationOperationFinished {
+                integration_id: i.id,
+                operation_id: self.op.id,
+                kind: self.op.kind.as_str().into(),
+                status: status.into(),
+                error: self.error.clone(),
+            },
+            &context(i),
+        )?))
+    }
 }
 
 pub(crate) fn op_wire(o: OperationRecord) -> IntegrationOperation {
@@ -142,7 +187,7 @@ impl IntegrationService {
         }
         let claim = self.claim(integration_id)?;
         let running = self.track();
-        let op = Op { id: new_id() };
+        let op = Op { id: new_id(), kind };
         commit_checked(&self.inner.storage, &self.inner.bus, move |tx| {
             let i = store::get_integration(tx, integration_id)?;
             let record = OperationRecord {
@@ -338,7 +383,8 @@ impl IntegrationService {
                 if w.status == WorkspaceStatus::Integrating {
                     self.inner.workspaces.end_integration_op(w.id).await;
                 }
-                self.prepare_or_fail(id, Some("The validation was interrupted; run it again.".into())).await;
+                self.prepare_or_fail(id, Some("The validation was interrupted; run it again.".into()), None)
+                    .await;
                 Ok(())
             }
             _ => Ok(()),
@@ -382,25 +428,30 @@ impl IntegrationService {
 
     /// Prepares the integration again; if that is impossible (a branch was
     /// deleted, Git fails), a `validating` integration becomes `failed` with
-    /// the reason instead of staying stuck. It can be refreshed later.
-    pub(crate) async fn prepare_or_fail(&self, id: Uuid, reason: Option<String>) {
-        let Err(e) = self.prepare_with(id, reason).await else { return };
+    /// the reason instead of staying stuck. It can be refreshed later. With
+    /// `op`, the operation ends in the same transaction (`completed` after a
+    /// preparation, `failed` with the reason otherwise).
+    pub(crate) async fn prepare_or_fail(&self, id: Uuid, reason: Option<String>, op: Option<Op>) {
+        let Err(e) = self.prepare_ending(id, reason, op.map(Ending::completed)).await else { return };
         tracing::warn!(integration = %id, ?e, "cannot prepare the integration again");
         let message =
             format!("Core could not check the integration again: {}. Refresh it to retry.", e.message);
+        let ending = op.map(|op| Ending { op, error: Some(message.clone()) });
         let r = commit_checked(&self.inner.storage, &self.inner.bus, move |tx| {
             let i = store::get_integration(tx, id)?;
-            if i.status != IntegrationStatus::Validating {
-                return Ok(Ok(((), Vec::new())));
-            }
             let mut drafts = Vec::new();
-            let u = IntegrationUpdate {
-                status: Some(IntegrationStatus::Failed),
-                status_reason: Some(Some(message.clone())),
-                failure: Some(Some(message)),
-                ..Default::default()
-            };
-            transition(tx, &i, u, now_ms(), &mut drafts)?;
+            if i.status == IntegrationStatus::Validating {
+                let u = IntegrationUpdate {
+                    status: Some(IntegrationStatus::Failed),
+                    status_reason: Some(Some(message.clone())),
+                    failure: Some(Some(message)),
+                    ..Default::default()
+                };
+                transition(tx, &i, u, now_ms(), &mut drafts)?;
+            }
+            if let Some(ending) = &ending {
+                drafts.extend(ending.record(tx, &i)?);
+            }
             Ok(Ok(((), drafts)))
         })
         .await;

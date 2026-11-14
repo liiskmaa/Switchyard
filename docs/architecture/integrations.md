@@ -76,6 +76,7 @@ pushed or deployed. Decisions: ADRs 0028–0031.
 
 | Event | Effect |
 |---|---|
+| An operation finishes | Its end is recorded in the same transaction as its result, so no client sees `integrated`, or a status after `validating`, with the operation still running. |
 | Client disconnects (app closed, socket lost) | The operation continues; reconnect to see it. |
 | *Cancel validation* | Stops the validation's commands; the run is `cancelled`. Git steps cannot be cancelled. |
 | Core shuts down | Validation runs are stopped. Other operations get up to `operation_shutdown_grace` (60 s), then are stopped and settled at the next start. |
@@ -92,6 +93,12 @@ pushed or deployed. Decisions: ADRs 0028–0031.
   the checkout partially updated with the branch not moved. Core then reports the integration as
   failed, says the checkout may be partially updated, and changes nothing more. Inspect the checkout
   with `git status` (and remove a leftover `.git/index.lock` only once no Git process is running).
+- **An integration step can be refused right after an agent reports.** Core stops a reported
+  agent's session and then releases its workspace on its own, shortly after the report is
+  recorded. Until that sequence has finished, integration operations on the workspace are refused
+  ("an agent session is running in the workspace", or the workspace is still `active`). This is
+  fail-safe: nothing is changed, and the operator can retry once the workspace is released.
+  Assigning the next agent waits for that stop; integration operations do not.
 - **Checkout races are detected, not prevented.** If someone switches the target checkout to another
   branch in the instant between Core's check and Git's fast-forward, Git fast-forwards that branch
   instead; Core detects and reports it. If the target branch is checked out in the instant between the
