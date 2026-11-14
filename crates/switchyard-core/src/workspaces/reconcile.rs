@@ -103,7 +103,8 @@ impl WorkspaceService {
     ) -> Result<WorkspaceRecord, ProtocolError> {
         let Some(status) = self.status_of(w).await else { return Ok(w.clone()) };
         let to = match w.status {
-            WorkspaceStatus::Completed | WorkspaceStatus::Integrating => w.status,
+            // No Core operation survives a restart: `integrating` settles.
+            WorkspaceStatus::Completed => w.status,
             _ => settled(&status),
         };
         self.set_status(w.id, to, observed(&status, reason), Vec::new()).await

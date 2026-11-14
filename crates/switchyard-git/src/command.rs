@@ -26,7 +26,8 @@ impl Default for GitConfig {
     }
 }
 
-/// Handle for running git commands (read-only, except worktree add/remove).
+/// Handle for running git commands. Read-only, except worktree add/remove
+/// and the integration operations in [`crate::integrate`].
 #[derive(Debug, Clone, Default)]
 pub struct Git {
     config: GitConfig,
@@ -44,6 +45,8 @@ const REDIRECTING_ENV: &[&str] = &[
 
 pub(crate) struct Output {
     pub success: bool,
+    /// The exit code; `None` if Git was killed by a signal.
+    pub code: Option<i32>,
     pub status: String,
     pub stdout: String,
     pub stderr: String,
@@ -67,13 +70,35 @@ impl Git {
         args: &[&str],
         input: Option<Vec<u8>>,
     ) -> Result<Output, GitError> {
-        self.exec(dir, args, input, self.config.timeout).await
+        self.exec(dir, args, input, self.config.timeout, &[]).await
+    }
+
+    /// Runs a command that changes the repository. Hooks are disabled
+    /// (`core.hooksPath=/dev/null`): Core never runs repository scripts as a
+    /// side effect of an integration step (ADR 0029).
+    pub(crate) async fn run_write(&self, dir: &Path, args: &[&str], slow: bool) -> Result<Output, GitError> {
+        let mut full = vec!["-c", "core.hooksPath=/dev/null"];
+        full.extend_from_slice(args);
+        let timeout =
+            if slow { self.config.checkout_timeout.max(self.config.timeout) } else { self.config.timeout };
+        self.exec(dir, &full, None, timeout, &[]).await
+    }
+
+    /// Like [`Self::run`] with extra environment variables (set after the
+    /// redirecting variables are removed), for a private index file.
+    pub(crate) async fn run_env(
+        &self,
+        dir: &Path,
+        args: &[&str],
+        env: &[(&str, &str)],
+    ) -> Result<Output, GitError> {
+        self.exec(dir, args, None, self.config.checkout_timeout.max(self.config.timeout), env).await
     }
 
     /// Like [`Self::run`] with a longer bound, for operations that check out
     /// files (worktree creation scales with repository size).
     pub(crate) async fn run_slow(&self, dir: &Path, args: &[&str]) -> Result<Output, GitError> {
-        self.exec(dir, args, None, self.config.checkout_timeout.max(self.config.timeout)).await
+        self.exec(dir, args, None, self.config.checkout_timeout.max(self.config.timeout), &[]).await
     }
 
     async fn exec(
@@ -82,6 +107,7 @@ impl Git {
         args: &[&str],
         input: Option<Vec<u8>>,
         timeout: Duration,
+        env: &[(&str, &str)],
     ) -> Result<Output, GitError> {
         let mut cmd = Command::new(&self.config.binary);
         cmd.arg("--no-optional-locks")
@@ -97,6 +123,9 @@ impl Git {
             .kill_on_drop(true);
         for var in REDIRECTING_ENV {
             cmd.env_remove(var);
+        }
+        for (k, v) in env {
+            cmd.env(k, v);
         }
         let joined = args.join(" ");
         let mut child = cmd
@@ -119,6 +148,7 @@ impl Git {
         tracing::debug!(args = %joined, dir = %dir.display(), status = %output.status, "git");
         Ok(Output {
             success: output.status.success(),
+            code: output.status.code(),
             status: output.status.to_string(),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),

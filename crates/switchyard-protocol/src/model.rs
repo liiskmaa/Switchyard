@@ -517,3 +517,170 @@ pub enum TaskReadiness {
     Waiting,
     Broken,
 }
+
+// --- integrations (M7, ADRs 0028-0031) --------------------------------------
+
+pub use switchyard_integrations::{Blocker, IntegrationStatus, RunStatus, StepStatus};
+
+/// A Core-owned operation on an integration (ADR 0032). It belongs to Core,
+/// not to the request that started it: a client that disconnects or
+/// reconnects sees it here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegrationOperation {
+    pub id: Uuid,
+    /// `approve`, `commit_workspace`, `update_from_target`, `abort_resolution`, `validate`.
+    pub kind: String,
+    /// `running`, `completed`, `failed` or `interrupted`.
+    pub status: String,
+    pub requested_by: String,
+    pub error: Option<String>,
+    pub started_at_ms: i64,
+    pub ended_at_ms: Option<i64>,
+}
+
+/// The proposed delivery of one workspace's changes into a target branch,
+/// bound to an exact source and target commit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Integration {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub task_id: Option<Uuid>,
+    pub workspace_id: Uuid,
+    pub workspace_name: Option<String>,
+    pub source_branch: String,
+    /// The exact source commit everything was checked against.
+    pub source_commit: String,
+    pub target_branch: String,
+    /// The exact target commit everything was checked against.
+    pub target_commit: String,
+    pub base_commit: Option<String>,
+    pub status: IntegrationStatus,
+    pub status_reason: Option<String>,
+    /// What prevents approval now; empty when ready.
+    pub blockers: Vec<Blocker>,
+    /// The facts of the latest preparation, as Core read them from Git.
+    pub preflight: serde_json::Value,
+    pub prepared_at_ms: i64,
+    pub approved_by: Option<String>,
+    pub approved_at_ms: Option<i64>,
+    /// The merge commit Core created (set when integrating starts).
+    pub merge_commit: Option<String>,
+    /// `ref_update` or `checkout_fast_forward`.
+    pub method: Option<String>,
+    pub failure: Option<String>,
+    pub revision: i64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub completed_at_ms: Option<i64>,
+    /// The latest Core-owned operation on this integration (ADR 0032):
+    /// running, or how the last one ended. `None` if there was none.
+    #[serde(default)]
+    pub operation: Option<IntegrationOperation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitSummary {
+    pub oid: String,
+    pub parents: Vec<String>,
+    pub author_name: String,
+    pub author_email: String,
+    pub authored_at_ms: i64,
+    pub subject: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChangedFileInfo {
+    pub path: String,
+    pub old_path: Option<String>,
+    /// `added`, `modified`, `deleted`, `renamed`, `copied`, `type_changed`, `unmerged`, `unknown`.
+    pub kind: String,
+    pub additions: Option<u64>,
+    pub deletions: Option<u64>,
+    pub binary: bool,
+}
+
+/// What an integration delivers, read from Git.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegrationChanges {
+    pub source_commit: String,
+    pub target_commit: String,
+    /// The common ancestor the changes are measured from.
+    pub base_commit: Option<String>,
+    /// The target contains commits the source lacks.
+    pub diverged: bool,
+    pub commits: Vec<CommitSummary>,
+    pub commits_total: u32,
+    pub files: Vec<ChangedFileInfo>,
+    pub files_total: u64,
+    pub additions: u64,
+    pub deletions: u64,
+    pub truncated: bool,
+    /// Uncommitted changes in the workspace (not part of the source commit).
+    pub uncommitted: Vec<ChangedFileInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidationCommandConfig {
+    pub id: Uuid,
+    pub name: String,
+    pub argv: Vec<String>,
+    /// For display and policy matching; never passed to a shell.
+    pub command_line: String,
+    pub timeout_secs: u32,
+    pub enabled: bool,
+    pub position: i64,
+}
+
+/// What the policy says about one configured command, before running it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidationPlanEntry {
+    pub command_id: Uuid,
+    pub name: String,
+    pub command_line: String,
+    /// `allow`: runs; `ask`: runs only if you authorize it; `deny`: never runs.
+    pub policy_decision: String,
+    pub policy_explanation: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidationStepInfo {
+    pub id: Uuid,
+    pub position: i64,
+    pub name: String,
+    pub command_line: String,
+    pub cwd: String,
+    pub timeout_secs: u32,
+    pub policy_decision: String,
+    pub policy_explanation: String,
+    pub authorized_by: Option<String>,
+    pub status: StepStatus,
+    pub exit_code: Option<i32>,
+    pub signal: Option<i32>,
+    pub stdout: Option<String>,
+    pub stderr: Option<String>,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub detail: Option<String>,
+    pub started_at_ms: Option<i64>,
+    pub ended_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidationRunInfo {
+    pub id: Uuid,
+    /// The exact commit validated; results for another commit are stale.
+    pub source_commit: String,
+    pub status: RunStatus,
+    pub requested_by: Option<String>,
+    pub started_at_ms: i64,
+    pub ended_at_ms: Option<i64>,
+    pub steps: Vec<ValidationStepInfo>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IntegrationSettingsInfo {
+    pub project_id: Uuid,
+    pub require_review: bool,
+    pub revision: i64,
+    pub commands: Vec<ValidationCommandConfig>,
+}

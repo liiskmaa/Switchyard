@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="Status: milestone 6" src="https://img.shields.io/badge/status-milestone%206-orange">
+  <img alt="Status: milestone 7" src="https://img.shields.io/badge/status-milestone%207-orange">
   <img alt="Platform: macOS" src="https://img.shields.io/badge/platform-macOS-lightgrey">
   <img alt="Rust 1.99" src="https://img.shields.io/badge/rust-1.99-b7410e">
   <img alt="Tauri 2" src="https://img.shields.io/badge/tauri-2-24c8db">
@@ -86,8 +86,20 @@ every action that matters. The desktop app is a client: closing it never stops y
 > sandbox.** An allowed or approved shell command runs with your user's permissions and can reach
 > files outside its workspace. Approve, and write rules, accordingly.
 
-Not yet: merging workspace branches back, OS-level sandboxing, Codex sub-agents (denied), and
-agents creating or assigning tasks themselves (they can only propose).
+- **Change integration** (milestone 7):
+  - Deliver reviewed work from a workspace into a branch. Switchyard shows the actual commits,
+    files and patch from Git.
+  - It commits the agent's work in the workspace on your request, and updates the workspace from the
+    target. Conflicts are resolved in the workspace, never on the target.
+  - It runs your project's validation commands through the policy for the exact source commit.
+  - Only when you approve the exact source and target commits does it create a merge commit and
+    move the target branch (compare-and-swap, or a fast-forward of your clean checkout). Your
+    uncommitted work is never overwritten.
+  - Nothing is pushed or deployed. Every step is journaled and recovers after a restart. See
+    [Integrations](docs/architecture/integrations.md).
+
+Not yet: pushing or remote delivery, OS-level sandboxing, Codex sub-agents (denied), and agents
+creating or assigning tasks themselves (they can only propose).
 See the [architecture overview](docs/architecture/overview.md).
 
 ## How it fits together
@@ -166,6 +178,7 @@ cargo run -p switchyard-core -- --log-format text # run Core by itself; the app 
   SWITCHYARD_REAL_CLAUDE=1 cargo test -p switchyard-core --test real_claude -- --ignored --nocapture
   SWITCHYARD_REAL_CODEX=1 cargo test -p switchyard-core --test real_codex -- --ignored --nocapture
   SWITCHYARD_REAL_CLAUDE=1 SWITCHYARD_REAL_CODEX=1 cargo test -p switchyard-core --test real_tasks -- --ignored --nocapture
+  SWITCHYARD_REAL_CLAUDE=1 SWITCHYARD_REAL_CODEX=1 cargo test -p switchyard-core --test real_integration -- --ignored --nocapture
   ```
 
 ### Configuration
@@ -191,6 +204,7 @@ Core CLI: `switchyard-core [--data-dir PATH] [--socket PATH] [--log-format text|
 apps/desktop/                Tauri 2 app: React UI (src/) and the Rust bridge to Core (src-tauri/)
 crates/switchyard-core/      Core executable: lifecycle, IPC server, workspaces, agent sessions
 crates/switchyard-workspaces/ Workspace lifecycle, naming and cleanup-safety rules (no I/O)
+crates/switchyard-integrations/ Integration lifecycle, preflight blockers, validation rules (no I/O)
 crates/switchyard-tasks/     Task lifecycle, dependency graph, report parser, task context (no I/O)
 crates/switchyard-policy/    Approval policy: operations, rules, deterministic evaluation (no I/O)
 crates/switchyard-agents/    Agent model, process supervision, Claude Code and Codex adapters
@@ -209,6 +223,7 @@ docs/                        Architecture, ADRs, protocol specs
 - [Workspaces: lifecycle, isolation, cleanup](docs/architecture/workspaces.md)
 - [Approval policies](docs/architecture/policies.md)
 - [Tasks and multi-agent collaboration](docs/architecture/tasks.md)
+- [Change integration](docs/architecture/integrations.md)
 - [Database schema](docs/architecture/database.md)
 - [Core IPC protocol](docs/protocols/core-ipc.md)
 - [Claude Code integration (verified CLI behaviour)](docs/architecture/agent-integration.md)
@@ -220,7 +235,8 @@ docs/                        Architecture, ADRs, protocol specs
 
 This is early, milestone-based work. Milestone 1 built the foundation, milestone 2 added native
 Claude Code sessions, milestone 3 added workspace isolation, milestone 4 added approval policies,
-milestone 5 added native Codex sessions, and milestone 6 added task orchestration across agents.
+milestone 5 added native Codex sessions, milestone 6 added task orchestration across agents, and
+milestone 7 added change integration into the project's branches.
 
 What each kind of check covers:
 

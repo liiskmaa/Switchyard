@@ -99,9 +99,16 @@ impl Git {
     /// The commit a local branch points to, `None` if it does not exist.
     pub async fn branch_tip(&self, repo: &Path, branch: &str) -> Result<Option<String>, GitError> {
         let full = format!("refs/heads/{branch}");
-        let out = self.run(repo, &["rev-parse", "--verify", "--quiet", "--end-of-options", &full]).await?;
+        let args = ["rev-parse", "--verify", "--quiet", "--end-of-options", &full];
+        let out = self.run(repo, &args).await?;
         let oid = out.stdout.trim();
-        Ok((out.success && !oid.is_empty()).then(|| oid.to_owned()))
+        // Exit 1 without output: no such branch. Anything else unexpected is
+        // an error, never "missing".
+        match out.code {
+            Some(0) if !oid.is_empty() => Ok(Some(oid.to_owned())),
+            Some(1) if out.stderr.is_empty() => Ok(None),
+            _ => Err(Git::failed(&args, out)),
+        }
     }
 
     /// `git worktree add -b <branch> <path> <commit>`. Fails if the branch
@@ -202,10 +209,12 @@ impl Git {
     pub async fn is_ancestor(&self, repo: &Path, commit: &str, of: &str) -> Result<bool, GitError> {
         let args = ["merge-base", "--is-ancestor", commit, of];
         let out = self.run(repo, &args).await?;
-        match (out.success, out.stderr.is_empty()) {
-            (true, _) => Ok(true),
-            (false, true) => Ok(false),
-            (false, false) => Err(Git::failed(&args, out)),
+        // Exit 1 is Git's "not an ancestor"; anything else (an error, a
+        // signal) is not an answer.
+        match out.code {
+            Some(0) => Ok(true),
+            Some(1) if out.stderr.is_empty() => Ok(false),
+            _ => Err(Git::failed(&args, out)),
         }
     }
 

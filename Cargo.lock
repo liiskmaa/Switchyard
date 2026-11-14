@@ -3323,6 +3323,7 @@ dependencies = [
 name = "switchyard-core"
 version = "0.1.0"
 dependencies = [
+ "nix",
  "notify",
  "rusqlite",
  "serde",
@@ -3331,6 +3332,7 @@ dependencies = [
  "switchyard-client",
  "switchyard-events",
  "switchyard-git",
+ "switchyard-integrations",
  "switchyard-policy",
  "switchyard-protocol",
  "switchyard-storage",
@@ -3385,6 +3387,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchyard-integrations"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "uuid",
+]
+
+[[package]]
 name = "switchyard-policy"
 version = "0.1.0"
 dependencies = [
@@ -3402,6 +3414,7 @@ dependencies = [
  "serde_json",
  "switchyard-agents",
  "switchyard-events",
+ "switchyard-integrations",
  "switchyard-policy",
  "switchyard-tasks",
  "switchyard-workspaces",
@@ -3419,6 +3432,7 @@ dependencies = [
  "serde_json",
  "switchyard-agents",
  "switchyard-events",
+ "switchyard-integrations",
  "switchyard-policy",
  "switchyard-tasks",
  "switchyard-workspaces",

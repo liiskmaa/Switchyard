@@ -5,12 +5,13 @@ import { StatusIndicator } from "../components/StatusIndicator";
 import { pendingApprovals } from "../features/agents/api";
 import { useCoreQuery } from "../stores/useCoreQuery";
 
-export type Section = "dashboard" | "projects" | "tasks" | "agents" | "activity" | "approvals" | "policies" | "settings";
+export type Section = "dashboard" | "projects" | "tasks" | "integrations" | "agents" | "activity" | "approvals" | "policies" | "settings";
 
 const primary: { id: Section; label: string; icon: IconName }[] = [
   { id: "dashboard", label: "Dashboard", icon: "dashboard" },
   { id: "projects", label: "Projects", icon: "projects" },
   { id: "tasks", label: "Tasks", icon: "tasks" },
+  { id: "integrations", label: "Integrations", icon: "branch" },
   { id: "agents", label: "Agents", icon: "agents" },
   { id: "activity", label: "Activity", icon: "activity" },
   { id: "approvals", label: "Approvals", icon: "approvals" },

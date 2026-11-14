@@ -125,12 +125,20 @@ pub async fn start(config: CoreConfig) -> Result<RunningCore, CoreError> {
 
     let tasks =
         crate::tasks::TaskService::new(storage.clone(), bus.clone(), agents.clone(), workspaces.clone());
+    let integrations =
+        crate::integrations::IntegrationService::new(storage.clone(), bus.clone(), workspaces.clone());
+    // After workspace reconciliation: settles integrations and validation
+    // runs a previous Core left in progress.
+    if let Err(err) = integrations.recover_on_startup().await {
+        tracing::error!(?err, "cannot recover integrations from a previous run");
+    }
     let (shutdown, _) = watch::channel(None);
     let state = CoreState {
         info: Arc::new(info.clone()),
         started: Instant::now(),
         git,
         tasks: tasks.clone(),
+        integrations,
         agents,
         workspaces,
         policies: crate::policy::PolicyService::new(storage.clone(), bus.clone()),

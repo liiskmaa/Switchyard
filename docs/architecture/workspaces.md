@@ -37,7 +37,7 @@ Decisions: [ADR 0012](../decisions/0012-project-workspace-session.md) (the entit
 | `dirty` | Verified, uncommitted or untracked changes, nothing attached | yes |
 | `active` | One session attached | no (occupied) |
 | `completed` | Operator marked the work done; reopens on a new session | yes |
-| `integrating` | Reserved for a later milestone; unreachable | — |
+| `integrating` | Core runs an integration step in the worktree (commit, update from the target, validation); entered only from `ready`/`dirty`/`completed` without a session, settles back to `ready`/`dirty` (also at startup) | no |
 | `failed` | Provisioning failed or validation found a problem (`status_reason`) | no; **Re-check** to recover |
 | `archived` | Kept on disk, hidden, no sessions | no; **Restore** or **Clean up** |
 | `cleanup_pending` | Confirmed cleanup in progress | no |
@@ -123,11 +123,14 @@ See ADR 0014 for the full rules and the reconciliation table. In short:
 
 ## Known issues
 
-- **Intermittent: the Restore button after archiving (desktop UI, unresolved).** In the browser
-  end-to-end suite (phase p09), clicking Restore right after archiving a workspace failed in 1 of 4
-  full runs at normal load (2026-11-14), and once under heavy machine load. Playwright found the
-  button but it was repeatedly replaced in the DOM for 30 s, while Core had already archived the
-  workspace and the UI made no unusual requests. Archiving switches the panel to "Show archived",
-  which reloads the list and remounts the detail panel once. The failure did not reproduce in
-  isolation (10 of 10 archive/restore cycles restored in 0.4–0.7 s). It is unclear whether it is a
-  test timing assumption or a UI race; it affects only the button, not Core's workspace state.
+- **Intermittent: workspace buttons after archiving (desktop UI, unresolved).** In the browser
+  end-to-end suite (phase p09), a click on **Restore** right after archiving a workspace, or on
+  **Clean up…** after archiving another, sometimes times out. Playwright finds the button, but it is
+  repeatedly replaced in the DOM for 30 s, while Core has already archived the workspace and the UI
+  makes no unusual requests. Observed on 2026-11-14 in 3 of 9 full runs at normal machine load (on
+  the M6 and M7 code alike), and four more times under heavy load (twice during the M7 review
+  remediation, at load averages of 15 to 48). Archiving switches the panel to "Show
+  archived", which reloads the list and remounts the detail panel once. The failure did not
+  reproduce in isolation (10 of 10 archive/restore cycles restored in 0.4–0.7 s). It is unclear
+  whether it is a test timing assumption or a UI race; it affects only the buttons, not Core's
+  workspace state.

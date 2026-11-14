@@ -112,7 +112,9 @@ fn main() {
                 && let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path)
             {
                 let entry = json!({"session_id": log_session, "cwd": log_cwd, "response": v["response"]});
-                let _ = writeln!(f, "{entry}");
+                // One write per line: concurrent fake agents append to the same
+                // log, and a line formatted in pieces could interleave.
+                let _ = f.write_all(format!("{entry}\n").as_bytes());
             }
             if tx.send(v).is_err() {
                 break;

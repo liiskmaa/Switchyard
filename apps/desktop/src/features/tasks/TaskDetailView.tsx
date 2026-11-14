@@ -22,6 +22,8 @@ import {
   sendNote,
   taskEvents,
 } from "./api";
+import { createIntegration, isIntegrationEvent, listIntegrations } from "../integrations/api";
+import { STATUS_LABEL as INTEGRATION_LABEL, shortOid, statusTone as integrationTone } from "../integrations/labels";
 import { AGENT_KINDS, ROLE_LABEL, SEVERITY_TONE, STATUS_LABEL, statusTone, taskActions } from "./labels";
 
 function useAction(onDone: () => void) {
@@ -55,6 +57,71 @@ function messageText(m: TaskMessage): string {
   if (typeof p["action"] === "string") return `${p["action"]}${typeof p["note"] === "string" ? `: ${p["note"]}` : ""}`;
   if (typeof p["role"] === "string") return `${p["role"]} → ${providerName(String(p["provider"] ?? ""))}`;
   return "";
+}
+
+/** Delivery is separate from completion: a task can be completed and not integrated, or the reverse. */
+function Delivery({ task }: { task: Task }) {
+  const integrations = useCoreQuery(
+    `task-integrations:${task.id}`,
+    () => listIntegrations({ task_id: task.id, include_closed: true, limit: 50 }),
+    { refreshOn: isIntegrationEvent },
+  );
+  const [target, setTarget] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const eligible = task.status === "awaiting_review" || task.status === "completed";
+  const list = integrations.data ?? [];
+  const open = list.find((i) => i.status !== "integrated" && i.status !== "cancelled");
+  return (
+    <Panel title="Delivery">
+      {list.length === 0 ? <p className="muted small">Not integrated into any branch.</p> : null}
+      <ul className="mini-list">
+        {list.map((i) => (
+          <li key={i.id}>
+            <button
+              type="button"
+              className="link"
+              onClick={() => navigate("integrations", { integrationId: i.id, integrationProjectId: i.project_id })}
+            >
+              {i.target_branch} <Badge tone={integrationTone(i.status)}>{INTEGRATION_LABEL[i.status]}</Badge>{" "}
+              <span className="muted small">
+                {i.status === "integrated" ? `merge ${shortOid(i.merge_commit)}` : `${shortOid(i.source_commit)} onto ${shortOid(i.target_commit)}`}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      {eligible && !open ? (
+        <div className="input-row">
+          <input
+            className="input"
+            aria-label="Target branch"
+            placeholder="Target branch (default: the project checkout's branch)"
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+          />
+          <Button
+            onClick={() =>
+              void (async () => {
+                setError(null);
+                try {
+                  const r = await createIntegration(target.trim() ? { task_id: task.id, target_branch: target.trim() } : { task_id: task.id });
+                  navigate("integrations", { integrationId: r.integration.id, integrationProjectId: r.integration.project_id });
+                } catch (e) {
+                  setError(toCoreError(e).message);
+                }
+              })()
+            }
+          >
+            Prepare integration
+          </Button>
+        </div>
+      ) : null}
+      {!eligible && list.length === 0 ? (
+        <p className="muted small">Integration becomes possible once implemented work was reported (awaiting review) or completed.</p>
+      ) : null}
+      {error ? <ErrorNotice title="Cannot prepare the integration" message={error} /> : null}
+    </Panel>
+  );
 }
 
 function Assign({ task, roles, workspaces, onDone }: { task: Task; roles: TaskRole[]; workspaces: Workspace[]; onDone: () => void }) {
@@ -391,6 +458,8 @@ export function TaskDetailView({
           </form>
         ) : null}
       </Panel>
+
+      <Delivery task={t} />
 
       <Panel title="Dependencies">
         {d.dependencies.length === 0 ? <p className="muted small">This task does not wait for other tasks.</p> : null}

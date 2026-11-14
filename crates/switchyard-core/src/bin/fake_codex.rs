@@ -72,7 +72,8 @@ fn record_answer(thread: &str, answer: &Value) {
         .append(true)
         .open(store().join(format!("answers-{thread}.jsonl")))
     {
-        let _ = writeln!(f, "{answer}");
+        // One write per line, so concurrent writers cannot interleave lines.
+        let _ = f.write_all(format!("{answer}\n").as_bytes());
     }
 }
 
