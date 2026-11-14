@@ -480,6 +480,11 @@ impl Fake {
                     return self.error(&id, -32602, "fake codex: unexpected approval policy or sandbox");
                 }
                 let cwd = params["cwd"].as_str().unwrap_or_default().to_owned();
+                // Reported back like the real app-server reports the thread's model.
+                let model = params["model"].as_str().unwrap_or("fake-codex-default").to_owned();
+                if !FAKE_MODELS.iter().any(|(id, _)| *id == model) {
+                    return self.error(&id, -32602, &format!("fake codex: unknown model {model}"));
+                }
                 let thread = if method == "thread/resume" {
                     let wanted = params["threadId"].as_str().unwrap_or_default().to_owned();
                     let Ok(saved) = std::fs::read_to_string(thread_file(&wanted)) else {
@@ -499,7 +504,7 @@ impl Fake {
                 self.save();
                 self.respond(
                     &id,
-                    json!({ "thread": { "id": thread, "cwd": cwd }, "model": "fake-codex-model", "cwd": cwd, "approvalPolicy": "untrusted" }),
+                    json!({ "thread": { "id": thread, "cwd": cwd }, "model": model, "cwd": cwd, "approvalPolicy": "untrusted" }),
                 );
                 self.notify("thread/started", json!({ "thread": { "id": thread } }));
             }
@@ -510,10 +515,24 @@ impl Fake {
                 self.turn(&id, &params);
             }
             "turn/interrupt" => self.error(&id, -32600, "no active turn"),
+            // Same shape as the real 0.166.0 `model/list`.
+            "model/list" => {
+                let data: Vec<Value> = FAKE_MODELS
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (id, name))| json!({ "id": id, "displayName": name, "isDefault": i == 0, "hidden": false }))
+                    .chain([json!({ "id": "fake-hidden", "displayName": "hidden", "isDefault": false, "hidden": true })])
+                    .collect();
+                self.respond(&id, json!({ "data": data, "nextCursor": null }));
+            }
             _ => self.error(&id, -32601, &format!("method not found: {method}")),
         }
     }
 }
+
+/// The models the fake offers through `model/list` (the first is its default).
+const FAKE_MODELS: &[(&str, &str)] =
+    &[("fake-codex-default", "Fake Codex Default"), ("fake-codex-large", "Fake Codex Large")];
 
 fn thread_is_main(t: &str, main: &str) -> bool {
     t == main

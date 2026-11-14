@@ -316,10 +316,16 @@ pub struct AssignmentRecord {
     pub created_at_ms: i64,
     pub started_at_ms: Option<i64>,
     pub ended_at_ms: Option<i64>,
+    /// `operator` or `workflow`.
+    pub origin: String,
+    /// The workflow step (`implement#2`), for workflow assignments.
+    pub step_key: Option<String>,
+    /// The model asked for; `None` = the CLI's default.
+    pub model: Option<String>,
 }
 
 const ASSIGNMENT_COLUMNS: &str = "id, task_id, project_id, role, provider, workspace_id, session_id, status, context, \
-     context_version, review_fingerprint, last_event_seq, outcome, created_at, started_at, ended_at";
+     context_version, review_fingerprint, last_event_seq, outcome, created_at, started_at, ended_at, origin, step_key, model";
 
 fn assignment_from_row(r: &Row<'_>) -> rusqlite::Result<Result<AssignmentRecord, StorageError>> {
     let ids: (String, String, String, String, Option<String>) =
@@ -333,6 +339,7 @@ fn assignment_from_row(r: &Row<'_>) -> rusqlite::Result<Result<AssignmentRecord,
     let seq: i64 = r.get(11)?;
     let outcome: Option<String> = r.get(12)?;
     let times: (i64, Option<i64>, Option<i64>) = (r.get(13)?, r.get(14)?, r.get(15)?);
+    let meta: (String, Option<String>, Option<String>) = (r.get(16)?, r.get(17)?, r.get(18)?);
     Ok((|| {
         Ok(AssignmentRecord {
             id: parse_uuid(&ids.0, "task_assignments.id")?,
@@ -351,13 +358,16 @@ fn assignment_from_row(r: &Row<'_>) -> rusqlite::Result<Result<AssignmentRecord,
             created_at_ms: times.0,
             started_at_ms: times.1,
             ended_at_ms: times.2,
+            origin: meta.0,
+            step_key: meta.1,
+            model: meta.2,
         })
     })())
 }
 
 pub fn insert_assignment(conn: &Connection, a: &AssignmentRecord) -> Result<(), StorageError> {
     conn.execute(
-        &format!("INSERT INTO task_assignments ({ASSIGNMENT_COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)"),
+        &format!("INSERT INTO task_assignments ({ASSIGNMENT_COLUMNS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)"),
         params![
             a.id.to_string(),
             a.task_id.to_string(),
@@ -375,9 +385,15 @@ pub fn insert_assignment(conn: &Connection, a: &AssignmentRecord) -> Result<(), 
             a.created_at_ms,
             a.started_at_ms,
             a.ended_at_ms,
+            a.origin,
+            a.step_key,
+            a.model,
         ],
     )
     .map_err(|e| match e {
+        rusqlite::Error::SqliteFailure(f, Some(m)) if f.code == rusqlite::ErrorCode::ConstraintViolation && m.contains("step_key") => {
+            StorageError::Conflict("this workflow step already has an assignment".into())
+        }
         rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::ConstraintViolation => {
             StorageError::Conflict("the task already has an open assignment".into())
         }

@@ -126,5 +126,12 @@ Migration 0005 replaces the never-written milestone-1 placeholders `tasks`, `mes
   replaced. At most one `running` per integration (unique partial index). Rows still `running` at
   startup were interrupted and are settled from Git.
 
+### Workflows (migration 0008)
+- `task_workflows`: one `engineering@1` run per task: snapshotted role bindings (`config`), the pure
+  workflow state, status, stage, current step, reason, the last journal event processed and a
+  revision guard. See [workflows.md](workflows.md).
+- `workflow_settings`: a project's provider + model per role.
+- `task_assignments.origin` (`operator` | `workflow`), `step_key` (unique per task) and `model`.
+
 ### Reserved, not written yet
 `decisions`.

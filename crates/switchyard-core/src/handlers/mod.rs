@@ -9,6 +9,7 @@ mod policies;
 mod projects;
 mod system;
 mod tasks;
+mod workflows;
 mod workspaces;
 
 use std::future::Future;
@@ -201,6 +202,30 @@ pub(crate) async fn dispatch(conn: &Connection, method: &str, params: Value) -> 
         }
         methods::TasksDecideProposal::NAME => {
             typed::<methods::TasksDecideProposal, _, _>(params, |p| tasks::decide_proposal(conn, p)).await
+        }
+        methods::AgentsModels::NAME => {
+            typed::<methods::AgentsModels, _, _>(params, |p| workflows::models(state, p)).await
+        }
+        methods::WorkflowsSettings::NAME => {
+            typed::<methods::WorkflowsSettings, _, _>(params, |p| workflows::settings(state, p)).await
+        }
+        methods::WorkflowsSetSettings::NAME => {
+            typed::<methods::WorkflowsSetSettings, _, _>(params, |p| workflows::set_settings(conn, p)).await
+        }
+        methods::WorkflowsStart::NAME => {
+            typed::<methods::WorkflowsStart, _, _>(params, |p| workflows::start(conn, p)).await
+        }
+        methods::WorkflowsGet::NAME => {
+            typed::<methods::WorkflowsGet, _, _>(params, |p| workflows::get(state, p)).await
+        }
+        methods::WorkflowsPause::NAME => {
+            typed::<methods::WorkflowsPause, _, _>(params, |p| workflows::pause(conn, p)).await
+        }
+        methods::WorkflowsResume::NAME => {
+            typed::<methods::WorkflowsResume, _, _>(params, |p| workflows::resume(conn, p)).await
+        }
+        methods::WorkflowsCancel::NAME => {
+            typed::<methods::WorkflowsCancel, _, _>(params, |p| workflows::cancel(conn, p)).await
         }
         methods::IntegrationsList::NAME => {
             typed::<methods::IntegrationsList, _, _>(params, |p| integrations::list(state, p)).await

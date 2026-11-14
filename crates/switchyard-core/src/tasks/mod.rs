@@ -14,6 +14,7 @@
 mod assign;
 mod convert;
 mod reactor;
+mod workflow;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -39,6 +40,7 @@ use crate::journal::{commit_checked, draft};
 use crate::workspaces::WorkspaceService;
 
 pub(crate) use reactor::spawn_reactor;
+pub(crate) use workflow::spawn_workflow_driver;
 
 /// Status reasons Core sets for dependency blocking start with this, so a
 /// blocker reported by an agent is never lifted automatically.
@@ -327,11 +329,21 @@ pub(crate) struct TaskService {
     stopping: Arc<Mutex<HashMap<Uuid, Uuid>>>,
     /// Assignments being started now; a second concurrent start is refused.
     starting: Arc<Mutex<std::collections::HashSet<Uuid>>>,
+    /// Serializes the workflow decisions of each task (M8.1).
+    workflow_locks: Arc<Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl TaskService {
     pub fn new(storage: Storage, bus: EventBus, agents: AgentService, workspaces: WorkspaceService) -> Self {
-        Self { storage, bus, agents, workspaces, stopping: Arc::default(), starting: Arc::default() }
+        Self {
+            storage,
+            bus,
+            agents,
+            workspaces,
+            stopping: Arc::default(),
+            starting: Arc::default(),
+            workflow_locks: Arc::default(),
+        }
     }
 
     fn stopping(&self) -> std::sync::MutexGuard<'_, HashMap<Uuid, Uuid>> {
@@ -418,8 +430,9 @@ impl TaskService {
                     readiness,
                     assignments: store::assignments_for_task(c, id)?
                         .into_iter()
-                        .map(convert::assignment)
-                        .collect(),
+                        .map(|a| convert::assignment(c, a))
+                        .collect::<Result<_, _>>()?,
+                    workflow: workflow::info(c, id)?,
                     messages: store::messages_for_task(c, id)?.into_iter().map(convert::message).collect(),
                     findings: store::findings_for_task(c, id)?.into_iter().map(convert::finding).collect(),
                     proposals: store::proposals_for_task(c, id)?.into_iter().map(convert::proposal).collect(),

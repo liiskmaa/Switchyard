@@ -2,7 +2,12 @@ import { useState } from "react";
 
 import { Button, ErrorNotice } from "../../components/ui";
 import { toCoreError, type CoreRequestError } from "../../lib/core";
-import type { Task, TaskKind, TaskPriority } from "../../types/protocol";
+import { useCoreQuery } from "../../stores/useCoreQuery";
+import type { RoleBindings, Task, TaskKind, TaskPriority } from "../../types/protocol";
+import { startWorkflow, workflowSettings } from "../workflows/api";
+import { BINDING_KEYS, BINDING_LABEL, effectiveBinding, modelLabel, overridesOf } from "../workflows/labels";
+import { RoleBindingsEditor } from "../workflows/RoleBindingsEditor";
+import { providerName } from "../../lib/agents";
 import { createTask } from "./api";
 
 const KINDS: TaskKind[] = ["implementation", "investigation", "general"];
@@ -27,6 +32,14 @@ export function TaskForm({
   const [criteria, setCriteria] = useState("");
   const [dependsOn, setDependsOn] = useState<string[]>([]);
   const [publish, setPublish] = useState(true);
+  const [runWorkflow, setRunWorkflow] = useState(true);
+  const [override, setOverride] = useState<RoleBindings | null>(null);
+  const [editing, setEditing] = useState(false);
+  const settings = useCoreQuery(`workflow-settings:${projectId}`, () => workflowSettings(projectId));
+  const project = settings.data?.bindings ?? null;
+  const bindings = override ?? project;
+  // The workflow starts on a ready task: published, and not waiting for another task.
+  const canRun = publish && dependsOn.length === 0;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<CoreRequestError | null>(null);
 
@@ -45,6 +58,15 @@ export function TaskForm({
         depends_on: dependsOn,
         publish,
       });
+      if (runWorkflow && canRun) {
+        try {
+          const patch = project && override ? overridesOf(project, override) : {};
+          await startWorkflow(task.id, Object.keys(patch).length > 0 ? patch : undefined);
+        } catch (err) {
+          // The task exists; its page offers to start the workflow again.
+          setError(toCoreError(err));
+        }
+      }
       onDone(task);
     } catch (err) {
       setError(toCoreError(err));
@@ -119,11 +141,33 @@ export function TaskForm({
         <input type="checkbox" checked={publish} onChange={(e) => setPublish(e.target.checked)} /> Publish now (otherwise it stays a
         draft)
       </label>
+      <label className="check">
+        <input type="checkbox" checked={runWorkflow && canRun} disabled={!canRun} onChange={(e) => setRunWorkflow(e.target.checked)} /> Run
+        the engineering workflow (engineering@1): Switchyard assigns investigation, implementation, review and corrections itself
+      </label>
+      {runWorkflow && canRun && bindings ? (
+        <div className="workflow-form-bindings">
+          <p className="muted small">
+            {BINDING_KEYS.map((k) => {
+              const b = effectiveBinding(bindings, k);
+              return `${BINDING_LABEL[k]}: ${providerName(b.provider)} (${modelLabel(b.model)})`;
+            }).join(" · ")}
+            {override ? " — overridden for this task" : " — the project's roles"}
+          </p>
+          {editing ? (
+            <RoleBindingsEditor idPrefix="new-task" value={bindings} onChange={setOverride} />
+          ) : (
+            <Button variant="ghost" onClick={() => setEditing(true)}>
+              Override roles and models for this task
+            </Button>
+          )}
+        </div>
+      ) : null}
       {error ? <ErrorNotice title="Cannot create the task" message={error.message} code={error.code} /> : null}
       <div className="form-actions">
         <Button onClick={onCancel}>Cancel</Button>
         <Button type="submit" variant="primary" disabled={busy || title.trim() === ""}>
-          Create task
+          {runWorkflow && canRun ? "Create and start" : "Create task"}
         </Button>
       </div>
     </form>

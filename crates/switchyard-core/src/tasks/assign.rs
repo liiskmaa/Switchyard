@@ -95,6 +95,129 @@ pub(super) fn abandon_assignment(
     Ok(Ok(ended))
 }
 
+/// What a new assignment is (an operator's or a workflow step's).
+pub(super) struct NewAssignment {
+    pub task_id: Uuid,
+    pub role: Role,
+    pub provider: String,
+    pub model: Option<String>,
+    pub workspace_id: Uuid,
+    pub workspace_project: Uuid,
+    /// `operator` or `workflow`.
+    pub origin: &'static str,
+    pub step_key: Option<String>,
+    pub by: String,
+}
+
+/// The capabilities every workflow role needs from a provider. All roles
+/// need tool permission requests routed to Switchyard: that is how policies
+/// apply and how review sessions are kept read-only (ADR 0027).
+pub(super) fn role_capabilities(role: Role, caps: &switchyard_agents::Capabilities) -> Result<(), String> {
+    if !caps.permission_requests.is_supported() {
+        return Err(format!(
+            "it does not route permission requests to Switchyard, so it cannot {} on a task",
+            role.as_str()
+        ));
+    }
+    Ok(())
+}
+
+/// Creates a pending assignment and moves the task to `assigned`, in `tx`.
+/// A workflow step that already has an assignment is refused (`step_key` is unique).
+pub(super) fn create_assignment(
+    tx: &Connection,
+    n: &NewAssignment,
+    now: i64,
+    drafts: &mut Vec<EventDraft>,
+) -> Checked<Uuid> {
+    let t = check!(lookup(store::get_task(tx, n.task_id), ErrorCode::NotFound)?);
+    if n.workspace_project != t.project_id {
+        return Ok(Err(invalid_params("the workspace belongs to another project")));
+    }
+    let allowed = match n.role {
+        Role::Review => t.status == TaskStatus::AwaitingReview,
+        Role::Investigate | Role::Implement => {
+            matches!(t.status, TaskStatus::Ready | TaskStatus::AwaitingReview)
+        }
+    };
+    if !allowed {
+        let need = if n.role == Role::Review { "awaiting_review" } else { "ready or awaiting_review" };
+        return Ok(Err(invalid_state(format!(
+            "a {} assignment needs a task that is {need}; the task is {}",
+            n.role, t.status
+        ))));
+    }
+    let others = store::open_assignments_on_workspace(tx, n.workspace_id, n.task_id)?;
+    if let Some((other, other_role)) = others.first() {
+        return Ok(Err(ProtocolError::new(
+            ErrorCode::Conflict,
+            format!(
+                "workspace is in use by a {other_role} assignment of task {other}; one task works in a workspace at a \
+                 time"
+            ),
+        )
+        .with_data(json!({ "task_id": other }))));
+    }
+    let id = new_id();
+    let record = AssignmentRecord {
+        id,
+        task_id: n.task_id,
+        project_id: t.project_id,
+        role: n.role,
+        provider: n.provider.clone(),
+        workspace_id: n.workspace_id,
+        session_id: None,
+        status: AssignmentStatus::Pending,
+        context: None,
+        context_version: None,
+        review_fingerprint: None,
+        last_event_seq: 0,
+        outcome: None,
+        created_at_ms: now,
+        started_at_ms: None,
+        ended_at_ms: None,
+        origin: n.origin.into(),
+        step_key: n.step_key.clone(),
+        model: n.model.clone(),
+    };
+    match store::insert_assignment(tx, &record) {
+        Ok(()) => {}
+        Err(StorageError::Conflict(m)) => return Ok(Err(ProtocolError::new(ErrorCode::Conflict, m))),
+        Err(e) => return Err(e),
+    }
+    drafts.push(draft(
+        DomainEvent::TaskAssigned {
+            assignment_id: id,
+            role: n.role.as_str().into(),
+            provider: n.provider.clone(),
+            workspace_id: n.workspace_id,
+            model: n.model.clone(),
+            step_key: n.step_key.clone(),
+        },
+        &EventContext { workspace_id: Some(n.workspace_id), ..task_context(&t) },
+    )?);
+    let m = new_message(
+        &t,
+        Some(id),
+        MessageKind::TaskAssignment,
+        if n.origin == "workflow" { "core" } else { "operator" },
+        None,
+        "agent",
+        json!({ "role": n.role, "provider": n.provider, "model": n.model, "workspace_id": n.workspace_id,
+                "by": n.by, "step_key": n.step_key }),
+        None,
+        "recorded",
+        now,
+    );
+    let summary = match &n.model {
+        Some(model) => format!("{} assigned to {} ({model})", n.role, n.provider),
+        None => format!("{} assigned to {}", n.role, n.provider),
+    };
+    record_message(tx, &t, &m, Some(&summary), drafts)?;
+    check!(set_status(tx, n.task_id, TaskStatus::Assigned, Some(summary), None, None, now, drafts)?);
+    Ok(Ok(id))
+}
+
 fn access_for(role: Role) -> SessionAccess {
     if role == Role::Review { SessionAccess::Review } else { SessionAccess::Write }
 }
@@ -122,108 +245,32 @@ impl TaskService {
         actor: String,
     ) -> Result<TaskAssignmentResult, ProtocolError> {
         let provider = parse_provider(&p.provider)?;
-        let availability = self.agents.availability(provider, false).await;
-        if let Some(error) = availability.error.clone().or_else(|| {
-            (!availability.installed).then(|| format!("{} is not installed", availability.display_name))
-        }) {
-            return Err(ProtocolError::new(ErrorCode::AgentUnavailable, error));
-        }
-        if !switchyard_agents::capabilities(provider).permission_requests.is_supported() {
-            return Err(ProtocolError::new(
-                ErrorCode::Unsupported,
-                format!(
-                    "{} does not route permission requests to Switchyard; it cannot work on tasks",
-                    availability.display_name
-                ),
-            ));
-        }
+        self.check_provider(provider, p.role).await?;
+        self.agents.validate_model(provider, p.model.as_deref()).await?;
         let workspace = self.workspaces.record(p.workspace_id).await?;
-        let (task_id, role, workspace_id, provider_name) =
-            (p.task_id, p.role, p.workspace_id, provider.as_str());
-        let assignment_id = new_id();
-        commit_checked(&self.storage, &self.bus, move |tx| {
-            let now = now_ms();
+        let new = NewAssignment {
+            task_id: p.task_id,
+            role: p.role,
+            provider: provider.as_str().into(),
+            model: p.model,
+            workspace_id: p.workspace_id,
+            workspace_project: workspace.project_id,
+            origin: "operator",
+            step_key: None,
+            by: actor,
+        };
+        let assignment_id = commit_checked(&self.storage, &self.bus, move |tx| {
             let mut drafts = Vec::new();
-            let t = check!(lookup(store::get_task(tx, task_id), ErrorCode::NotFound)?);
-            if workspace.project_id != t.project_id {
-                return Ok(Err(invalid_params("the workspace belongs to another project")));
+            // An operator assignment is a takeover: never while a workflow drives the task.
+            if let Some(w) = switchyard_storage::workflows::find_workflow(tx, new.task_id)?
+                && matches!(w.status.as_str(), "pending" | "running")
+            {
+                return Ok(Err(invalid_state(
+                    "the task's workflow is running; pause or cancel it before assigning manually",
+                )));
             }
-            let allowed = match role {
-                Role::Review => t.status == TaskStatus::AwaitingReview,
-                Role::Investigate | Role::Implement => {
-                    matches!(t.status, TaskStatus::Ready | TaskStatus::AwaitingReview)
-                }
-            };
-            if !allowed {
-                let need = if role == Role::Review { "awaiting_review" } else { "ready or awaiting_review" };
-                return Ok(Err(invalid_state(format!(
-                    "a {role} assignment needs a task that is {need}; the task is {}",
-                    t.status
-                ))));
-            }
-            let others = store::open_assignments_on_workspace(tx, workspace_id, task_id)?;
-            if let Some((other, other_role)) = others.first() {
-                return Ok(Err(ProtocolError::new(
-                    ErrorCode::Conflict,
-                    format!(
-                        "workspace is in use by a {other_role} assignment of task {other}; one task works in a \
-                         workspace at a time"
-                    ),
-                )
-                .with_data(json!({ "task_id": other }))));
-            }
-            let record = AssignmentRecord {
-                id: assignment_id,
-                task_id,
-                project_id: t.project_id,
-                role,
-                provider: provider_name.into(),
-                workspace_id,
-                session_id: None,
-                status: AssignmentStatus::Pending,
-                context: None,
-                context_version: None,
-                review_fingerprint: None,
-                last_event_seq: 0,
-                outcome: None,
-                created_at_ms: now,
-                started_at_ms: None,
-                ended_at_ms: None,
-            };
-            store::insert_assignment(tx, &record)?;
-            drafts.push(draft(
-                DomainEvent::TaskAssigned {
-                    assignment_id,
-                    role: role.as_str().into(),
-                    provider: provider_name.into(),
-                    workspace_id,
-                },
-                &EventContext { workspace_id: Some(workspace_id), ..task_context(&t) },
-            )?);
-            let m = new_message(
-                &t,
-                Some(assignment_id),
-                MessageKind::TaskAssignment,
-                "operator",
-                None,
-                "agent",
-                json!({ "role": role, "provider": provider_name, "workspace_id": workspace_id, "by": actor }),
-                None,
-                "recorded",
-                now,
-            );
-            record_message(tx, &t, &m, Some(&format!("{role} assigned to {provider_name}")), &mut drafts)?;
-            check!(set_status(
-                tx,
-                task_id,
-                TaskStatus::Assigned,
-                Some(format!("{role} assigned to {provider_name}")),
-                None,
-                None,
-                now,
-                &mut drafts
-            )?);
-            Ok(Ok(((), drafts)))
+            let id = check!(create_assignment(tx, &new, now_ms(), &mut drafts)?);
+            Ok(Ok((id, drafts)))
         })
         .await?;
         if p.start {
@@ -232,13 +279,31 @@ impl TaskService {
         self.assignment_result(assignment_id).await
     }
 
+    /// Refuses a provider that is not installed or cannot do `role` (its
+    /// declared capabilities, ADR 0022/0033).
+    pub(super) async fn check_provider(
+        &self,
+        provider: AgentProvider,
+        role: Role,
+    ) -> Result<(), ProtocolError> {
+        let availability = self.agents.availability(provider, false).await;
+        if let Some(error) = availability.error.clone().or_else(|| {
+            (!availability.installed).then(|| format!("{} is not installed", availability.display_name))
+        }) {
+            return Err(ProtocolError::new(ErrorCode::AgentUnavailable, error));
+        }
+        role_capabilities(role, &switchyard_agents::capabilities(provider)).map_err(|m| {
+            ProtocolError::new(ErrorCode::Unsupported, format!("{}: {m}", availability.display_name))
+        })
+    }
+
     async fn assignment_result(&self, id: Uuid) -> Result<TaskAssignmentResult, ProtocolError> {
         let (task, assignment) = self
             .storage
             .call(move |c| {
                 let a = store::get_assignment(c, id)?;
                 let t = store::get_task(c, a.task_id)?;
-                Ok((convert::task(c, t)?, convert::assignment(a)))
+                Ok((convert::task(c, t)?, convert::assignment(c, a)?))
             })
             .await
             .map_err(errors::storage)?;
@@ -341,6 +406,7 @@ impl TaskService {
                         p.id != a.id
                             && p.role == a.role
                             && p.provider == a.provider
+                            && p.model == a.model
                             && p.workspace_id == a.workspace_id
                     })
                     .find_map(|p| p.session_id)
@@ -391,7 +457,9 @@ impl TaskService {
             Some(session_id) => self.agents.resume(session_id, None).await.map(|s| (s, true)),
             None => self
                 .agents
-                .start(provider, access, a.workspace_id, Some(t.project_id), None, None)
+                // The assignment's model goes to the native adapter exactly
+                // (`--model` for Claude, `model` on Codex's thread/start).
+                .start(provider, access, a.workspace_id, Some(t.project_id), None, a.model.clone())
                 .await
                 .map(|s| (s, false)),
         };

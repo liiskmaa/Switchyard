@@ -14,12 +14,14 @@
 mod classify;
 mod detect;
 mod launch;
+mod models;
 mod protocol;
 mod session;
 
 pub use classify::{ADAPTER, classify};
 pub use detect::{AuthStatus, CodexInstallation, DetectError, auth_status, detect, locate};
 pub use launch::{CONFIG_OVERRIDES, DISABLED_FEATURES, LaunchSpec, build_args, build_env};
+pub use models::list_models;
 pub use protocol::{APPROVAL_POLICY, Protocol, SANDBOX, Step, ThreadMode, unwrap_shell};
 pub use session::{CodexConfig, spawn_session};
 

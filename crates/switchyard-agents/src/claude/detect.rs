@@ -30,6 +30,8 @@ pub enum DetectError {
 pub struct ClaudeInstallation {
     pub executable: PathBuf,
     pub version: String,
+    /// The `--model` aliases the installed CLI's `--help` names.
+    pub model_aliases: Vec<String>,
 }
 
 /// Login state as reported by `claude auth status --json`. Only these
@@ -113,7 +115,8 @@ pub async fn detect(explicit: Option<&Path>) -> Result<ClaudeInstallation, Detec
     if !missing.is_empty() {
         return Err(DetectError::Unsupported { version, missing });
     }
-    Ok(ClaudeInstallation { executable, version })
+    let model_aliases = crate::models::claude_aliases_from_help(&help);
+    Ok(ClaudeInstallation { executable, version, model_aliases })
 }
 
 /// Required flags not mentioned in `help`. Some flags the adapter relies on

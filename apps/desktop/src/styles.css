@@ -507,3 +507,16 @@ span.findings { padding-left: 0; }
 .patch-hunk { color: var(--accent); }
 .patch-file { color: var(--muted); font-weight: 600; }
 .file-row { display: inline-flex; gap: 6px; align-items: baseline; text-align: left; }
+
+/* Workflow (M8.1) */
+.workflow-stages { list-style: none; display: flex; gap: 6px; margin: 0 0 12px; padding: 0; flex-wrap: wrap; }
+.workflow-stage { padding: 4px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+.workflow-stage.done { color: var(--ok); border-color: var(--ok); background: var(--ok-soft); }
+.workflow-stage.current { color: var(--text-strong); border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+.workflow-step.current .mini-title { color: var(--text-strong); font-weight: 600; }
+.workflow-steps li { flex-direction: column; gap: 2px; }
+.workflow-reason { display: block; padding: 8px 10px; border-left: 3px solid var(--warn); background: var(--warn-soft); color: var(--text-strong); }
+.workflow-approvals { margin: 8px 0; }
+.role-bindings { display: flex; flex-direction: column; gap: 8px; margin: 8px 0; }
+.role-binding-row { align-items: start; }
+details.advanced > summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 4px 0; }

@@ -16,6 +16,7 @@ use crate::model::{
 use crate::model::{
     Integration, IntegrationChanges, IntegrationSettingsInfo, ValidationPlanEntry, ValidationRunInfo,
 };
+use crate::model::{ModelCatalog, RoleBindings, RoleBindingsPatch, WorkflowInfo, WorkflowSettingsInfo};
 
 pub trait Method {
     const NAME: &'static str;
@@ -599,6 +600,9 @@ pub struct TaskDetail {
     pub messages: Vec<TaskMessage>,
     pub findings: Vec<TaskFinding>,
     pub proposals: Vec<TaskProposal>,
+    /// The task's workflow run, if it has one (M8.1).
+    #[serde(default)]
+    pub workflow: Option<WorkflowInfo>,
 }
 
 method!(TasksGet, "tasks.get", TaskIdParams, TaskDetail);
@@ -671,6 +675,9 @@ pub struct TasksAssignParams {
     /// Start the session right away (default true).
     #[serde(default = "default_true")]
     pub start: bool,
+    /// Model passed to the CLI; `None` = its default (M8.1).
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -953,3 +960,67 @@ method!(
     IntegrationsDeleteCommandParams,
     IntegrationSettingsInfo
 );
+
+// --- workflows (M8.1, ADR 0033) ---------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentsModelsParams {
+    /// `claude_code` or `codex`.
+    pub provider: String,
+    /// Ask the CLI again instead of using the cached answer.
+    #[serde(default)]
+    pub refresh: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentsModelsResult {
+    pub catalog: ModelCatalog,
+}
+
+method!(AgentsModels, "agents.models", AgentsModelsParams, AgentsModelsResult);
+
+method!(WorkflowsSettings, "workflows.settings", ProjectIdParams, WorkflowSettingsInfo);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowsSetSettingsParams {
+    pub project_id: Uuid,
+    pub bindings: RoleBindings,
+}
+
+method!(WorkflowsSetSettings, "workflows.set_settings", WorkflowsSetSettingsParams, WorkflowSettingsInfo);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowsStartParams {
+    pub task_id: Uuid,
+    /// Task-level overrides of the project's role bindings.
+    #[serde(default)]
+    pub overrides: RoleBindingsPatch,
+    /// Work in this workspace; by default Core creates one for the task.
+    #[serde(default)]
+    pub workspace_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowResult {
+    pub workflow: WorkflowInfo,
+}
+
+method!(WorkflowsStart, "workflows.start", WorkflowsStartParams, WorkflowResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowsGetResult {
+    pub workflow: Option<WorkflowInfo>,
+}
+
+method!(WorkflowsGet, "workflows.get", TaskIdParams, WorkflowsGetResult);
+method!(WorkflowsPause, "workflows.pause", TaskIdParams, WorkflowResult);
+method!(WorkflowsResume, "workflows.resume", TaskIdParams, WorkflowResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowsCancelParams {
+    pub task_id: Uuid,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+method!(WorkflowsCancel, "workflows.cancel", WorkflowsCancelParams, WorkflowResult);

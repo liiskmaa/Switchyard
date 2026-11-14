@@ -115,6 +115,8 @@ struct Inner {
     /// Serializes starts/resumes so duplicate-process checks are atomic.
     start_lock: AsyncMutex<()>,
     detection: AsyncMutex<HashMap<AgentProvider, Detection>>,
+    /// Model choices per provider, as the installed CLI reported them (M8.1).
+    models: AsyncMutex<HashMap<AgentProvider, switchyard_agents::ModelCatalog>>,
 }
 
 pub(crate) use crate::journal::draft;
@@ -143,6 +145,7 @@ impl AgentService {
                 attached: Mutex::default(),
                 start_lock: AsyncMutex::new(()),
                 detection: AsyncMutex::new(HashMap::new()),
+                models: AsyncMutex::new(HashMap::new()),
             }),
         }
     }
@@ -419,6 +422,49 @@ impl AgentService {
     }
 
     /// A usable installation, re-detecting if the last attempt failed.
+    /// The models the installed CLI of `provider` offers (cached; `refresh`
+    /// asks the CLI again). A CLI that is missing or cannot answer yields a
+    /// catalogue with `error` set: only its default model can be used then.
+    pub async fn models(&self, provider: AgentProvider, refresh: bool) -> switchyard_agents::ModelCatalog {
+        let mut cache = self.inner.models.lock().await;
+        if !refresh && let Some(c) = cache.get(&provider) {
+            return c.clone();
+        }
+        let catalog = match self.installation(provider).await {
+            Ok(Installation::Claude(i)) => {
+                switchyard_agents::models::claude_catalog(&i.model_aliases, &i.version)
+            }
+            Ok(Installation::Codex(i)) => codex::list_models(&i.executable, &i.version).await,
+            Err(e) => switchyard_agents::ModelCatalog {
+                provider,
+                models: Vec::new(),
+                accepts_full_names: false,
+                source: "installed CLI".into(),
+                error: Some(e.message),
+            },
+        };
+        // A failed query is not cached: the next call asks again.
+        if catalog.error.is_none() {
+            cache.insert(provider, catalog.clone());
+        }
+        catalog
+    }
+
+    /// Refuses a model the installed CLI does not offer (never substitutes one).
+    pub async fn validate_model(
+        &self,
+        provider: AgentProvider,
+        model: Option<&str>,
+    ) -> Result<(), ProtocolError> {
+        if model.is_none() {
+            return Ok(());
+        }
+        self.models(provider, false)
+            .await
+            .validate(model)
+            .map_err(|m| ProtocolError::new(ErrorCode::InvalidParams, m))
+    }
+
     async fn installation(&self, provider: AgentProvider) -> Result<Installation, ProtocolError> {
         let mut cache = self.inner.detection.lock().await;
         if cache.get(&provider).is_none_or(|d| d.installation.is_none()) {

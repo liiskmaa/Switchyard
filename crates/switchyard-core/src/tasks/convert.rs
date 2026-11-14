@@ -7,8 +7,20 @@ use switchyard_storage::tasks::{
 use switchyard_storage::{Connection, StorageError};
 use switchyard_tasks::ProposalStatus;
 
-pub(crate) fn assignment(a: AssignmentRecord) -> TaskAssignment {
-    TaskAssignment {
+/// The wire assignment, with the model its session reported (if it started).
+pub(crate) fn assignment(
+    c: &switchyard_storage::Connection,
+    a: AssignmentRecord,
+) -> Result<TaskAssignment, switchyard_storage::StorageError> {
+    let actual_model = match a.session_id {
+        Some(s) => match switchyard_storage::sessions::get(c, s) {
+            Ok(s) => s.model,
+            Err(switchyard_storage::StorageError::NotFound(_)) => None,
+            Err(e) => return Err(e),
+        },
+        None => None,
+    };
+    Ok(TaskAssignment {
         id: a.id,
         task_id: a.task_id,
         role: a.role,
@@ -22,7 +34,11 @@ pub(crate) fn assignment(a: AssignmentRecord) -> TaskAssignment {
         created_at_ms: a.created_at_ms,
         started_at_ms: a.started_at_ms,
         ended_at_ms: a.ended_at_ms,
-    }
+        origin: a.origin,
+        step_key: a.step_key,
+        model: a.model,
+        actual_model,
+    })
 }
 
 pub(crate) fn message(m: MessageRecord) -> TaskMessage {
@@ -82,7 +98,7 @@ pub(crate) fn task_ref(t: &TaskRecord) -> TaskRef {
 
 /// The wire task, with its derived fields.
 pub(crate) fn task(conn: &Connection, t: TaskRecord) -> Result<Task, StorageError> {
-    let open_assignment = store::open_assignment(conn, t.id)?.map(assignment);
+    let open_assignment = store::open_assignment(conn, t.id)?.map(|a| assignment(conn, a)).transpose()?;
     let dependency_ids = store::dependencies_of(conn, t.id)?.into_iter().map(|(id, _)| id).collect();
     let pending_proposals =
         store::proposals_for_task(conn, t.id)?.iter().filter(|p| p.status == ProposalStatus::Pending).count()

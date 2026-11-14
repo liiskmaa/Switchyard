@@ -158,7 +158,9 @@ pub async fn start(config: CoreConfig) -> Result<RunningCore, CoreError> {
     );
     // Tasks follow their agents' sessions through the journal; started after
     // session reconciliation, it first replays what it has not processed.
-    crate::tasks::spawn_reactor(tasks, state.shutdown.subscribe());
+    crate::tasks::spawn_reactor(tasks.clone(), state.shutdown.subscribe());
+    // Workflows follow task events the same way, after the reactor (M8.1).
+    crate::tasks::spawn_workflow_driver(tasks, state.shutdown.subscribe());
     let server = tokio::spawn(server::run(listener, owner_uid, state.clone()));
     Ok(RunningCore { info, state, server, _lock: lock })
 }

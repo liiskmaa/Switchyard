@@ -25,6 +25,9 @@ import {
 import { createIntegration, isIntegrationEvent, listIntegrations } from "../integrations/api";
 import { STATUS_LABEL as INTEGRATION_LABEL, shortOid, statusTone as integrationTone } from "../integrations/labels";
 import { AGENT_KINDS, ROLE_LABEL, SEVERITY_TONE, STATUS_LABEL, statusTone, taskActions } from "./labels";
+import { isWorkflowEvent } from "../workflows/api";
+import { modelLabel } from "../workflows/labels";
+import { WorkflowPanel } from "../workflows/WorkflowPanel";
 
 function useAction(onDone: () => void) {
   const [busy, setBusy] = useState(false);
@@ -212,12 +215,9 @@ export function TaskDetailView({
   onChanged: () => void;
 }) {
   const now = useNow();
-  const detail = useCoreQuery(`task:${taskId}`, () => getTask(taskId), {
-    refreshOn: (e) => isTaskEvent(e) && e.task_id === taskId,
-  });
-  const events = useCoreQuery(`task-events:${taskId}`, () => taskEvents(taskId), {
-    refreshOn: (e) => isTaskEvent(e) && e.task_id === taskId,
-  });
+  const concerns = (e: Parameters<typeof isTaskEvent>[0]) => (isTaskEvent(e) || isWorkflowEvent(e)) && e.task_id === taskId;
+  const detail = useCoreQuery(`task:${taskId}`, () => getTask(taskId), { refreshOn: concerns });
+  const events = useCoreQuery(`task-events:${taskId}`, () => taskEvents(taskId), { refreshOn: concerns });
   const refresh = () => {
     detail.refresh();
     events.refresh();
@@ -247,7 +247,10 @@ export function TaskDetailView({
       >
         <KeyValue
           rows={[
-            ["Status", `${STATUS_LABEL[t.status]}${t.status_reason ? ` — ${t.status_reason}` : ""}`],
+            ...(d.workflow
+              ? ([["Workflow", `${d.workflow.status}${d.workflow.step_key ? ` · ${d.workflow.step_key}` : ""}`]] as [string, string][])
+              : []),
+            [d.workflow ? "Task status (internal)" : "Status", `${STATUS_LABEL[t.status]}${t.status_reason ? ` — ${t.status_reason}` : ""}`],
             ["Kind / priority", `${t.kind} · ${t.priority}`],
             ["Origin", t.origin === "proposal" ? "Approved proposal" : "Operator"],
             ["Dependencies", d.dependencies.length === 0 ? "None" : `${d.readiness}`],
@@ -318,8 +321,12 @@ export function TaskDetailView({
         ) : null}
       </Panel>
 
-      <Panel title="Assignment">
-        {open ? (
+      <WorkflowPanel detail={d} onChanged={refresh} />
+
+      <Panel title={d.workflow ? "Assignments" : "Assignment"}>
+        {open && d.workflow && open.origin === "workflow" ? (
+          <p className="muted small">The workflow manages this task&apos;s assignments.</p>
+        ) : open ? (
           <div className="ws-row">
             <span>
               {ROLE_LABEL[open.role]} by {providerName(open.provider)} in workspace “{wsName(open.workspace_id)}” · {open.status}
@@ -335,6 +342,12 @@ export function TaskDetailView({
               </Button>
             </div>
           </div>
+        ) : can.assign.length > 0 && d.workflow ? (
+          <details className="advanced">
+            <summary>Advanced: assign manually (take over from the workflow)</summary>
+            <p className="muted small">Pause or cancel the workflow first; a running workflow refuses manual assignments.</p>
+            <Assign task={t} roles={can.assign} workspaces={workspaces} onDone={refresh} />
+          </details>
         ) : can.assign.length > 0 ? (
           <Assign task={t} roles={can.assign} workspaces={workspaces} onDone={refresh} />
         ) : (
@@ -345,7 +358,10 @@ export function TaskDetailView({
             {[...d.assignments].reverse().map((a) => (
               <li key={a.id}>
                 <span className="mini-title">
-                  {ROLE_LABEL[a.role]} · {providerName(a.provider)} · {a.status}
+                  {a.step_key ? <code className="code-tag">{a.step_key}</code> : null} {ROLE_LABEL[a.role]} · {providerName(a.provider)} ·{" "}
+                  {modelLabel(a.model)}
+                  {a.actual_model && a.actual_model !== a.model ? ` (runs ${a.actual_model})` : ""} · {a.status}
+                  {a.origin === "operator" ? " · manual" : ""}
                 </span>
                 <span className="mini-sub">
                   {wsName(a.workspace_id)}

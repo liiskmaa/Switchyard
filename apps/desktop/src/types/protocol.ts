@@ -583,6 +583,76 @@ export interface TaskAssignment {
   created_at_ms: number;
   started_at_ms: number | null;
   ended_at_ms: number | null;
+  /** `operator` or `workflow` (M8.1). */
+  origin: "operator" | "workflow";
+  /** The workflow step, e.g. `implement#2`. */
+  step_key: string | null;
+  /** The model asked for; null = the CLI's default. */
+  model: string | null;
+  /** The model the CLI reported it runs. */
+  actual_model: string | null;
+}
+
+// --- workflows (M8.1, ADR 0033) ---
+
+export interface RoleBinding {
+  provider: AgentProvider;
+  /** Passed to the CLI exactly; null = the CLI's own default. */
+  model: string | null;
+}
+
+export interface RoleBindings {
+  investigate: RoleBinding;
+  implement: RoleBinding;
+  review: RoleBinding;
+  /** null = same as implement. */
+  correct: RoleBinding | null;
+}
+
+export type RoleBindingsPatch = Partial<Record<keyof RoleBindings, RoleBinding>>;
+
+export interface WorkflowSettingsInfo {
+  project_id: Uuid;
+  bindings: RoleBindings;
+  /** 0 while the project uses Switchyard's defaults. */
+  revision: number;
+  warnings: string[];
+}
+
+export type WorkflowStatus = "pending" | "running" | "waiting" | "paused" | "completed" | "cancelled" | "failed";
+
+export interface WorkflowInfo {
+  task_id: Uuid;
+  definition: string;
+  version: number;
+  status: WorkflowStatus;
+  stage: "investigation" | "implementation" | "review" | "correction" | "delivery" | null;
+  step_key: string | null;
+  reason: string | null;
+  resume_action: string | null;
+  bindings: RoleBindings;
+  workspace_id: Uuid | null;
+  corrections: number;
+  max_corrections: number;
+  warnings: string[];
+  started_by: string;
+  created_at_ms: number;
+  updated_at_ms: number;
+  ended_at_ms: number | null;
+}
+
+export interface ModelOption {
+  id: string;
+  display_name: string;
+  is_default: boolean;
+}
+
+export interface ModelCatalog {
+  provider: AgentProvider;
+  models: ModelOption[];
+  accepts_full_names: boolean;
+  source: string;
+  error: string | null;
 }
 
 export interface Task {
@@ -679,6 +749,7 @@ export interface TaskDetail {
   messages: TaskMessage[];
   findings: TaskFinding[];
   proposals: TaskProposal[];
+  workflow: WorkflowInfo | null;
 }
 
 type TaskResult = { task: Task };
@@ -718,7 +789,7 @@ export interface TaskMethods {
   "tasks.add_dependency": { params: { task_id: Uuid; depends_on: Uuid }; result: TaskResult };
   "tasks.remove_dependency": { params: { task_id: Uuid; depends_on: Uuid }; result: TaskResult };
   "tasks.assign": {
-    params: { task_id: Uuid; role: TaskRole; provider: AgentProvider; workspace_id: Uuid; start?: boolean };
+    params: { task_id: Uuid; role: TaskRole; provider: AgentProvider; workspace_id: Uuid; start?: boolean; model?: string };
     result: TaskAssignmentResult;
   };
   "tasks.start_assignment": { params: { assignment_id: Uuid }; result: TaskAssignmentResult };
@@ -971,4 +1042,15 @@ export interface IntegrationMethods {
     result: IntegrationSettingsInfo;
   };
   "integrations.delete_command": { params: { command_id: Uuid }; result: IntegrationSettingsInfo };
+  "agents.models": { params: { provider: AgentProvider; refresh?: boolean }; result: { catalog: ModelCatalog } };
+  "workflows.settings": { params: { project_id: Uuid }; result: WorkflowSettingsInfo };
+  "workflows.set_settings": { params: { project_id: Uuid; bindings: RoleBindings }; result: WorkflowSettingsInfo };
+  "workflows.start": {
+    params: { task_id: Uuid; overrides?: RoleBindingsPatch; workspace_id?: Uuid };
+    result: { workflow: WorkflowInfo };
+  };
+  "workflows.get": { params: { task_id: Uuid }; result: { workflow: WorkflowInfo | null } };
+  "workflows.pause": { params: { task_id: Uuid }; result: { workflow: WorkflowInfo } };
+  "workflows.resume": { params: { task_id: Uuid }; result: { workflow: WorkflowInfo } };
+  "workflows.cancel": { params: { task_id: Uuid; reason?: string }; result: { workflow: WorkflowInfo } };
 }

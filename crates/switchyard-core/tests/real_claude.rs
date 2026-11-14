@@ -392,3 +392,23 @@ async fn real_claude_policy_decisions() {
     assert!(text.contains("sapphire") && !text.contains("ruby"), "the blocked file was not read");
     client.call::<SessionsStop>(SessionIdParams { session_id: session.id }).await.unwrap();
 }
+
+/// M8.1: the Claude models offered are the aliases the installed CLI's
+/// `--help` names (no session starts, so this costs nothing).
+#[tokio::test]
+#[ignore = "real Claude CLI: SWITCHYARD_REAL_CLAUDE=1 (no session starts)"]
+async fn real_claude_names_its_model_aliases() {
+    let Some(core) = TestCore::start_real(RealCli { claude: true, codex: false }, |_| {}).await else {
+        return;
+    };
+    let (client, _rx) = core.connect().await;
+    let catalog = client
+        .call::<AgentsModels>(AgentsModelsParams { provider: "claude_code".into(), refresh: true })
+        .await
+        .unwrap()
+        .catalog;
+    println!("claude models: {:?} (source: {})", catalog.models, catalog.source);
+    assert!(catalog.error.is_none() && catalog.accepts_full_names);
+    assert!(catalog.models.iter().any(|m| m.id == "opus"), "{:?}", catalog.models);
+    assert!(catalog.validate(Some("gpt-6-luna")).is_err());
+}

@@ -118,6 +118,7 @@ async fn assign(f: &Fixture, task: Uuid, role: Role, provider: &str) -> Uuid {
             provider: provider.into(),
             workspace_id: f.workspace_id,
             start: true,
+            model: None,
         })
         .await
         .unwrap()
@@ -565,6 +566,7 @@ async fn assignments_recover_after_a_core_restart() {
             provider: "claude_code".into(),
             workspace_id: other_ws,
             start: true,
+            model: None,
         })
         .await
         .unwrap()
@@ -611,6 +613,7 @@ async fn one_task_per_workspace_and_cancel_frees_it() {
             provider: "codex".into(),
             workspace_id: f.workspace_id,
             start: true,
+            model: None,
         })
         .await
         .unwrap_err();
@@ -626,6 +629,7 @@ async fn one_task_per_workspace_and_cancel_frees_it() {
             provider: "gemini".into(),
             workspace_id: f.workspace_id,
             start: true,
+            model: None,
         })
         .await
         .unwrap_err();
@@ -720,6 +724,7 @@ async fn an_operator_resumed_session_is_never_stopped_by_a_new_assignment() {
             provider: "claude_code".into(),
             workspace_id: f.workspace_id,
             start: true,
+            model: None,
         })
         .await
         .unwrap_err();
@@ -749,6 +754,7 @@ async fn a_concurrent_second_start_never_fails_the_running_assignment() {
             provider: "claude_code".into(),
             workspace_id: f.workspace_id,
             start: false,
+            model: None,
         })
         .await
         .unwrap()

@@ -146,3 +146,19 @@ describe("task events", () => {
     ).toBe("Review recorded as blocked: the workspace changed during the review (reviewer said approved)");
   });
 });
+
+describe("workflow events", () => {
+  it("names the stage, provider and model", () => {
+    expect(
+      describeEvent(
+        event(1, "workflow.stage_changed", { stage: "correction", step_key: "implement#2", provider: "codex", model: "gpt-6-luna" }),
+      ),
+    ).toBe("Workflow: correction (implement#2) by Codex, gpt-6-luna");
+    expect(describeEvent(event(2, "workflow.stage_changed", { stage: "review", step_key: "review#1", provider: "claude_code", model: null }))).toBe(
+      "Workflow: review (review#1) by Claude Code, CLI default model",
+    );
+    expect(describeEvent(event(3, "workflow.waiting", { reason: "review#3 still requests changes" }))).toBe(
+      "Workflow needs you: review#3 still requests changes",
+    );
+  });
+});

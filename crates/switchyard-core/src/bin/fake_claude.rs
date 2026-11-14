@@ -49,6 +49,8 @@ const FAKE_TURN_COST_USD: f64 = 0.001;
 
 struct Fake {
     session_id: String,
+    /// What `--model` asked for (reported back like the real CLI reports its model).
+    model: String,
     cwd: String,
     input: Receiver<Value>,
     last_error: bool,
@@ -76,7 +78,13 @@ fn main() {
     if args.first().map(String::as_str) == Some("--help") {
         println!("Usage: claude [options]\n  --input-format --output-format --session-id --resume");
         println!("  --permission-prompt-tool --restricted --strict-mcp-config --include-partial-messages");
-        println!("  --tools --settings --verbose --model");
+        println!("  --tools --settings --verbose");
+        // Same shape as the real 2.1.325 help: the adapter reads the aliases from it.
+        println!("  --model <model>                       Model for the current session. Provide");
+        println!("                                        an alias for the latest model (e.g.");
+        println!("                                        'fable', 'opus', or 'sonnet') or a");
+        println!("                                        model's full name.");
+        println!("  -n, --name <name>                     Set a display name");
         return;
     }
     if args.len() >= 2 && args[0] == "auth" && args[1] == "status" {
@@ -121,8 +129,10 @@ fn main() {
             }
         }
     });
+    let model = flag("--model").unwrap_or_else(|| "fake-model".into());
     let mut fake = Fake {
         session_id,
+        model,
         cwd,
         input: rx,
         last_error: false,
@@ -183,7 +193,7 @@ impl Fake {
         out(&self.base(json!({
             "type": "system", "subtype": "init", "cwd": self.cwd,
             "tools": ["Bash", "Edit", "Glob", "Grep", "NotebookEdit", "Read", "Write"],
-            "mcp_servers": [], "model": "fake-model", "permissionMode": "default",
+            "mcp_servers": [], "model": self.model, "permissionMode": "default",
             "claude_code_version": "2.1.322", "apiKeySource": "none",
         })));
     }

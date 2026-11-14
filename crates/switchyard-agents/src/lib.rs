@@ -7,6 +7,7 @@
 //! * [`process`] — supervised child processes: controlled environment, no
 //!   shell, bounded line reading, graceful-then-forced termination.
 //! * [`session`] — the provider-neutral handle Core uses to drive any adapter.
+//! * [`models`] — the model choices each installed CLI offers, and their validation.
 //! * [`claude`] — the Claude Code adapter. Claude's wire protocol types are
 //!   private to that module; nothing outside it sees raw Claude JSON.
 //! * [`codex`] — the OpenAI Codex adapter (app-server JSON-RPC), likewise
@@ -16,6 +17,7 @@ pub mod claude;
 pub mod codex;
 pub mod event;
 pub mod model;
+pub mod models;
 pub mod process;
 pub mod session;
 
@@ -24,6 +26,7 @@ pub use model::{
     AgentProvider, ApprovalStatus, Capabilities, DecisionSource, PermissionDecision, SessionAccess,
     SessionState, StateError, Support,
 };
+pub use models::{ModelCatalog, ModelOption};
 pub use session::{AgentSession, ExitReport, SessionError, SessionUpdate};
 
 /// Classifies a permission request with the adapter that produced it.

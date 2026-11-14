@@ -26,6 +26,11 @@ Rust process, **Switchyard Core**. The Tauri desktop app is only a client.
   validation rules; `crates/switchyard-git/src/integrate.rs`, `crates/switchyard-core/src/integrations/`,
   `migrations/0006_integrations.sql`, `migrations/0007_integration_operations.sql`,
   `apps/desktop/src/features/integrations`). See `docs/architecture/integrations.md` and ADRs 0028–0032.
+- Milestone 8.1: workflow orchestration (`crates/switchyard-tasks/src/workflow.rs` is the pure
+  `engineering@1` decision function; `crates/switchyard-core/src/tasks/workflow.rs` the driver;
+  `crates/switchyard-agents/src/models.rs` + `codex/models.rs` the model choices of the installed CLIs;
+  `migrations/0008_workflows.sql`; `apps/desktop/src/features/workflows`). See
+  `docs/architecture/workflows.md` and ADR 0033.
 
 The verified Claude CLI behaviour is in `docs/architecture/agent-integration.md`, the verified Codex
 app-server behaviour (0.166.0) in `docs/architecture/codex-integration.md`, and the contract in
@@ -51,6 +56,7 @@ cargo test -p switchyard-git --test worktrees           # git worktree operation
 cargo test -p switchyard-core --test codex              # Codex sessions via the fake app-server
 cargo test -p switchyard-core --test tasks              # tasks via both fakes ([fake:report:HEX] scenarios)
 cargo test -p switchyard-core --test integrations       # integration: inspection, validation, approval, operations, recovery
+cargo test -p switchyard-core --test workflows          # engineering@1 workflow via both fakes (models, limits, restarts)
 cargo test -p switchyard-git --test integrate           # Git integration primitives on temp repos
 SWITCHYARD_REAL_CLAUDE=1 cargo test -p switchyard-core --test real_claude -- --ignored   # real CLI, paid
 SWITCHYARD_REAL_CODEX=1 cargo test -p switchyard-core --test real_codex -- --ignored     # real CLI, paid
@@ -185,6 +191,16 @@ When running Core or the app manually, set `SWITCHYARD_DATA_DIR` (and, if that p
     transaction (`integration.settings_changed`, `integration.validation_command_changed`).
   - Record the merge commit before moving the target (`integrating`); recovery settles from the
     target branch tip.
+- **Workflows.**
+  - Workflow decisions stay pure (`switchyard_tasks::workflow::decide`). The driver commits the new
+    state, its `workflow.*` events, `last_event_seq` and the next step's assignment in one
+    transaction, and only then starts the session. Never start a workflow step any other way.
+  - Workflow assignments use `create_assignment`/`start_assignment` like the operator's, with a
+    unique `step_key`; never bypass them. A Core restart makes a running step `interrupted` (wait);
+    never restart agents automatically.
+  - The workflow never completes a task, touches an integration, commits or pushes.
+  - Models are passed to the CLI exactly; choices come only from the installed CLI
+    (`agents.models`). Never add a model list to Switchyard, never substitute a model.
 - Text edits made with ad-hoc scripts can silently no-op after `cargo fmt` reflows code. Verify
   behaviour-only edits (guards, checks) with a test.
 

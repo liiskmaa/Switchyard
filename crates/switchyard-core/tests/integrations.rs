@@ -754,6 +754,7 @@ async fn a_reviewed_task_is_delivered_only_on_the_operators_approval() {
         provider: "claude_code".into(),
         workspace_id: f.workspace_id,
         start: true,
+        model: None,
     };
     f.c.call::<TasksAssign>(assign(Role::Implement)).await.unwrap();
     // Approve the agent's file write (an M4 approval, unrelated to integration).

@@ -1093,6 +1093,7 @@ async fn assign(c: &CoreClient, task: Uuid, role: Role, provider: &str, ws: Uuid
         provider: provider.into(),
         workspace_id: ws,
         start: true,
+        model: None,
     })
     .await
     .unwrap();

@@ -275,7 +275,8 @@ async fn session_runs_in_its_workspace_with_the_thread_id_codex_assigned() {
     let evs = events(&f, s.id).await;
     let ready = of_type(&evs, "agent.ready");
     assert_eq!(ready[0].payload["native_session_id"], thread);
-    assert_eq!(ready[0].payload["model"], "fake-codex-model");
+    // No model asked for: the fake reports its own default (as listed by its `model/list`).
+    assert_eq!(ready[0].payload["model"], "fake-codex-default");
     assert_eq!(of_type(&evs, "agent.started")[0].payload["provider"], "codex");
     for e in &evs {
         assert_eq!(e.context.workspace_id, Some(f.workspace_id), "{} lacks workspace identity", e.event_type);

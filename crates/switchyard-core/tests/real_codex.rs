@@ -416,3 +416,22 @@ async fn real_codex_sub_agents_are_blocked() {
     assert!(!ws.join("from-child.txt").exists());
     c.call::<SessionsStop>(SessionIdParams { session_id: s.id }).await.unwrap();
 }
+
+/// M8.1: the models offered for Codex come from the installed CLI's
+/// `model/list` (no thread is opened and no turn runs, so this costs nothing).
+#[tokio::test]
+#[ignore = "real Codex CLI: SWITCHYARD_REAL_CODEX=1 (no turn runs)"]
+async fn real_codex_lists_its_models() {
+    let Some(core) = real_core().await else { return };
+    let (client, _rx) = core.connect().await;
+    let catalog = client
+        .call::<AgentsModels>(AgentsModelsParams { provider: "codex".into(), refresh: true })
+        .await
+        .unwrap()
+        .catalog;
+    println!("codex models: {:?} (source: {})", catalog.models, catalog.source);
+    assert!(catalog.error.is_none(), "{:?}", catalog.error);
+    assert!(!catalog.models.is_empty());
+    assert_eq!(catalog.models.iter().filter(|m| m.is_default).count(), 1, "the CLI names one default");
+    assert!(!catalog.accepts_full_names, "only listed Codex models are accepted");
+}

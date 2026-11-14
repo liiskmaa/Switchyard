@@ -175,8 +175,11 @@ export function describeEvent(event: EventEnvelope): string {
       return "Dependency added";
     case "task.dependency_removed":
       return "Dependency removed";
-    case "task.assigned":
-      return `${str(p, "role") ?? "Work"} assigned to ${providerName(str(p, "provider") ?? "claude_code")}`;
+    case "task.assigned": {
+      const model = str(p, "model");
+      const step = str(p, "step_key");
+      return `${str(p, "role") ?? "Work"} assigned to ${providerName(str(p, "provider") ?? "claude_code")}${model ? ` (${model})` : ""}${step ? ` as workflow step ${step}` : ""}`;
+    }
     case "task.assignment_started":
       return `${p["resumed"] === true ? "Resumed" : "Started"} a ${str(p, "access") === "review" ? "read-only review" : "working"} session with task context v${String(p["context_version"] ?? "?")}`;
     case "task.assignment_ended":
@@ -240,6 +243,26 @@ export function describeEvent(event: EventEnvelope): string {
       const name = (after?.["name"] ?? before?.["name"] ?? "?") as string;
       return `${str(p, "changed_by") ?? "Operator"} ${str(p, "action") ?? "changed"} validation command ${name}`;
     }
+    case "workflow.started":
+      return `Engineering workflow started by ${str(p, "started_by") ?? "?"}`;
+    case "workflow.stage_changed": {
+      const model = str(p, "model");
+      return `Workflow: ${str(p, "stage") ?? "?"} (${str(p, "step_key") ?? "?"}) by ${providerName(str(p, "provider") ?? "claude_code")}, ${model ?? "CLI default model"}`;
+    }
+    case "workflow.waiting":
+      return `Workflow needs you: ${str(p, "reason") ?? "?"}`;
+    case "workflow.paused":
+      return `Workflow paused by ${str(p, "by") ?? "?"}`;
+    case "workflow.resumed":
+      return `Workflow resumed by ${str(p, "by") ?? "?"}`;
+    case "workflow.completed":
+      return `Workflow ready for delivery: ${str(p, "reason") ?? ""}`;
+    case "workflow.failed":
+      return `Workflow failed: ${str(p, "reason") ?? "?"}`;
+    case "workflow.cancelled":
+      return `Workflow cancelled: ${str(p, "reason") ?? "?"}`;
+    case "workflow.settings_changed":
+      return `${str(p, "changed_by") ?? "Operator"} changed the project's workflow roles and models`;
     default:
       return event.event_type;
   }

@@ -17,6 +17,10 @@ use switchyard_protocol::methods::{
     WorkspacesGet, WorkspacesGitStatus, WorkspacesList, WorkspacesRestore, WorkspacesVerify,
 };
 use switchyard_protocol::methods::{
+    AgentsModels, WorkflowsCancel, WorkflowsGet, WorkflowsPause, WorkflowsResume, WorkflowsSetSettings,
+    WorkflowsSettings, WorkflowsStart,
+};
+use switchyard_protocol::methods::{
     IntegrationsAbortResolution, IntegrationsApprove, IntegrationsCancel, IntegrationsCancelValidation,
     IntegrationsChanges, IntegrationsCommitWorkspace, IntegrationsCreate, IntegrationsDeleteCommand,
     IntegrationsGet, IntegrationsList, IntegrationsPatch, IntegrationsRefresh, IntegrationsSetCommand,
@@ -103,6 +107,14 @@ const ALLOWED_METHODS: &[&str] = &[
     IntegrationsSetSettings::NAME,
     IntegrationsSetCommand::NAME,
     IntegrationsDeleteCommand::NAME,
+    AgentsModels::NAME,
+    WorkflowsSettings::NAME,
+    WorkflowsSetSettings::NAME,
+    WorkflowsStart::NAME,
+    WorkflowsGet::NAME,
+    WorkflowsPause::NAME,
+    WorkflowsResume::NAME,
+    WorkflowsCancel::NAME,
 ];
 
 #[derive(Debug, Serialize)]

@@ -174,6 +174,12 @@ client detect a restart. `seq` stays continuous across restarts because it lives
 | `integrations.settings` / `integrations.set_settings` | `{project_id}` / `{project_id, require_review}` | `{project_id, require_review, revision, commands: [ValidationCommand]}` |
 | `integrations.set_command` | `{project_id, command_id?, name, argv: [string], timeout_secs (1..=14400), enabled?, position?}` | settings; argv is run directly, never through a shell |
 | `integrations.delete_command` | `{command_id}` | settings |
+| `agents.models` | `{provider, refresh?}` | `{catalog: {provider, models: [{id, display_name, is_default}], accepts_full_names, source, error?}}`: what the installed CLI offers (Claude `--help` aliases, Codex `model/list`) |
+| `workflows.settings` / `workflows.set_settings` | `{project_id}` / `{project_id, bindings}` | `{project_id, bindings: {investigate, implement, review, correct?: {provider, model?}}, revision (0 = defaults), warnings}`; providers and models are validated |
+| `workflows.start` | `{task_id, overrides?: {role: {provider, model?}}, workspace_id?}` | `{workflow}`; on a `ready` task; snapshots the bindings, creates a workspace unless given, starts `investigate#1` |
+| `workflows.get` | `{task_id}` | `{workflow?}` (also in `tasks.get` as `workflow`) |
+| `workflows.pause` / `workflows.resume` | `{task_id}` | `{workflow}`; resume does what `resume_action` says |
+| `workflows.cancel` | `{task_id, reason?}` | `{workflow}`; cancels the workflow's open assignment |
 | `live.subscribe` | `{session_id?}` | `{subscription_id}`. Delivers `live` frames. |
 | `live.unsubscribe` | `{subscription_id}` | `{}` |
 
@@ -227,7 +233,8 @@ Task             { id, project_id, parent_task_id?, title, description?, kind: i
                    operator|proposal, origin_proposal_id?, revision, created_at_ms, updated_at_ms,
                    completed_at_ms?, open_assignment?: TaskAssignment, dependency_ids,
                    pending_proposals, open_findings }
-TaskAssignment   { id, task_id, role: investigate|implement|review, provider, workspace_id,
+TaskAssignment   { id, task_id, role: investigate|implement|review, provider, workspace_id, origin: operator|workflow,
+                   step_key?, model? (asked for; none = CLI default), actual_model? (what the CLI reported),
                    session_id?, status: pending|active|reported|failed|cancelled, context?
                    (the TaskContext exactly as sent), context_version?, outcome?, created_at_ms,
                    started_at_ms?, ended_at_ms? }
@@ -342,6 +349,13 @@ the registration is kept and `projects.git_status` returns `repository_unavailab
 | `integration.operation_finished` | `{integration_id, operation_id, kind, status: completed\|failed\|interrupted, error?}` |
 | `integration.settings_changed` | `{project_id, require_review_before, require_review_after, revision, changed_by}` |
 | `integration.validation_command_changed` | `{project_id, command_id, action: created\|updated\|deleted, before?, after?, changed_by}`; `before`/`after`: `{name, command_line, timeout_secs, enabled, position}` |
+| `workflow.started` | `{definition, version, workspace_id, bindings, started_by}` |
+| `workflow.stage_changed` | `{stage, step_key, assignment_id, role, provider, model?}`: the workflow created its next step |
+| `workflow.waiting` | `{step_key?, reason}`: needs the operator |
+| `workflow.paused` / `workflow.resumed` | `{by}` |
+| `workflow.completed` | `{reason}`: ready for human-approved delivery |
+| `workflow.failed` / `workflow.cancelled` | `{reason}` |
+| `workflow.settings_changed` | `{project_id, before?, after, revision, changed_by}` |
 | `files.changed` | `{changes: [{path, kind: created\|modified\|deleted\|renamed, from?}], dropped}`: what the filesystem reported in one workspace (debounced, `.git` and ignored paths excluded). Paths are relative to the workspace root; the context carries project, workspace and session. |
 
 Agent events carry `project_id`, `workspace_id`, `session_id` and `agent_id` in the envelope; workspace events carry `project_id` and `workspace_id`; task events carry `project_id` and `task_id` (and `workspace_id` for assignment events); integration events carry `project_id`, `workspace_id` and (when linked) `task_id`, with `integration_id` in the payload. `events.list` also accepts `session_id` and `task_id`.

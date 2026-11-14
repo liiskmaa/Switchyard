@@ -445,6 +445,22 @@ pub struct TaskAssignment {
     pub created_at_ms: i64,
     pub started_at_ms: Option<i64>,
     pub ended_at_ms: Option<i64>,
+    /// `operator` or `workflow` (M8.1).
+    #[serde(default = "operator_origin")]
+    pub origin: String,
+    /// The workflow step, e.g. `implement#2`.
+    #[serde(default)]
+    pub step_key: Option<String>,
+    /// The model asked for; `None` = the CLI's default.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// The model the CLI reported it runs (from its session).
+    #[serde(default)]
+    pub actual_model: Option<String>,
+}
+
+fn operator_origin() -> String {
+    "operator".into()
 }
 
 /// A structured, durable message about a task (ADR 0025). Messages from an
@@ -683,4 +699,81 @@ pub struct IntegrationSettingsInfo {
     pub require_review: bool,
     pub revision: i64,
     pub commands: Vec<ValidationCommandConfig>,
+}
+
+// --- workflows (M8.1, ADR 0033) ---------------------------------------------------
+
+pub use switchyard_agents::{ModelCatalog, ModelOption};
+
+/// The provider and model one workflow role runs with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleBinding {
+    /// `claude_code` or `codex`.
+    pub provider: String,
+    /// Passed to the CLI exactly; `None` = the CLI's own default.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// Provider and model per workflow role.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleBindings {
+    pub investigate: RoleBinding,
+    pub implement: RoleBinding,
+    pub review: RoleBinding,
+    /// Corrections; `None` = the same as `implement`.
+    #[serde(default)]
+    pub correct: Option<RoleBinding>,
+}
+
+/// Task-level overrides of the project's bindings (only the roles given).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleBindingsPatch {
+    #[serde(default)]
+    pub investigate: Option<RoleBinding>,
+    #[serde(default)]
+    pub implement: Option<RoleBinding>,
+    #[serde(default)]
+    pub review: Option<RoleBinding>,
+    #[serde(default)]
+    pub correct: Option<RoleBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowSettingsInfo {
+    pub project_id: Uuid,
+    pub bindings: RoleBindings,
+    /// 0 while the project uses Switchyard's defaults.
+    pub revision: i64,
+    /// For example: implementation and review use the same provider.
+    pub warnings: Vec<String>,
+}
+
+/// A task's workflow run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowInfo {
+    pub task_id: Uuid,
+    /// `engineering`.
+    pub definition: String,
+    pub version: u32,
+    /// `pending`, `running`, `waiting`, `paused`, `completed`, `cancelled`, `failed`.
+    pub status: String,
+    /// `investigation`, `implementation`, `review`, `correction`, `delivery`.
+    pub stage: Option<String>,
+    pub step_key: Option<String>,
+    /// Why it waits, stopped or finished.
+    pub reason: Option<String>,
+    /// What resuming does, when it waits or is paused.
+    pub resume_action: Option<String>,
+    /// The bindings snapshotted when it started.
+    pub bindings: RoleBindings,
+    pub workspace_id: Option<Uuid>,
+    /// Correction rounds so far, and the automatic limit.
+    pub corrections: u32,
+    pub max_corrections: u32,
+    pub warnings: Vec<String>,
+    pub started_by: String,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub ended_at_ms: Option<i64>,
 }

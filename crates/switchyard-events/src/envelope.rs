@@ -231,7 +231,18 @@ pub enum DomainEvent {
     TaskDependencyRemoved { depends_on: Uuid },
     /// The operator assigned a role on the task to an agent provider.
     #[serde(rename = "task.assigned")]
-    TaskAssigned { assignment_id: Uuid, role: String, provider: String, workspace_id: Uuid },
+    TaskAssigned {
+        assignment_id: Uuid,
+        role: String,
+        provider: String,
+        workspace_id: Uuid,
+        /// The model asked for (`None` = the CLI's default). M8.1.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        /// The workflow step, for assignments the workflow created. M8.1.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step_key: Option<String>,
+    },
     /// The assignment's session was started (or resumed) and given the context.
     #[serde(rename = "task.assignment_started")]
     TaskAssignmentStarted {
@@ -393,6 +404,49 @@ pub enum DomainEvent {
         after: Option<Value>,
         changed_by: String,
     },
+    /// A task's workflow started (M8.1, ADR 0033). `bindings`: the effective
+    /// provider and model per role, snapshotted now.
+    #[serde(rename = "workflow.started")]
+    WorkflowStarted {
+        definition: String,
+        version: u32,
+        workspace_id: Option<Uuid>,
+        bindings: Value,
+        started_by: String,
+    },
+    /// The workflow created the assignment of its next step.
+    #[serde(rename = "workflow.stage_changed")]
+    WorkflowStageChanged {
+        stage: String,
+        step_key: String,
+        assignment_id: Uuid,
+        role: String,
+        provider: String,
+        model: Option<String>,
+    },
+    /// The workflow stopped for a human; `reason` says why.
+    #[serde(rename = "workflow.waiting")]
+    WorkflowWaiting { step_key: Option<String>, reason: String },
+    #[serde(rename = "workflow.paused")]
+    WorkflowPaused { by: String },
+    #[serde(rename = "workflow.resumed")]
+    WorkflowResumed { by: String },
+    /// The review approved: ready for human-approved delivery.
+    #[serde(rename = "workflow.completed")]
+    WorkflowCompleted { reason: String },
+    #[serde(rename = "workflow.failed")]
+    WorkflowFailed { reason: String },
+    #[serde(rename = "workflow.cancelled")]
+    WorkflowCancelled { reason: String },
+    /// The operator changed the project's role bindings.
+    #[serde(rename = "workflow.settings_changed")]
+    WorkflowSettingsChanged {
+        project_id: Uuid,
+        before: Option<Value>,
+        after: Value,
+        revision: i64,
+        changed_by: String,
+    },
 }
 
 /// One observed filesystem change, relative to the workspace root.
@@ -462,6 +516,15 @@ impl DomainEvent {
             Self::IntegrationOperationFinished { .. } => "integration.operation_finished",
             Self::IntegrationSettingsChanged { .. } => "integration.settings_changed",
             Self::IntegrationValidationCommandChanged { .. } => "integration.validation_command_changed",
+            Self::WorkflowStarted { .. } => "workflow.started",
+            Self::WorkflowStageChanged { .. } => "workflow.stage_changed",
+            Self::WorkflowWaiting { .. } => "workflow.waiting",
+            Self::WorkflowPaused { .. } => "workflow.paused",
+            Self::WorkflowResumed { .. } => "workflow.resumed",
+            Self::WorkflowCompleted { .. } => "workflow.completed",
+            Self::WorkflowFailed { .. } => "workflow.failed",
+            Self::WorkflowCancelled { .. } => "workflow.cancelled",
+            Self::WorkflowSettingsChanged { .. } => "workflow.settings_changed",
         }
     }
 
@@ -654,6 +717,42 @@ mod tests {
                 before: Some(serde_json::json!({"name": "a"})),
                 after: None,
                 changed_by: "desktop".into(),
+            },
+            DomainEvent::WorkflowStarted {
+                definition: "engineering".into(),
+                version: 1,
+                workspace_id: Some(new_id()),
+                bindings: serde_json::json!({"review": {"provider": "claude_code", "model": "opus"}}),
+                started_by: "desktop".into(),
+            },
+            DomainEvent::WorkflowStageChanged {
+                stage: "correction".into(),
+                step_key: "implement#2".into(),
+                assignment_id: new_id(),
+                role: "implement".into(),
+                provider: "codex".into(),
+                model: None,
+            },
+            DomainEvent::WorkflowWaiting { step_key: Some("review#3".into()), reason: "x".into() },
+            DomainEvent::WorkflowPaused { by: "desktop".into() },
+            DomainEvent::WorkflowResumed { by: "desktop".into() },
+            DomainEvent::WorkflowCompleted { reason: "approved".into() },
+            DomainEvent::WorkflowFailed { reason: "x".into() },
+            DomainEvent::WorkflowCancelled { reason: "x".into() },
+            DomainEvent::WorkflowSettingsChanged {
+                project_id: new_id(),
+                before: None,
+                after: serde_json::json!({}),
+                revision: 1,
+                changed_by: "desktop".into(),
+            },
+            DomainEvent::TaskAssigned {
+                assignment_id: new_id(),
+                role: "review".into(),
+                provider: "claude_code".into(),
+                workspace_id: new_id(),
+                model: Some("opus".into()),
+                step_key: Some("review#1".into()),
             },
         ];
         for event in samples {
