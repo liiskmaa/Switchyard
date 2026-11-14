@@ -2,7 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-pub use switchyard_agents::{ApprovalStatus, Capabilities, DecisionSource, SessionState};
+pub use switchyard_agents::{ApprovalStatus, Capabilities, DecisionSource, SessionAccess, SessionState};
+
+fn default_access() -> SessionAccess {
+    SessionAccess::Write
+}
 pub use switchyard_policy::{
     Conditions as PolicyConditions, Decision as PolicyDecision, OperationCategory,
     ReasonCode as PolicyReason, Restriction as PolicyRestriction, RuleRef as PolicyRuleRef, RuleScope,
@@ -145,6 +149,9 @@ pub struct Session {
     pub attached: bool,
     pub pending_approvals: u32,
     pub capabilities: Capabilities,
+    /// `review` sessions cannot change files (ADR 0027).
+    #[serde(default = "default_access")]
+    pub access: SessionAccess,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -380,4 +387,133 @@ pub struct WorkspaceGitStatus {
     pub conflicted: u32,
     pub clean: bool,
     pub checked_at_ms: i64,
+}
+
+// --- tasks (M6, ADRs 0023-0027) ---------------------------------------------
+
+pub use switchyard_tasks::{
+    AssignmentStatus, MessageKind, Priority, ProposalStatus, ReviewResult, Role, Severity, TaskKind,
+    TaskStatus,
+};
+
+/// A unit of engineering work, independent of any agent session (ADR 0023).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Task {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub parent_task_id: Option<Uuid>,
+    pub title: String,
+    pub description: Option<String>,
+    pub kind: TaskKind,
+    pub priority: Priority,
+    pub acceptance_criteria: Vec<String>,
+    pub status: TaskStatus,
+    pub status_reason: Option<String>,
+    /// What the operator accepted on completion (`summary`, `report`, `note`).
+    pub result: Option<serde_json::Value>,
+    pub failure: Option<String>,
+    /// `operator` or `proposal`.
+    pub origin: String,
+    pub origin_proposal_id: Option<Uuid>,
+    /// Increases on every change; edits must name the revision they saw.
+    pub revision: i64,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+    pub completed_at_ms: Option<i64>,
+    /// The pending or active assignment, if any.
+    pub open_assignment: Option<TaskAssignment>,
+    pub dependency_ids: Vec<Uuid>,
+    pub pending_proposals: u32,
+    pub open_findings: u32,
+}
+
+/// One agent's piece of work on a task, run by one session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskAssignment {
+    pub id: Uuid,
+    pub task_id: Uuid,
+    pub role: Role,
+    /// `claude_code` or `codex`.
+    pub provider: String,
+    pub workspace_id: Uuid,
+    pub session_id: Option<Uuid>,
+    pub status: AssignmentStatus,
+    /// The task context exactly as sent to the agent.
+    pub context: Option<serde_json::Value>,
+    pub context_version: Option<u32>,
+    pub outcome: Option<String>,
+    pub created_at_ms: i64,
+    pub started_at_ms: Option<i64>,
+    pub ended_at_ms: Option<i64>,
+}
+
+/// A structured, durable message about a task (ADR 0025). Messages from an
+/// agent are claims or requests; none of them authorizes anything.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskMessage {
+    pub id: Uuid,
+    pub task_id: Uuid,
+    pub assignment_id: Option<Uuid>,
+    pub kind: MessageKind,
+    /// `agent`, `operator` or `core`.
+    pub sender: String,
+    pub sender_session_id: Option<Uuid>,
+    /// `operator`, `agent` or `task`.
+    pub recipient: String,
+    pub payload: serde_json::Value,
+    pub causation_id: Option<String>,
+    /// `recorded`, `pending` (waits for the next agent turn) or `delivered`.
+    pub delivery: String,
+    pub delivered_at_ms: Option<i64>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskFinding {
+    pub id: Uuid,
+    pub task_id: Uuid,
+    pub message_id: Uuid,
+    pub assignment_id: Option<Uuid>,
+    pub severity: Severity,
+    pub title: String,
+    pub explanation: Option<String>,
+    pub suggestion: Option<String>,
+    pub path: Option<String>,
+    pub line: Option<u32>,
+    /// `open`, `resolved` or `dismissed`.
+    pub status: String,
+    pub created_at_ms: i64,
+    pub resolved_at_ms: Option<i64>,
+}
+
+/// A subtask an agent proposed; only the operator can turn it into a task (ADR 0026).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskProposal {
+    pub id: Uuid,
+    pub task_id: Uuid,
+    pub message_id: Uuid,
+    pub position: u32,
+    pub proposal: serde_json::Value,
+    pub status: ProposalStatus,
+    pub decided_by: Option<String>,
+    pub decision_note: Option<String>,
+    pub created_task_id: Option<Uuid>,
+    pub created_at_ms: i64,
+    pub decided_at_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskRef {
+    pub id: Uuid,
+    pub title: String,
+    pub status: TaskStatus,
+}
+
+/// `satisfied`, `waiting` or `broken` (a dependency failed or was cancelled).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskReadiness {
+    Satisfied,
+    Waiting,
+    Broken,
 }

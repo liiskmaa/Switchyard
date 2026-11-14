@@ -206,6 +206,67 @@ pub enum DomainEvent {
     /// session; `occurred_at_ms` is the batch time.
     #[serde(rename = "files.changed")]
     FilesChanged { changes: Vec<FileChange>, dropped: u32 },
+
+    // --- tasks (context carries project_id and task_id; ADRs 0023-0027) ----
+    /// A task was created by the operator or from an approved proposal.
+    #[serde(rename = "task.created")]
+    TaskCreated {
+        title: String,
+        kind: String,
+        priority: String,
+        status: String,
+        /// `operator` or `proposal`.
+        origin: String,
+        parent_task_id: Option<Uuid>,
+        origin_proposal_id: Option<Uuid>,
+    },
+    /// Editable fields changed (`fields` names them).
+    #[serde(rename = "task.updated")]
+    TaskUpdated { revision: i64, fields: Vec<String> },
+    #[serde(rename = "task.status_changed")]
+    TaskStatusChanged { from: String, to: String, reason: Option<String> },
+    #[serde(rename = "task.dependency_added")]
+    TaskDependencyAdded { depends_on: Uuid },
+    #[serde(rename = "task.dependency_removed")]
+    TaskDependencyRemoved { depends_on: Uuid },
+    /// The operator assigned a role on the task to an agent provider.
+    #[serde(rename = "task.assigned")]
+    TaskAssigned { assignment_id: Uuid, role: String, provider: String, workspace_id: Uuid },
+    /// The assignment's session was started (or resumed) and given the context.
+    #[serde(rename = "task.assignment_started")]
+    TaskAssignmentStarted {
+        assignment_id: Uuid,
+        session_id: Uuid,
+        access: String,
+        context_version: u32,
+        resumed: bool,
+    },
+    /// `status` is `reported`, `failed` or `cancelled`.
+    #[serde(rename = "task.assignment_ended")]
+    TaskAssignmentEnded { assignment_id: Uuid, status: String, outcome: Option<String> },
+    /// A structured message was recorded. A message from an agent is a claim
+    /// or a request; it never authorizes anything.
+    #[serde(rename = "task.message_recorded")]
+    TaskMessageRecorded {
+        message_id: Uuid,
+        kind: String,
+        sender: String,
+        assignment_id: Option<Uuid>,
+        summary: Option<String>,
+    },
+    /// A review verdict. `result` differs from `reported_result` when Core
+    /// overrode it (the workspace changed during the review).
+    #[serde(rename = "task.review_recorded")]
+    TaskReviewRecorded {
+        assignment_id: Uuid,
+        reported_result: String,
+        result: String,
+        workspace_changed: bool,
+        findings: u32,
+    },
+    /// The operator approved or rejected a proposed subtask.
+    #[serde(rename = "task.proposal_decided")]
+    TaskProposalDecided { proposal_id: Uuid, decision: String, created_task_id: Option<Uuid> },
 }
 
 /// One observed filesystem change, relative to the workspace root.
@@ -250,6 +311,17 @@ impl DomainEvent {
             Self::WorkspaceRemoved { .. } => "workspace.removed",
             Self::WorkspaceCleanupFailed { .. } => "workspace.cleanup_failed",
             Self::FilesChanged { .. } => "files.changed",
+            Self::TaskCreated { .. } => "task.created",
+            Self::TaskUpdated { .. } => "task.updated",
+            Self::TaskStatusChanged { .. } => "task.status_changed",
+            Self::TaskDependencyAdded { .. } => "task.dependency_added",
+            Self::TaskDependencyRemoved { .. } => "task.dependency_removed",
+            Self::TaskAssigned { .. } => "task.assigned",
+            Self::TaskAssignmentStarted { .. } => "task.assignment_started",
+            Self::TaskAssignmentEnded { .. } => "task.assignment_ended",
+            Self::TaskMessageRecorded { .. } => "task.message_recorded",
+            Self::TaskReviewRecorded { .. } => "task.review_recorded",
+            Self::TaskProposalDecided { .. } => "task.proposal_decided",
         }
     }
 
@@ -389,6 +461,20 @@ mod tests {
             DomainEvent::FilesChanged {
                 changes: vec![FileChange { path: "a".into(), kind: "created".into(), from: None }],
                 dropped: 0,
+            },
+            DomainEvent::TaskStatusChanged { from: "ready".into(), to: "assigned".into(), reason: None },
+            DomainEvent::TaskDependencyAdded { depends_on: new_id() },
+            DomainEvent::TaskReviewRecorded {
+                assignment_id: new_id(),
+                reported_result: "approved".into(),
+                result: "blocked".into(),
+                workspace_changed: true,
+                findings: 1,
+            },
+            DomainEvent::TaskProposalDecided {
+                proposal_id: new_id(),
+                decision: "rejected".into(),
+                created_task_id: None,
             },
         ];
         for event in samples {

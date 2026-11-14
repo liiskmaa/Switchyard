@@ -29,6 +29,7 @@ switchyard-git.workspace = true
 switchyard-agents.workspace = true
 switchyard-workspaces.workspace = true
 switchyard-policy.workspace = true
+switchyard-tasks.workspace = true
 notify.workspace = true
 serde.workspace = true
 serde_json.workspace = true

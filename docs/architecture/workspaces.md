@@ -120,3 +120,14 @@ See ADR 0014 for the full rules and the reconciliation table. In short:
   directories, and the scan is repeated right before removal;
 - cleanup keeps the branch, and Git's own refusal (no `--force`) is a second safety net;
 - startup reconciliation only changes statuses.
+
+## Known issues
+
+- **Intermittent: the Restore button after archiving (desktop UI, unresolved).** In the browser
+  end-to-end suite (phase p09), clicking Restore right after archiving a workspace failed in 1 of 4
+  full runs at normal load (2026-11-14), and once under heavy machine load. Playwright found the
+  button but it was repeatedly replaced in the DOM for 30 s, while Core had already archived the
+  workspace and the UI made no unusual requests. Archiving switches the panel to "Show archived",
+  which reloads the list and remounts the detail panel once. The failure did not reproduce in
+  isolation (10 of 10 archive/restore cycles restored in 0.4–0.7 s). It is unclear whether it is a
+  test timing assumption or a UI race; it affects only the button, not Core's workspace state.

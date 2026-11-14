@@ -1,6 +1,6 @@
 //! Agent, session and approval methods.
 
-use switchyard_agents::AgentProvider;
+use switchyard_agents::{AgentProvider, SessionAccess};
 use switchyard_protocol::methods::{
     AgentsListParams, AgentsListResult, ApprovalResult, ApprovalsDecideParams, ApprovalsListParams,
     ApprovalsListResult, SessionDetail, SessionIdParams, SessionResult, SessionsListParams,
@@ -40,7 +40,10 @@ pub(crate) async fn start(state: &CoreState, p: SessionsStartParams) -> Result<S
             )
         })?,
     };
-    let session = state.agents.start(provider, p.workspace_id, p.project_id, p.prompt, p.model).await?;
+    let session = state
+        .agents
+        .start(provider, SessionAccess::Write, p.workspace_id, p.project_id, p.prompt, p.model)
+        .await?;
     Ok(SessionResult { session })
 }
 

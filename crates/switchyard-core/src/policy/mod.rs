@@ -278,6 +278,12 @@ pub(crate) fn approval_scope(input: &EvaluationInput) -> switchyard_protocol::mo
         let mut note = "An approved command runs with your user account's permissions and can read, \
                         change or delete any file you can."
             .to_owned();
+        if input.scope.review_session {
+            note.push_str(
+                " This is a review session: approving a command can still change the workspace under review; \
+                 Switchyard checks the workspace for changes when the review ends.",
+            );
+        }
         if op.adapter == switchyard_agents::codex::ADAPTER {
             note.push_str(
                 " Codex does not apply its own filesystem sandbox to approved commands (verified with codex-cli 0.166.0).",

@@ -14,6 +14,7 @@ pub const MIGRATIONS: &[(u32, &str)] = &[
     (2, include_str!("../../../migrations/0002_agent_sessions.sql")),
     (3, include_str!("../../../migrations/0003_workspaces.sql")),
     (4, include_str!("../../../migrations/0004_policies.sql")),
+    (5, include_str!("../../../migrations/0005_tasks.sql")),
 ];
 
 pub const LATEST_SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -80,6 +81,9 @@ mod tests {
                 "policy_rules",
                 "projects",
                 "sessions",
+                "task_assignments",
+                "task_dependencies",
+                "task_proposals",
                 "tasks",
                 "workspaces"
             ]

@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 /// Version of the compiled-in system restrictions and built-in defaults.
 /// Recorded with every evaluation; bump whenever either changes.
-pub const SYSTEM_POLICY_VERSION: u32 = 1;
+pub const SYSTEM_POLICY_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("unknown {kind} value {value:?}")]
@@ -232,6 +232,11 @@ pub struct RequestScope {
     pub workspace_id: Option<Uuid>,
     /// The project that workspace belongs to (must equal `project_id`).
     pub workspace_project_id: Option<Uuid>,
+    /// The session is a review session (ADR 0027): file changes are denied
+    /// and commands are never allowed automatically. Absent in evaluations
+    /// recorded before milestone 6.
+    #[serde(default)]
+    pub review_session: bool,
 }
 
 /// Everything the evaluator looks at for one request.

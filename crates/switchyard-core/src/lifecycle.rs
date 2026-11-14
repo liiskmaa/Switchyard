@@ -123,11 +123,14 @@ pub async fn start(config: CoreConfig) -> Result<RunningCore, CoreError> {
         .map(|m| std::os::unix::fs::MetadataExt::uid(&m))
         .map_err(|source| CoreError::Listen { path: paths.socket.clone(), source })?;
 
+    let tasks =
+        crate::tasks::TaskService::new(storage.clone(), bus.clone(), agents.clone(), workspaces.clone());
     let (shutdown, _) = watch::channel(None);
     let state = CoreState {
         info: Arc::new(info.clone()),
         started: Instant::now(),
         git,
+        tasks: tasks.clone(),
         agents,
         workspaces,
         policies: crate::policy::PolicyService::new(storage.clone(), bus.clone()),
@@ -145,6 +148,9 @@ pub async fn start(config: CoreConfig) -> Result<RunningCore, CoreError> {
         socket = %state.config.paths.socket.display(),
         "Switchyard Core listening"
     );
+    // Tasks follow their agents' sessions through the journal; started after
+    // session reconciliation, it first replays what it has not processed.
+    crate::tasks::spawn_reactor(tasks, state.shutdown.subscribe());
     let server = tokio::spawn(server::run(listener, owner_uid, state.clone()));
     Ok(RunningCore { info, state, server, _lock: lock })
 }

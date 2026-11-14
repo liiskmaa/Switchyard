@@ -95,5 +95,18 @@ One row per detected executable and vendor.
   history outlives entities.
 - Indexes per project, type and session.
 
+### Tasks (migration 0005, milestone 6)
+- `tasks`: status, revision (optimistic edits), result, origin.
+- `task_dependencies`: same-project trigger, no self-edges; cycles are checked in Core.
+- `task_assignments`: at most one open assignment per task, enforced by a unique partial index;
+  the context as sent; `last_event_seq` for idempotent replay.
+- `messages`: one agent message per turn, enforced by a unique index on
+  `(assignment_id, causation_id)`.
+- `findings` and `task_proposals`.
+
+Migration 0005 replaces the never-written milestone-1 placeholders `tasks`, `messages` and
+`findings`, adds `sessions.access` (`write` | `review`) and an `events_task` index. See
+[tasks.md](tasks.md).
+
 ### Reserved, not written yet
-`tasks`, `messages`, `findings`, `decisions`.
+`decisions`.

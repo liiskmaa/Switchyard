@@ -7,6 +7,7 @@ mod events;
 mod policies;
 mod projects;
 mod system;
+mod tasks;
 mod workspaces;
 
 use std::future::Future;
@@ -156,6 +157,49 @@ pub(crate) async fn dispatch(conn: &Connection, method: &str, params: Value) -> 
         }
         methods::PoliciesEvaluations::NAME => {
             typed::<methods::PoliciesEvaluations, _, _>(params, |p| policies::evaluations(state, p)).await
+        }
+        methods::TasksList::NAME => {
+            typed::<methods::TasksList, _, _>(params, |p| tasks::list(state, p)).await
+        }
+        methods::TasksGet::NAME => typed::<methods::TasksGet, _, _>(params, |p| tasks::get(state, p)).await,
+        methods::TasksCreate::NAME => {
+            typed::<methods::TasksCreate, _, _>(params, |p| tasks::create(state, p)).await
+        }
+        methods::TasksUpdate::NAME => {
+            typed::<methods::TasksUpdate, _, _>(params, |p| tasks::update(state, p)).await
+        }
+        methods::TasksPublish::NAME => {
+            typed::<methods::TasksPublish, _, _>(params, |p| tasks::publish(state, p)).await
+        }
+        methods::TasksAddDependency::NAME => {
+            typed::<methods::TasksAddDependency, _, _>(params, |p| tasks::add_dependency(state, p)).await
+        }
+        methods::TasksRemoveDependency::NAME => {
+            typed::<methods::TasksRemoveDependency, _, _>(params, |p| tasks::remove_dependency(state, p))
+                .await
+        }
+        methods::TasksAssign::NAME => {
+            typed::<methods::TasksAssign, _, _>(params, |p| tasks::assign(conn, p)).await
+        }
+        methods::TasksStartAssignment::NAME => {
+            typed::<methods::TasksStartAssignment, _, _>(params, |p| tasks::start_assignment(conn, p)).await
+        }
+        methods::TasksCancelAssignment::NAME => {
+            typed::<methods::TasksCancelAssignment, _, _>(params, |p| tasks::cancel_assignment(conn, p)).await
+        }
+        methods::TasksNote::NAME => typed::<methods::TasksNote, _, _>(params, |p| tasks::note(conn, p)).await,
+        methods::TasksComplete::NAME => {
+            typed::<methods::TasksComplete, _, _>(params, |p| tasks::complete(conn, p)).await
+        }
+        methods::TasksFail::NAME => typed::<methods::TasksFail, _, _>(params, |p| tasks::fail(conn, p)).await,
+        methods::TasksCancel::NAME => {
+            typed::<methods::TasksCancel, _, _>(params, |p| tasks::cancel(conn, p)).await
+        }
+        methods::TasksRetry::NAME => {
+            typed::<methods::TasksRetry, _, _>(params, |p| tasks::retry(conn, p)).await
+        }
+        methods::TasksDecideProposal::NAME => {
+            typed::<methods::TasksDecideProposal, _, _>(params, |p| tasks::decide_proposal(conn, p)).await
         }
         methods::LiveSubscribe::NAME => {
             events::live_subscribe(conn, parse::<methods::LiveSubscribe>(params)?).await

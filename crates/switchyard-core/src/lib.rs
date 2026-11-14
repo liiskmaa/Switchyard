@@ -20,6 +20,7 @@ pub mod logging;
 mod policy;
 mod server;
 mod state;
+mod tasks;
 mod workspaces;
 
 pub use config::CoreConfig;

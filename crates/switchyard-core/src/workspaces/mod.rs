@@ -10,7 +10,7 @@
 //! the user's privileges and can reach files outside their workspace.
 
 mod cleanup;
-mod fingerprint;
+pub(crate) mod fingerprint;
 mod inspect;
 mod reconcile;
 

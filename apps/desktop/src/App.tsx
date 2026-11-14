@@ -6,6 +6,7 @@ import { DashboardView } from "./features/dashboard/DashboardView";
 import { PoliciesView } from "./features/policies/PoliciesView";
 import { ProjectsView } from "./features/projects/ProjectsView";
 import { SettingsView } from "./features/settings/SettingsView";
+import { TasksView } from "./features/tasks/TasksView";
 import { AppShell } from "./layouts/AppShell";
 import { navigate, useNavigation } from "./stores/navigation";
 
@@ -16,6 +17,7 @@ export function App() {
       <ConnectionNotice />
       {section === "dashboard" ? <DashboardView onOpenProjects={() => navigate("projects")} /> : null}
       {section === "projects" ? <ProjectsView /> : null}
+      {section === "tasks" ? <TasksView /> : null}
       {section === "agents" ? <AgentsView /> : null}
       {section === "activity" ? <ActivityView /> : null}
       {section === "approvals" ? <ApprovalsView /> : null}

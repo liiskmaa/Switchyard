@@ -16,6 +16,11 @@ use switchyard_protocol::methods::{
     WorkspacesArchive, WorkspacesCleanup, WorkspacesCleanupCheck, WorkspacesComplete, WorkspacesCreate,
     WorkspacesGet, WorkspacesGitStatus, WorkspacesList, WorkspacesRestore, WorkspacesVerify,
 };
+use switchyard_protocol::methods::{
+    TasksAddDependency, TasksAssign, TasksCancel, TasksCancelAssignment, TasksComplete, TasksCreate,
+    TasksDecideProposal, TasksFail, TasksGet, TasksList, TasksNote, TasksPublish, TasksRemoveDependency,
+    TasksRetry, TasksStartAssignment, TasksUpdate,
+};
 use tauri::State;
 
 use crate::bridge::{Bridge, ConnectionState};
@@ -59,6 +64,22 @@ const ALLOWED_METHODS: &[&str] = &[
     PoliciesArchive::NAME,
     PoliciesEffective::NAME,
     PoliciesEvaluations::NAME,
+    TasksList::NAME,
+    TasksGet::NAME,
+    TasksCreate::NAME,
+    TasksUpdate::NAME,
+    TasksPublish::NAME,
+    TasksAddDependency::NAME,
+    TasksRemoveDependency::NAME,
+    TasksAssign::NAME,
+    TasksStartAssignment::NAME,
+    TasksCancelAssignment::NAME,
+    TasksNote::NAME,
+    TasksComplete::NAME,
+    TasksFail::NAME,
+    TasksCancel::NAME,
+    TasksRetry::NAME,
+    TasksDecideProposal::NAME,
 ];
 
 #[derive(Debug, Serialize)]

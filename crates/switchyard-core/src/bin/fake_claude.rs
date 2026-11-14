@@ -19,6 +19,7 @@
 //! | `malformed`   | emits invalid lines, then a normal reply |
 //! | `whoami`      | replies with its session id |
 //! | `exit`        | completes the turn, then exits 0 on its own |
+//! | `report:HEX` | task scenario: see `fake_support/report.rs` (a role's steps: an optional tool, then a report block) |
 //! | `tool:NAME\|JSON` | requests permission for tool NAME with input JSON (`$CWD` is replaced by the working directory; NAME `-` omits the tool name; invalid JSON is sent as a string). On allow, `Write` writes its file; other tools report success. |
 //!
 //! With `SWITCHYARD_FAKE_CLAUDE_LOG=FILE`, every permission answer it receives
@@ -32,6 +33,9 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::Duration;
 
 use serde_json::{Value, json};
+
+#[path = "fake_support/report.rs"]
+mod report;
 
 const VERSION: &str = "2.1.322 (Claude Code)";
 
@@ -53,6 +57,8 @@ struct Fake {
     request_seq: u32,
     /// User messages that arrived while a turn ran (processed next).
     queued: Vec<Value>,
+    /// The task scenario of this process (`[fake:report:HEX]`).
+    task: report::TaskScript,
 }
 
 enum Wait {
@@ -121,6 +127,7 @@ fn main() {
         total_cost_usd: 0.0,
         request_seq: 0,
         queued: Vec::new(),
+        task: report::TaskScript::default(),
     };
     fake.run();
     std::process::exit(i32::from(fake.last_error));
@@ -142,7 +149,12 @@ impl Fake {
         loop {
             let next =
                 if self.queued.is_empty() { self.input.recv().ok() } else { Some(self.queued.remove(0)) };
-            let Some(message) = next else { return };
+            let Some(message) = next else {
+                if let Some(d) = self.task.linger() {
+                    std::thread::sleep(d);
+                }
+                return;
+            };
             match message["type"].as_str() {
                 Some("user") => {
                     let text = message["message"]["content"].as_str().unwrap_or_default().to_owned();
@@ -400,6 +412,12 @@ impl Fake {
     /// One turn. Returns false when the process should exit.
     fn turn(&mut self, text: &str) -> bool {
         let (name, arg) = marker(text);
+        if name == "report" {
+            self.task.start(text, arg);
+        }
+        if self.task.active() {
+            return self.task_turn();
+        }
         if name == "delay" {
             std::thread::sleep(Duration::from_millis(1500));
         }
@@ -445,5 +463,29 @@ impl Fake {
         }
         self.result(true, "completed", &reply);
         name != "exit"
+    }
+
+    /// One turn of the task scenario: an optional tool, then the final message.
+    fn task_turn(&mut self) -> bool {
+        self.init();
+        let step =
+            self.task.next().unwrap_or(report::Step { tool: None, text: "Nothing more to do.".into() });
+        if let Some(tool) = &step.tool {
+            let (name, arg) = tool.split_once(':').unwrap_or((tool.as_str(), ""));
+            let outcome = match name {
+                "write" => self.gated_writes(&[arg]),
+                _ => self.gated_tool(arg),
+            };
+            if let Err(terminal) = outcome {
+                self.interrupted(&terminal);
+                return true;
+            }
+        }
+        if self.say(&step.text, None).is_err() {
+            self.interrupted("aborted_streaming");
+            return true;
+        }
+        self.result(true, "completed", &step.text);
+        true
     }
 }

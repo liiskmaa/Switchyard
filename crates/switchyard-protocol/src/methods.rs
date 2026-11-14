@@ -9,7 +9,8 @@ use uuid::Uuid;
 use crate::model::{
     AgentAvailability, Approval, ApprovalStatus, CleanupReport, ClientInfo, CoreInfo, EffectivePolicy,
     GitStatusReport, HealthReport, OperationCategory, PolicyConditions, PolicyDecision, PolicyEvaluation,
-    PolicyRule, PolicyRuleRevision, Project, Session, Workspace, WorkspaceGitStatus,
+    PolicyRule, PolicyRuleRevision, Priority, Project, Role, Session, Task, TaskAssignment, TaskFinding,
+    TaskKind, TaskMessage, TaskProposal, TaskReadiness, TaskRef, Workspace, WorkspaceGitStatus,
 };
 
 pub trait Method {
@@ -123,6 +124,9 @@ pub struct EventsListParams {
     pub project_id: Option<Uuid>,
     #[serde(default)]
     pub session_id: Option<Uuid>,
+    /// Events about one task (since protocol 4, M6).
+    #[serde(default)]
+    pub task_id: Option<Uuid>,
     #[serde(default)]
     pub event_types: Vec<String>,
     /// Defaults to 100, capped at [`MAX_EVENTS_PAGE`].
@@ -555,3 +559,178 @@ pub struct LiveSubscribeParams {
 
 method!(LiveSubscribe, "live.subscribe", LiveSubscribeParams, EventsSubscribeResult);
 method!(LiveUnsubscribe, "live.unsubscribe", EventsUnsubscribeParams, Empty);
+
+// --- tasks (M6, ADRs 0023-0027) ---------------------------------------------
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TasksListParams {
+    #[serde(default)]
+    pub project_id: Option<Uuid>,
+    /// Include completed and cancelled tasks.
+    #[serde(default)]
+    pub include_closed: bool,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TasksListResult {
+    pub tasks: Vec<Task>,
+}
+
+method!(TasksList, "tasks.list", TasksListParams, TasksListResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskIdParams {
+    pub task_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskDetail {
+    pub task: Task,
+    pub dependencies: Vec<TaskRef>,
+    pub dependents: Vec<TaskRef>,
+    pub readiness: TaskReadiness,
+    pub assignments: Vec<TaskAssignment>,
+    pub messages: Vec<TaskMessage>,
+    pub findings: Vec<TaskFinding>,
+    pub proposals: Vec<TaskProposal>,
+}
+
+method!(TasksGet, "tasks.get", TaskIdParams, TaskDetail);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TasksCreateParams {
+    pub project_id: Uuid,
+    pub title: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub kind: Option<TaskKind>,
+    #[serde(default)]
+    pub priority: Option<Priority>,
+    #[serde(default)]
+    pub acceptance_criteria: Vec<String>,
+    #[serde(default)]
+    pub depends_on: Vec<Uuid>,
+    #[serde(default)]
+    pub parent_task_id: Option<Uuid>,
+    /// Publish right away (`ready` or `blocked`) instead of keeping a draft.
+    #[serde(default)]
+    pub publish: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskResult {
+    pub task: Task,
+}
+
+method!(TasksCreate, "tasks.create", TasksCreateParams, TaskResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TasksUpdateParams {
+    pub task_id: Uuid,
+    /// The revision the edit is based on; a stale revision is refused.
+    pub expected_revision: i64,
+    #[serde(default)]
+    pub title: Option<String>,
+    /// An empty string clears the description.
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub kind: Option<TaskKind>,
+    #[serde(default)]
+    pub priority: Option<Priority>,
+    #[serde(default)]
+    pub acceptance_criteria: Option<Vec<String>>,
+}
+
+method!(TasksUpdate, "tasks.update", TasksUpdateParams, TaskResult);
+method!(TasksPublish, "tasks.publish", TaskIdParams, TaskResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskDependencyParams {
+    pub task_id: Uuid,
+    pub depends_on: Uuid,
+}
+
+method!(TasksAddDependency, "tasks.add_dependency", TaskDependencyParams, TaskResult);
+method!(TasksRemoveDependency, "tasks.remove_dependency", TaskDependencyParams, TaskResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TasksAssignParams {
+    pub task_id: Uuid,
+    pub role: Role,
+    /// `claude_code` or `codex`.
+    pub provider: String,
+    pub workspace_id: Uuid,
+    /// Start the session right away (default true).
+    #[serde(default = "default_true")]
+    pub start: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskAssignmentResult {
+    pub task: Task,
+    pub assignment: TaskAssignment,
+}
+
+method!(TasksAssign, "tasks.assign", TasksAssignParams, TaskAssignmentResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskAssignmentIdParams {
+    pub assignment_id: Uuid,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+method!(TasksStartAssignment, "tasks.start_assignment", TaskAssignmentIdParams, TaskAssignmentResult);
+method!(TasksCancelAssignment, "tasks.cancel_assignment", TaskAssignmentIdParams, TaskAssignmentResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TasksNoteParams {
+    pub task_id: Uuid,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TasksNoteResult {
+    pub message: TaskMessage,
+    /// Sent to the running agent now; otherwise it goes with the next assignment.
+    pub delivered: bool,
+}
+
+method!(TasksNote, "tasks.note", TasksNoteParams, TasksNoteResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskDecisionParams {
+    pub task_id: Uuid,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+method!(TasksComplete, "tasks.complete", TaskDecisionParams, TaskResult);
+method!(TasksFail, "tasks.fail", TaskDecisionParams, TaskResult);
+method!(TasksCancel, "tasks.cancel", TaskDecisionParams, TaskResult);
+method!(TasksRetry, "tasks.retry", TaskDecisionParams, TaskResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TasksDecideProposalParams {
+    pub proposal_id: Uuid,
+    pub approve: bool,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TasksDecideProposalResult {
+    pub proposal: TaskProposal,
+    /// The draft task created from an approved proposal.
+    pub created_task: Option<Task>,
+}
+
+method!(TasksDecideProposal, "tasks.decide_proposal", TasksDecideProposalParams, TasksDecideProposalResult);

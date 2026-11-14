@@ -231,3 +231,37 @@ pub fn git_repo(parent: &Path, name: &str) -> PathBuf {
     run_git(&root, &["commit", "-q", "-m", "initial"]);
     std::fs::canonicalize(root).unwrap()
 }
+
+/// Parses JSON-lines evidence written by a fake CLI. `Ok(None)` when the text
+/// ends inside a line (a write in progress); `Err` when any complete line is
+/// not valid JSON. Nothing is ever skipped.
+pub fn parse_jsonl(text: &str) -> Result<Option<Vec<serde_json::Value>>, String> {
+    if !text.is_empty() && !text.ends_with('\n') {
+        return Ok(None);
+    }
+    text.lines()
+        .enumerate()
+        .map(|(i, l)| serde_json::from_str(l).map_err(|e| format!("line {}: {e}: {l:?}", i + 1)))
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
+}
+
+/// Reads JSON-lines evidence strictly. A missing file is no evidence (empty).
+/// An unterminated last line is re-read until the writer finishes it (up to
+/// 2 s); a malformed complete line, or a line that never completes, fails the test.
+pub fn read_jsonl(path: &Path) -> Vec<serde_json::Value> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let text = match std::fs::read_to_string(path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+            Err(e) => panic!("cannot read evidence {}: {e}", path.display()),
+        };
+        match parse_jsonl(&text) {
+            Ok(Some(values)) => return values,
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) => panic!("evidence {} ends in a line that was never completed", path.display()),
+            Err(e) => panic!("malformed evidence in {}: {e}", path.display()),
+        }
+    }
+}
