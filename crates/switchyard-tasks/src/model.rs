@@ -99,6 +99,9 @@ impl TaskStatus {
             (a, Cancelled) if !a.is_terminal() => true,
             (Draft, Ready | Blocked) => true,
             (Ready, Assigned | Blocked) => true,
+            // An agent organization coordinates it (the objective, or a
+            // coordination task): no assignment of its own (ADR 0035).
+            (Ready, InProgress) => true,
             (Blocked, Ready | Failed) => true,
             // Back to Ready / AwaitingReview when an assignment is cancelled or cannot start.
             (Assigned, InProgress | Ready | Blocked | InReview | AwaitingReview) => true,

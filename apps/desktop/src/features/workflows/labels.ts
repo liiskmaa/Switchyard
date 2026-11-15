@@ -57,7 +57,7 @@ export function stageOrder(w: WorkflowInfo): { key: string; label: string; state
     review: "Review & correct",
     delivery: "Deliver",
   };
-  const current = w.stage === "correction" ? "review" : w.stage;
+  const current = w.stage === "correction" ? "review" : w.stage === "organization" ? null : w.stage;
   const at = current ? stages.indexOf(current) : -1;
   return stages.map((s, i) => ({
     key: s,
@@ -109,6 +109,8 @@ export function workflowStageText(w: WorkflowInfo): string {
       return round > 1 ? "Reviewing the correction" : "Reviewing";
     case "correction":
       return `Correcting (round ${round - 1})`;
+    case "organization":
+      return w.status === "waiting" ? "Needs you" : "The team is working";
     default:
       return "Starting";
   }

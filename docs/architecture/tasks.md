@@ -164,7 +164,8 @@ instructions.
 
 ## What is intentionally absent
 
-- No swarms, no recursive spawning, and no agent-to-agent assignment.
+- No swarms, no recursive spawning, and no agent-to-agent assignment. (Inside an agent organization,
+  M8.3, supervisors delegate within Core-enforced limits instead; see `organizations.md` and ADR 0035.)
 - No automatic merge or integration of workspace branches, and no automatic approval or completion.
 - No shared writable workspaces.
 - No automatic decomposition: proposals need the operator.

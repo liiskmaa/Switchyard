@@ -107,6 +107,9 @@ pub(super) struct NewAssignment {
     pub origin: &'static str,
     pub step_key: Option<String>,
     pub by: String,
+    /// Review work in an agent organization (ADR 0035): it reviews the shared
+    /// workspace, not earlier work on its own task, so it starts from `ready`.
+    pub workspace_review: bool,
 }
 
 /// The capabilities every workflow role needs from a provider. All roles
@@ -135,6 +138,9 @@ pub(super) fn create_assignment(
         return Ok(Err(invalid_params("the workspace belongs to another project")));
     }
     let allowed = match n.role {
+        Role::Review if n.workspace_review => {
+            matches!(t.status, TaskStatus::Ready | TaskStatus::AwaitingReview)
+        }
         Role::Review => t.status == TaskStatus::AwaitingReview,
         Role::Investigate | Role::Implement => {
             matches!(t.status, TaskStatus::Ready | TaskStatus::AwaitingReview)
@@ -258,6 +264,7 @@ impl TaskService {
             origin: "operator",
             step_key: None,
             by: actor,
+            workspace_review: false,
         };
         let assignment_id = commit_checked(&self.storage, &self.bus, move |tx| {
             let mut drafts = Vec::new();
@@ -396,6 +403,7 @@ impl TaskService {
                         .filter_map(|m| m.payload["text"].as_str().map(str::to_owned))
                         .collect(),
                     restrictions: TaskContext::standard_restrictions(a.role),
+                    organization: super::organization::brief_for(c, &t)?,
                 };
                 // Continue the conversation of this task's previous session for
                 // the same role, provider and workspace, when it can be resumed.

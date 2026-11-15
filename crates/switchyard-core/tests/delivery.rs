@@ -98,6 +98,8 @@ async fn start_task(f: &Fixture, spec: &Value) -> Uuid {
             task_id: task,
             overrides: claude_everywhere(),
             workspace_id: None,
+            definition: None,
+            lead: None,
         })
         .await
         .unwrap();

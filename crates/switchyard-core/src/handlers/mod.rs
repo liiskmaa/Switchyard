@@ -5,6 +5,7 @@ mod agents;
 pub(crate) mod errors;
 mod events;
 mod integrations;
+mod organizations;
 mod policies;
 mod projects;
 mod system;
@@ -232,6 +233,21 @@ pub(crate) async fn dispatch(conn: &Connection, method: &str, params: Value) -> 
         }
         methods::WorkflowsCancel::NAME => {
             typed::<methods::WorkflowsCancel, _, _>(params, |p| workflows::cancel(conn, p)).await
+        }
+        methods::OrganizationsGet::NAME => {
+            typed::<methods::OrganizationsGet, _, _>(params, |p| organizations::get(state, p)).await
+        }
+        methods::OrganizationsAnswer::NAME => {
+            typed::<methods::OrganizationsAnswer, _, _>(params, |p| organizations::answer(state, p)).await
+        }
+        methods::OrganizationsSettings::NAME => {
+            typed::<methods::OrganizationsSettings, _, _>(params, |p| organizations::settings(state, p)).await
+        }
+        methods::OrganizationsSetSettings::NAME => {
+            typed::<methods::OrganizationsSetSettings, _, _>(params, |p| {
+                organizations::set_settings(state, p)
+            })
+            .await
         }
         methods::IntegrationsList::NAME => {
             typed::<methods::IntegrationsList, _, _>(params, |p| integrations::list(state, p)).await

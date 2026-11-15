@@ -27,6 +27,9 @@ use switchyard_protocol::methods::{
     IntegrationsSetSettings, IntegrationsSettings, IntegrationsUpdateFromTarget, IntegrationsValidate,
 };
 use switchyard_protocol::methods::{
+    OrganizationsAnswer, OrganizationsGet, OrganizationsSetSettings, OrganizationsSettings,
+};
+use switchyard_protocol::methods::{
     TasksAddDependency, TasksAssign, TasksCancel, TasksCancelAssignment, TasksComplete, TasksCreate,
     TasksDecideProposal, TasksFail, TasksGet, TasksList, TasksNote, TasksPublish, TasksRemoveDependency,
     TasksRetry, TasksStartAssignment, TasksUpdate,
@@ -116,6 +119,10 @@ const ALLOWED_METHODS: &[&str] = &[
     WorkflowsResume::NAME,
     WorkflowsCancel::NAME,
     WorkflowsRequestCorrection::NAME,
+    OrganizationsGet::NAME,
+    OrganizationsAnswer::NAME,
+    OrganizationsSettings::NAME,
+    OrganizationsSetSettings::NAME,
 ];
 
 #[derive(Debug, Serialize)]

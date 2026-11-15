@@ -8,6 +8,7 @@
 //!   shell, bounded line reading, graceful-then-forced termination.
 //! * [`session`] — the provider-neutral handle Core uses to drive any adapter.
 //! * [`models`] — the model choices each installed CLI offers, and their validation.
+//! * [`profiles`] — provider/model capability profiles and capability-aware selection.
 //! * [`claude`] — the Claude Code adapter. Claude's wire protocol types are
 //!   private to that module; nothing outside it sees raw Claude JSON.
 //! * [`codex`] — the OpenAI Codex adapter (app-server JSON-RPC), likewise
@@ -19,6 +20,7 @@ pub mod event;
 pub mod model;
 pub mod models;
 pub mod process;
+pub mod profiles;
 pub mod session;
 
 pub use event::{AdapterOutput, AgentEvent, LiveChunk, LiveKind, PermissionRequest, TokenUsage, ToolOutcome};

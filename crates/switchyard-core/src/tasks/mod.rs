@@ -13,6 +13,7 @@
 
 mod assign;
 mod convert;
+mod organization;
 mod reactor;
 mod workflow;
 
@@ -39,8 +40,50 @@ use crate::handlers::errors;
 use crate::journal::{commit_checked, draft};
 use crate::workspaces::WorkspaceService;
 
+pub(crate) use organization::spawn_org_driver;
 pub(crate) use reactor::spawn_reactor;
 pub(crate) use workflow::spawn_workflow_driver;
+
+/// A review's outcome, the content tree it saw, and its workspace.
+pub(crate) type ReviewFacts = (Option<String>, Option<String>, Uuid);
+
+/// The latest reported review in the task or any task below it (an
+/// organization's review work): its outcome, the content it saw and its
+/// workspace (M7 binds delivery to exactly that content, ADR 0029).
+pub(crate) fn latest_review_in_tree(c: &Connection, root: Uuid) -> Result<Option<ReviewFacts>, StorageError> {
+    let mut ids = vec![root];
+    let mut i = 0;
+    while i < ids.len() && ids.len() < 500 {
+        let mut stmt = c.prepare("SELECT id FROM tasks WHERE parent_task_id = ?1")?;
+        let kids: Vec<String> =
+            stmt.query_map([ids[i].to_string()], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        for k in kids {
+            if let Ok(u) = Uuid::parse_str(&k) {
+                ids.push(u);
+            }
+        }
+        i += 1;
+    }
+    let mut best: Option<store::AssignmentRecord> = None;
+    for id in ids {
+        for a in store::assignments_for_task(c, id)? {
+            if a.role == switchyard_tasks::Role::Review
+                && a.status == switchyard_tasks::AssignmentStatus::Reported
+                && best.as_ref().is_none_or(|b| a.ended_at_ms.unwrap_or(0) >= b.ended_at_ms.unwrap_or(0))
+            {
+                best = Some(a);
+            }
+        }
+    }
+    match best {
+        Some(a) => Ok(Some((
+            a.outcome.clone(),
+            switchyard_storage::integrations::review_tree(c, a.id)?,
+            a.workspace_id,
+        ))),
+        None => Ok(None),
+    }
+}
 
 /// Status reasons Core sets for dependency blocking start with this, so a
 /// blocker reported by an agent is never lifted automatically.

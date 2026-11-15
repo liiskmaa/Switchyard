@@ -16,7 +16,10 @@ use crate::model::{
 use crate::model::{
     Integration, IntegrationChanges, IntegrationSettingsInfo, ValidationPlanEntry, ValidationRunInfo,
 };
-use crate::model::{ModelCatalog, RoleBindings, RoleBindingsPatch, WorkflowInfo, WorkflowSettingsInfo};
+use crate::model::{
+    ModelCatalog, OrgSettingsInfo, OrganizationInfo, RoleBinding, RoleBindings, RoleBindingsPatch,
+    WorkflowInfo, WorkflowSettingsInfo,
+};
 
 pub trait Method {
     const NAME: &'static str;
@@ -998,6 +1001,14 @@ pub struct WorkflowsStartParams {
     /// Work in this workspace; by default Core creates one for the task.
     #[serde(default)]
     pub workspace_id: Option<Uuid>,
+    /// `engineering` (default: the fixed M8.1 sequence) or `organization`
+    /// (M8.3: a supervisor builds the team for the objective).
+    #[serde(default)]
+    pub definition: Option<String>,
+    /// `organization` only: the lead supervisor's provider and model, instead
+    /// of Core's capability-aware choice.
+    #[serde(default)]
+    pub lead: Option<RoleBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1038,4 +1049,45 @@ method!(
     "workflows.request_correction",
     WorkflowsRequestCorrectionParams,
     WorkflowResult
+);
+
+// --- agent organizations (M8.3) -------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrganizationsGetResult {
+    pub organization: Option<OrganizationInfo>,
+}
+
+method!(OrganizationsGet, "organizations.get", TaskIdParams, OrganizationsGetResult);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrganizationsAnswerParams {
+    pub task_id: Uuid,
+    /// The user's answer to a supervisor's escalation.
+    pub text: String,
+}
+
+method!(OrganizationsAnswer, "organizations.answer", OrganizationsAnswerParams, OrganizationsGetResult);
+
+method!(OrganizationsSettings, "organizations.settings", ProjectIdParams, OrgSettingsInfo);
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrganizationsSetSettingsParams {
+    pub project_id: Uuid,
+    /// Each omitted part keeps its current value.
+    #[serde(default)]
+    pub limits: Option<serde_json::Value>,
+    #[serde(default)]
+    pub estimates: Option<serde_json::Value>,
+    #[serde(default)]
+    pub overrides: Option<serde_json::Value>,
+}
+
+method!(
+    OrganizationsSetSettings,
+    "organizations.set_settings",
+    OrganizationsSetSettingsParams,
+    OrgSettingsInfo
 );

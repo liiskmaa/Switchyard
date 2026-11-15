@@ -176,11 +176,14 @@ client detect a restart. `seq` stays continuous across restarts because it lives
 | `integrations.delete_command` | `{command_id}` | settings |
 | `agents.models` | `{provider, refresh?}` | `{catalog: {provider, models: [{id, display_name, is_default}], accepts_full_names, source, error?}}`: what the installed CLI offers (Claude `--help` aliases, Codex `model/list`) |
 | `workflows.settings` / `workflows.set_settings` | `{project_id}` / `{project_id, bindings}` | `{project_id, bindings: {investigate, implement, review, correct?: {provider, model?}}, revision (0 = defaults), warnings}`; providers and models are validated |
-| `workflows.start` | `{task_id, overrides?: {role: {provider, model?}}, workspace_id?}` | `{workflow}`; on a `ready` task; snapshots the bindings, creates a workspace unless given, starts `investigate#1` |
+| `workflows.start` | `{task_id, overrides?: {role: {provider, model?}}, workspace_id?, definition?: engineering\|organization, lead?: {provider, model?}}` | `{workflow}`; on a `ready` task; `engineering` (default) snapshots the bindings, creates a workspace unless given, starts `investigate#1`; `organization` (M8.3) creates an agent organization whose lead supervisor (Core's choice unless `lead`) plans the work |
 | `workflows.get` | `{task_id}` | `{workflow?}` (also in `tasks.get` as `workflow`) |
 | `workflows.pause` / `workflows.resume` | `{task_id}` | `{workflow}`; resume does what `resume_action` says |
 | `workflows.cancel` | `{task_id, reason?}` | `{workflow}`; cancels the workflow's open assignment |
-| `workflows.request_correction` | `{task_id, note?}` | `{workflow}`; while delivering (not validating/integrating): a correction round, then review and delivery again; `note` reaches the agent |
+| `workflows.request_correction` | `{task_id, note?}` | `{workflow}`; while delivering (not validating/integrating): a correction round, then review and delivery again; `note` reaches the agent. For an organization: back to its lead supervisor with `note` |
+| `organizations.get` | `{task_id}` | `{organization?}`: status, reason, agents (title, kind, reports_to, scope, provider, model, selection rationale, status, depth), tasks (key, M6 `task_id`, work, parent, owner, scope, acceptance, depends_on, state, corrections, summary), activity, usage and limits, the supervisor's `question` to the user, the shared `context` (labelled entries), `final_summary` |
+| `organizations.answer` | `{task_id, text}` | `{organization?}`; answers the escalation the organization waits on; the supervisor gets it at its next turn |
+| `organizations.settings` / `organizations.set_settings` | `{project_id}` / `{project_id, limits?, estimates?, overrides?}` | `{project_id, limits, estimates, overrides, revision, profiles: [{provider, model, display, summary, runtime, skills}], skills}`; limits are validated (`max_concurrent_sessions` must be 1); estimates and overrides name installed providers, known skills and offered models |
 | `live.subscribe` | `{session_id?}` | `{subscription_id}`. Delivers `live` frames. |
 | `live.unsubscribe` | `{subscription_id}` | `{}` |
 
@@ -359,6 +362,18 @@ the registration is kept and `projects.git_status` returns `repository_unavailab
 | `workflow.delivered` | `{reason, integration_id?}`: the integration landed; the task is completed |
 | `workflow.failed` / `workflow.cancelled` | `{reason}` |
 | `workflow.settings_changed` | `{project_id, before?, after, revision, changed_by}` |
+| `organization.started` | `{lead, limits, workspace_id, started_by}` (M8.3; context carries the objective's `task_id`) |
+| `organization.agent_added` | `{agent_id, key, title, kind, reports_to?, provider, model?, selection, added_by}` |
+| `organization.task_delegated` | `{key, subtask_id, title, work, owner, parent?, delegated_by}` |
+| `organization.supervision_started` | `{supervisor, key, items}`: what the supervisor was asked to look at |
+| `organization.work_started` | `{key, agent, instructions}`: instructions put into this turn's context |
+| `organization.assessed` | `{key, verdict: accept\|correct\|reassign\|cancel, by, instructions?}` |
+| `organization.observed` | `{key, text, interrupted}`: Core noticed work outside its scope or repeated failures (and interrupted the turn) |
+| `organization.escalated` | `{by, to: supervisor\|user, question}` |
+| `organization.directive_rejected` | `{by, error}`: the directive changed nothing |
+| `organization.context_added` | `{from_seq, to_seq}`: shared-context entries added |
+| `organization.status_changed` | `{status, reason?}` |
+| `organization.settings_changed` | `{project_id, before?, after, revision}` |
 | `files.changed` | `{changes: [{path, kind: created\|modified\|deleted\|renamed, from?}], dropped}`: what the filesystem reported in one workspace (debounced, `.git` and ignored paths excluded). Paths are relative to the workspace root; the context carries project, workspace and session. |
 
 Agent events carry `project_id`, `workspace_id`, `session_id` and `agent_id` in the envelope; workspace events carry `project_id` and `workspace_id`; task events carry `project_id` and `task_id` (and `workspace_id` for assignment events); integration events carry `project_id`, `workspace_id` and (when linked) `task_id`, with `integration_id` in the payload. `events.list` also accepts `session_id` and `task_id`.

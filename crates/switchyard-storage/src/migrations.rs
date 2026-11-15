@@ -19,6 +19,7 @@ pub const MIGRATIONS: &[(u32, &str)] = &[
     (7, include_str!("../../../migrations/0007_integration_operations.sql")),
     (8, include_str!("../../../migrations/0008_workflows.sql")),
     (9, include_str!("../../../migrations/0009_workflow_delivery.sql")),
+    (10, include_str!("../../../migrations/0010_organizations.sql")),
 ];
 
 pub const LATEST_SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -83,6 +84,9 @@ mod tests {
                 "integration_settings",
                 "integrations",
                 "messages",
+                "org_context",
+                "org_settings",
+                "organizations",
                 "policy_evaluations",
                 "policy_rule_revisions",
                 "policy_rules",
@@ -235,6 +239,49 @@ mod tests {
                 assert_eq!(count("SELECT COUNT(*) FROM workspaces WHERE status = 'active'")?, 1);
                 // `policy` can only ever deny.
                 assert!(c.execute("UPDATE approvals SET status = 'approved', decided_at = 5, decision_source = 'policy' WHERE id = 'ap2'", []).is_err());
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    /// Migration 0010 rebuilds `task_workflows` (to accept `organization`):
+    /// every existing workflow row survives unchanged.
+    #[test]
+    fn upgrade_to_v10_keeps_workflows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.db");
+        {
+            let mut c = Connection::open(&path).unwrap();
+            apply_up_to(&mut c, 9);
+            c.execute_batch(
+                "INSERT INTO projects VALUES ('p1', 'demo', '/repo', 1, 1);
+                 INSERT INTO tasks (id, project_id, title, kind, priority, status, origin, created_at, updated_at)
+                     VALUES ('t1', 'p1', 'T', 'general', 'normal', 'completed', 'operator', 1, 1);
+                 INSERT INTO task_workflows (task_id, project_id, definition, version, config, status, state,
+                     last_event_seq, revision, started_by, created_at, updated_at)
+                     VALUES ('t1', 'p1', 'engineering', 1, '{}', 'delivered', '{\"a\":1}', 42, 7, 'me', 1, 2);",
+            )
+            .unwrap();
+        }
+        let storage = Storage::open(&path).unwrap();
+        storage
+            .with_conn(|c| {
+                let row: (String, String, i64, i64, String) = c.query_row(
+                    "SELECT definition, status, last_event_seq, revision, state FROM task_workflows WHERE task_id = 't1'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                )?;
+                assert_eq!(row, ("engineering".into(), "delivered".into(), 42, 7, "{\"a\":1}".into()));
+                c.execute(
+                    "INSERT INTO tasks (id, project_id, title, kind, priority, status, origin, created_at, updated_at)
+                     VALUES ('t2', 'p1', 'T', 'general', 'normal', 'ready', 'operator', 1, 1)",
+                    [],
+                )?;
+                c.execute(
+                    "INSERT INTO task_workflows (task_id, project_id, definition, version, config, status, state,
+                     started_by, created_at, updated_at) VALUES ('t2', 'p1', 'organization', 1, '{}', 'running', '{}', 'me', 1, 1)",
+                    [],
+                )?;
                 Ok(())
             })
             .unwrap();

@@ -367,11 +367,11 @@ export function TaskDetailView({
 
 
 
-      {pendingProposals.length > 0 || d.proposals.length > 0 ? (
+      {pendingProposals.length > 0 || d.proposals.some((p) => !p.decided_by?.startsWith("organization:")) ? (
         <Panel title="Proposed subtasks">
           <p className="muted small">An agent proposed these. Nothing is created until you approve; approved subtasks start as drafts.</p>
           <ul className="mini-list">
-            {d.proposals.map((p) => (
+            {d.proposals.filter((p) => !p.decided_by?.startsWith("organization:")).map((p) => (
               <li key={p.id}>
                 <span className="mini-title">
                   {p.position + 1}. {p.proposal.title}{" "}

@@ -31,6 +31,12 @@ Rust process, **Switchyard Core**. The Tauri desktop app is only a client.
   `crates/switchyard-agents/src/models.rs` + `codex/models.rs` the model choices of the installed CLIs;
   `migrations/0008_workflows.sql`; `apps/desktop/src/features/workflows`). See
   `docs/architecture/workflows.md` and ADR 0033.
+- Milestone 8.3: agent organizations (`crates/switchyard-tasks/src/organization/` is the pure
+  `organization@1` decision function, directive parser and prompt renderer;
+  `crates/switchyard-agents/src/profiles.rs` capability profiles and selection;
+  `crates/switchyard-core/src/tasks/organization.rs` the driver; `migrations/0010_organizations.sql`;
+  `apps/desktop/src/features/workflows/OrganizationPanel.tsx`). See `docs/architecture/organizations.md`
+  and ADRs 0035–0036.
 
 The verified Claude CLI behaviour is in `docs/architecture/agent-integration.md`, the verified Codex
 app-server behaviour (0.166.0) in `docs/architecture/codex-integration.md`, and the contract in
@@ -58,6 +64,7 @@ cargo test -p switchyard-core --test tasks              # tasks via both fakes (
 cargo test -p switchyard-core --test integrations       # integration: inspection, validation, approval, operations, recovery
 cargo test -p switchyard-core --test workflows          # engineering@1 workflow via both fakes (models, limits, restarts)
 cargo test -p switchyard-core --test delivery           # M8.2: workflow → M7 integration → delivered (commit, validation, approval)
+cargo test -p switchyard-core --test organizations      # M8.3: dynamic organization via both fakes (supervision, interruption, limits, restart)
 cargo test -p switchyard-git --test integrate           # Git integration primitives on temp repos
 SWITCHYARD_REAL_CLAUDE=1 cargo test -p switchyard-core --test real_claude -- --ignored   # real CLI, paid
 SWITCHYARD_REAL_CODEX=1 cargo test -p switchyard-core --test real_codex -- --ignored     # real CLI, paid
@@ -205,6 +212,19 @@ When running Core or the app manually, set `SWITCHYARD_DATA_DIR` (and, if that p
     never pushes; it completes the task only after M7 reports `integrated`.
   - Models are passed to the CLI exactly; choices come only from the installed CLI
     (`agents.models`). Never add a model list to Switchyard, never substitute a model.
+- **Organizations.**
+  - Decisions stay pure (`switchyard_tasks::organization::decide`); `decide_in_tx` commits state,
+    `organization.*` events, subtasks (proposal path, decided by `organization:<key>`), closed subtasks
+    and context in one transaction before anything starts. Never act on a directive Core has not
+    validated against the organization and its limits.
+  - Supervisors run their own read-only sessions (not assignments); specialists use ordinary M6
+    assignments (`origin: workflow`, step key `org:<task>#n`). One session at a time per organization.
+  - Evidence for supervisors comes from Git and Core's records (`evidence`), never from reports alone.
+    Only Core and the user write `verified` context.
+  - Instructions reach the next turn's context; never claim a running turn was redirected. Core may
+    interrupt a turn that leaves its scope; it never answers a permission request on that path.
+  - No built-in skill estimates: selection uses verified capabilities and the user's estimates only.
+  - The objective completes only through M7 delivery; the lead's "done" passes the review gate first.
 - Text edits made with ad-hoc scripts can silently no-op after `cargo fmt` reflows code. Verify
   behaviour-only edits (guards, checks) with a test.
 

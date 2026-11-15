@@ -13,6 +13,7 @@ mod error;
 pub mod events;
 pub mod integrations;
 mod migrations;
+pub mod organizations;
 pub mod policies;
 pub mod projects;
 pub mod sessions;

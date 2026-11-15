@@ -715,6 +715,138 @@ pub struct RoleBinding {
     pub model: Option<String>,
 }
 
+/// An agent of an organization (M8.3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrgAgentInfo {
+    pub id: Uuid,
+    pub key: String,
+    pub title: String,
+    /// `supervisor` or `specialist`.
+    pub kind: String,
+    /// `None`: the lead, who reports to the user.
+    pub reports_to: Option<String>,
+    pub responsibility: String,
+    pub scope: Vec<String>,
+    pub capabilities: Vec<String>,
+    pub provider: String,
+    pub model: Option<String>,
+    /// Why Core chose this provider/model.
+    pub selection: String,
+    /// `idle`, `active` or `done`.
+    pub status: String,
+    pub created_by: String,
+    pub depth: u32,
+}
+
+/// An organization task: the objective, a coordination task or work.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrgTaskInfo {
+    pub key: String,
+    /// The backing M6 task.
+    pub task_id: Option<Uuid>,
+    pub title: String,
+    pub description: Option<String>,
+    /// `coordination`, `implementation`, `investigation`, `documentation`, `testing`, `review`.
+    pub work: String,
+    pub parent: Option<String>,
+    pub owner: String,
+    pub scope: Vec<String>,
+    pub acceptance: Vec<String>,
+    pub depends_on: Vec<String>,
+    /// `planning`, `delegated`, `waiting`, `ready`, `working`, `reported`, `accepted`, `cancelled`.
+    pub state: String,
+    pub corrections: u32,
+    pub summary: Option<String>,
+    pub created_by: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrgActivity {
+    /// `idle`, `supervising` or `working`.
+    pub kind: String,
+    pub agent: Option<String>,
+    pub task: Option<String>,
+    /// For supervision: what the supervisor was asked to look at.
+    #[serde(default)]
+    pub items: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrgUsage {
+    pub supervision_turns: u32,
+    pub max_supervision_turns: u32,
+    pub agents: u32,
+    pub max_agents: u32,
+    pub tasks: u32,
+    pub max_tasks: u32,
+    /// Spend where the provider reports it (Claude); Codex does not.
+    pub cost_usd: f64,
+    pub tokens: u64,
+}
+
+/// One entry of the shared engineering context.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrgContextEntry {
+    pub seq: i64,
+    pub kind: String,
+    /// `verified`, `claim`, `proposal`, `decided`, or `superseded` (replaced by a later entry).
+    pub status: String,
+    pub text: String,
+    pub task: Option<String>,
+    /// `core`, `user` or `agent:<key>`.
+    pub source: String,
+    pub supersedes: Option<i64>,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrganizationInfo {
+    pub task_id: Uuid,
+    pub workspace_id: Uuid,
+    /// `running`, `waiting`, `paused`, `done`, `cancelled`.
+    pub status: String,
+    pub reason: Option<String>,
+    pub agents: Vec<OrgAgentInfo>,
+    pub tasks: Vec<OrgTaskInfo>,
+    pub activity: OrgActivity,
+    pub queued_checkpoints: u32,
+    pub limits: Value,
+    pub usage: OrgUsage,
+    /// A supervisor's question to the user, waiting for `organizations.answer`.
+    pub question: Option<String>,
+    pub question_from: Option<String>,
+    pub context: Vec<OrgContextEntry>,
+    pub final_summary: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
+}
+
+/// What Core knows about one provider/model.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrgProfileInfo {
+    pub provider: String,
+    pub model: Option<String>,
+    pub display: String,
+    /// One line: verified runtime capabilities and the user's estimates.
+    pub summary: String,
+    pub runtime: Value,
+    pub skills: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OrgSettingsInfo {
+    pub project_id: Uuid,
+    pub limits: Value,
+    /// The user's capability estimates (`[{provider, model?, skills: {coding: "strong"}, relative_cost?}]`).
+    pub estimates: Value,
+    /// Fixed choices per skill (`[{skill, provider, model?}]`).
+    pub overrides: Value,
+    pub revision: i64,
+    /// Every installed provider/model and what is known about it.
+    pub profiles: Vec<OrgProfileInfo>,
+    pub skills: Vec<String>,
+}
+
 /// Provider and model per workflow role.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoleBindings {

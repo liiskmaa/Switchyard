@@ -296,7 +296,7 @@ async fn investigate_implement_review_loop_across_providers() {
     let a = d.assignments.iter().find(|a| a.id == inv).unwrap();
     assert_eq!(a.status, AssignmentStatus::Reported);
     let ctx = a.context.as_ref().unwrap();
-    assert_eq!((ctx["version"].as_u64(), ctx["role"].as_str()), (Some(1), Some("investigate")));
+    assert_eq!((ctx["version"].as_u64(), ctx["role"].as_str()), (Some(2), Some("investigate")));
     assert!(d.messages.iter().any(|m| m.kind == MessageKind::Findings && m.sender == "agent"));
     assert_eq!(d.findings.len(), 1);
 

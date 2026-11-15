@@ -6,7 +6,7 @@ import { useCoreQuery } from "../../stores/useCoreQuery";
 import type { TaskDetail } from "../../types/protocol";
 import { isApprovalEvent } from "../agents/api";
 import { ApprovalCard } from "../approvals/ApprovalCard";
-import { cancelWorkflow, pendingApprovals, resumeWorkflow } from "./api";
+import { answerOrganization, cancelWorkflow, getOrganization, isOrganizationEvent, pendingApprovals, resumeWorkflow } from "./api";
 import { DeliveryPanel } from "./DeliveryPanel";
 import { humanizeSteps } from "./labels";
 
@@ -26,8 +26,14 @@ export function TaskNeedsYou({ detail, onChanged }: { detail: TaskDetail; onChan
     refreshOn: isApprovalEvent,
     intervalMs: 5_000,
   });
+  const organizing = w?.definition === "organization";
+  const org = useCoreQuery(`needs-org:${detail.task.id}:${organizing}`, () => (organizing ? getOrganization(detail.task.id) : Promise.resolve(null)), {
+    refreshOn: isOrganizationEvent,
+  });
+  const [answer, setAnswer] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<CoreRequestError | null>(null);
+  const question = org.data?.question ?? null;
   const pending = approvals.data ?? [];
   const delivery = deliveryNeedsYou(detail);
   const stopped = w?.status === "waiting" && !delivery;
@@ -60,7 +66,39 @@ export function TaskNeedsYou({ detail, onChanged }: { detail: TaskDetail; onChan
           }}
         />
       ))}
-      {stopped && w ? (
+      {stopped && w && question ? (
+        <div className="needs-card">
+          <p>{question}</p>
+          <textarea
+            className="input textarea"
+            rows={2}
+            aria-label="Your answer"
+            placeholder="Your answer"
+            value={answer}
+            onChange={(e) => setAnswer(e.target.value)}
+          />
+          {error ? <ErrorNotice title="Not sent" message={error.message} code={error.code} /> : null}
+          <div className="form-actions start">
+            <Button
+              variant="primary"
+              disabled={busy || answer.trim() === ""}
+              onClick={() =>
+                act(async () => {
+                  await answerOrganization(w.task_id, answer.trim());
+                  setAnswer("");
+                  org.refresh();
+                })
+              }
+            >
+              Send answer
+            </Button>
+            <Button variant="ghost" disabled={busy} onClick={() => act(() => cancelWorkflow(w.task_id))}>
+              Stop the team
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      {stopped && w && !question ? (
         <div className="needs-card">
           <p>{humanizeSteps(w.reason ?? "")}</p>
           {error ? <ErrorNotice title="Not done" message={error.message} code={error.code} /> : null}

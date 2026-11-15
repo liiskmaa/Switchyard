@@ -131,6 +131,17 @@ impl WorkspaceService {
         self.inner.git.content_tree(Path::new(&w.path), &index).await
     }
 
+    /// Files that differ between `base` (a commit) and everything in the
+    /// worktree now (tracked as on disk plus untracked, non-ignored files).
+    pub(crate) async fn changed_files(
+        &self,
+        w: &WorkspaceRecord,
+        base: &str,
+    ) -> Result<Vec<String>, switchyard_git::GitError> {
+        let tree = self.content_tree(w).await?;
+        self.inner.git.changed_paths(Path::new(&w.path), base, &tree).await
+    }
+
     /// Marks a settled, session-free workspace `integrating` while Core runs
     /// an integration step in it. Fails if a session is attached. Returns the
     /// workspace and the status it had before.

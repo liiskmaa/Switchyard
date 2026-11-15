@@ -13,7 +13,7 @@ use switchyard_protocol::ProtocolError;
 use switchyard_storage::integrations as store;
 use switchyard_storage::tasks as task_store;
 use switchyard_storage::{WorkspaceRecord, workspaces};
-use switchyard_tasks::{AssignmentStatus, Role, TaskStatus};
+use switchyard_tasks::TaskStatus;
 use switchyard_workspaces::WorkspaceStatus;
 use uuid::Uuid;
 
@@ -176,14 +176,9 @@ impl IntegrationService {
                                 "The task is {s}; integrate work that was reported (awaiting review) or completed."
                             )),
                         };
-                        let review = assignments
-                            .iter()
-                            .rev()
-                            .find(|a| a.role == Role::Review && a.status == AssignmentStatus::Reported)
-                            .map(|a| -> Result<_, switchyard_storage::StorageError> {
-                                Ok((a.outcome.clone(), store::review_tree(c, a.id)?, a.workspace_id))
-                            })
-                            .transpose()?;
+                        // The task's own review, or (an agent organization) a review
+                        // of work below it; still bound to the exact content.
+                        let review = crate::tasks::latest_review_in_tree(c, t)?;
                         TaskFacts { task: Some(ok), review }
                     }
                 };

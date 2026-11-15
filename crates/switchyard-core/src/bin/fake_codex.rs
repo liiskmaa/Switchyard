@@ -16,6 +16,7 @@
 //! | `text` (default) | streams "Hello from fake codex." and completes |
 //! | `write:FILE` | patch adding FILE; written on accept |
 //! | `edit:FILE` | patch updating FILE (appends a line on accept) |
+//! | `delete:FILE` | (task steps) patch deleting FILE |
 //! | `mixed` | one patch that adds a.txt and updates b.txt |
 //! | `cmd:COMMAND` | command approval for `/bin/zsh -lc 'COMMAND'` |
 //! | `slow` | streams 60 deltas 50 ms apart; interruptible |
@@ -229,7 +230,13 @@ impl Fake {
                 let path = PathBuf::from(&self.cwd).join(p);
                 match *kind {
                     "add" => {
+                        if let Some(parent) = path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
                         let _ = std::fs::write(&path, "written by fake codex\n");
+                    }
+                    "delete" => {
+                        let _ = std::fs::remove_file(&path);
                     }
                     "update" => {
                         let mut f = std::fs::OpenOptions::new().append(true).create(true).open(&path).ok();
@@ -296,9 +303,11 @@ impl Fake {
             self.task.start(&text, arg);
         }
         if self.task.active() {
-            let step =
-                self.task.next().unwrap_or(report::Step { tool: None, text: "Nothing more to do.".into() });
-            if let Some(tool) = &step.tool {
+            let step = self
+                .task
+                .next()
+                .unwrap_or(report::Step { tools: Vec::new(), text: "Nothing more to do.".into() });
+            for tool in &step.tools {
                 let (name, arg) = tool.split_once(':').unwrap_or((tool.as_str(), ""));
                 let r = match name {
                     "write" => self
@@ -307,9 +316,15 @@ impl Fake {
                     "edit" => self
                         .patch(&turn, vec![(arg.to_owned(), "update")])
                         .and_then(|m| serde_json::from_str(&m).ok()),
+                    "delete" => self
+                        .patch(&turn, vec![(arg.to_owned(), "delete")])
+                        .and_then(|m| serde_json::from_str(&m).ok()),
                     _ => self.command(&turn, arg, None),
                 };
                 interrupted = r;
+                if interrupted.is_some() {
+                    break;
+                }
             }
             if interrupted.is_none() {
                 self.message(&turn, &step.text);

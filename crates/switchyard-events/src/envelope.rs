@@ -453,6 +453,65 @@ pub enum DomainEvent {
         revision: i64,
         changed_by: String,
     },
+
+    // --- agent organizations (M8.3, ADRs 0035–0036; context carries the
+    // objective's task_id) ---------------------------------------------------
+    /// An organization was created for the objective, with its lead supervisor.
+    #[serde(rename = "organization.started")]
+    OrganizationStarted { lead: Value, limits: Value, workspace_id: Uuid, started_by: String },
+    /// A supervisor added an agent (or Core added the lead).
+    #[serde(rename = "organization.agent_added")]
+    OrganizationAgentAdded {
+        agent_id: Uuid,
+        key: String,
+        title: String,
+        kind: String,
+        reports_to: Option<String>,
+        provider: String,
+        model: Option<String>,
+        /// Why this provider/model (Core's capability-aware selection).
+        selection: String,
+        added_by: String,
+    },
+    /// A supervisor delegated work: an organization task backed by an M6 task.
+    #[serde(rename = "organization.task_delegated")]
+    OrganizationTaskDelegated {
+        key: String,
+        subtask_id: Uuid,
+        title: String,
+        work: String,
+        owner: String,
+        parent: Option<String>,
+        delegated_by: String,
+    },
+    /// A supervision turn began: `items` is what the supervisor was asked to look at.
+    #[serde(rename = "organization.supervision_started")]
+    OrganizationSupervisionStarted { supervisor: String, key: String, items: Vec<String> },
+    /// A work turn began. `instructions` were put into the turn's task context
+    /// (delivered when the turn starts; never injected into a running turn).
+    #[serde(rename = "organization.work_started")]
+    OrganizationWorkStarted { key: String, agent: String, instructions: Vec<String> },
+    /// A supervisor assessed reported work: accept, correct, reassign or cancel.
+    #[serde(rename = "organization.assessed")]
+    OrganizationAssessed { key: String, verdict: String, by: String, instructions: Option<String> },
+    /// Core observed something during a work turn (and interrupted it), or in
+    /// the verified changes after it.
+    #[serde(rename = "organization.observed")]
+    OrganizationObserved { key: String, text: String, interrupted: bool },
+    #[serde(rename = "organization.escalated")]
+    OrganizationEscalated { by: String, to: String, question: String },
+    /// A supervisor's directive did not fit the organization or its limits; nothing changed.
+    #[serde(rename = "organization.directive_rejected")]
+    OrganizationDirectiveRejected { by: String, error: String },
+    /// Entries `from_seq..=to_seq` were added to the shared context.
+    #[serde(rename = "organization.context_added")]
+    OrganizationContextAdded { from_seq: i64, to_seq: i64 },
+    /// `running`, `waiting`, `paused`, `done` or `cancelled`, and why.
+    #[serde(rename = "organization.status_changed")]
+    OrganizationStatusChanged { status: String, reason: Option<String> },
+    /// The project's organization settings (limits, estimates, overrides) changed.
+    #[serde(rename = "organization.settings_changed")]
+    OrganizationSettingsChanged { project_id: Uuid, before: Option<Value>, after: Value, revision: i64 },
 }
 
 /// One observed filesystem change, relative to the workspace root.
@@ -533,6 +592,18 @@ impl DomainEvent {
             Self::WorkflowFailed { .. } => "workflow.failed",
             Self::WorkflowCancelled { .. } => "workflow.cancelled",
             Self::WorkflowSettingsChanged { .. } => "workflow.settings_changed",
+            Self::OrganizationStarted { .. } => "organization.started",
+            Self::OrganizationAgentAdded { .. } => "organization.agent_added",
+            Self::OrganizationTaskDelegated { .. } => "organization.task_delegated",
+            Self::OrganizationSupervisionStarted { .. } => "organization.supervision_started",
+            Self::OrganizationWorkStarted { .. } => "organization.work_started",
+            Self::OrganizationAssessed { .. } => "organization.assessed",
+            Self::OrganizationObserved { .. } => "organization.observed",
+            Self::OrganizationEscalated { .. } => "organization.escalated",
+            Self::OrganizationDirectiveRejected { .. } => "organization.directive_rejected",
+            Self::OrganizationContextAdded { .. } => "organization.context_added",
+            Self::OrganizationStatusChanged { .. } => "organization.status_changed",
+            Self::OrganizationSettingsChanged { .. } => "organization.settings_changed",
         }
     }
 
@@ -759,6 +830,59 @@ mod tests {
                 after: serde_json::json!({}),
                 revision: 1,
                 changed_by: "desktop".into(),
+            },
+            DomainEvent::OrganizationStarted {
+                lead: serde_json::json!({"key": "lead"}),
+                limits: serde_json::json!({}),
+                workspace_id: new_id(),
+                started_by: "desktop".into(),
+            },
+            DomainEvent::OrganizationAgentAdded {
+                agent_id: new_id(),
+                key: "docs".into(),
+                title: "Docs".into(),
+                kind: "specialist".into(),
+                reports_to: Some("lead".into()),
+                provider: "codex".into(),
+                model: None,
+                selection: "x".into(),
+                added_by: "lead".into(),
+            },
+            DomainEvent::OrganizationTaskDelegated {
+                key: "t".into(),
+                subtask_id: new_id(),
+                title: "T".into(),
+                work: "documentation".into(),
+                owner: "docs".into(),
+                parent: Some("objective".into()),
+                delegated_by: "lead".into(),
+            },
+            DomainEvent::OrganizationSupervisionStarted {
+                supervisor: "lead".into(),
+                key: "objective".into(),
+                items: vec!["plan".into()],
+            },
+            DomainEvent::OrganizationWorkStarted {
+                key: "t".into(),
+                agent: "docs".into(),
+                instructions: vec![],
+            },
+            DomainEvent::OrganizationAssessed {
+                key: "t".into(),
+                verdict: "accept".into(),
+                by: "lead".into(),
+                instructions: None,
+            },
+            DomainEvent::OrganizationObserved { key: "t".into(), text: "x".into(), interrupted: true },
+            DomainEvent::OrganizationEscalated { by: "lead".into(), to: "user".into(), question: "?".into() },
+            DomainEvent::OrganizationDirectiveRejected { by: "lead".into(), error: "x".into() },
+            DomainEvent::OrganizationContextAdded { from_seq: 1, to_seq: 3 },
+            DomainEvent::OrganizationStatusChanged { status: "waiting".into(), reason: Some("x".into()) },
+            DomainEvent::OrganizationSettingsChanged {
+                project_id: new_id(),
+                before: None,
+                after: serde_json::json!({}),
+                revision: 1,
             },
             DomainEvent::TaskAssigned {
                 assignment_id: new_id(),

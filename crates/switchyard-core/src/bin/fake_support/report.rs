@@ -3,7 +3,8 @@
 //! HEX is hex-encoded JSON keyed by assignment role: `{"implement": STEPS,
 //! "review": STEPS, ...}`, where STEPS is one step or a list of steps, one per
 //! turn of that role (the first turn answers the task context; later turns
-//! answer operator notes). A step is `{"tool": "SCENARIO", "report": {...}}`
+//! answer operator notes). A step is `{"tool": "SCENARIO", "report": {...}}` (or
+//! `"tools": [...]`, run in order)
 //! or `{"text": "verbatim final message"}`; an optional top-level `"linger_ms"`
 //! keeps the process alive that long after its input closes; `tool` uses the fake's own
 //! scenario syntax (`write:FILE`, `cmd:COMMAND`, `tool:NAME|JSON`, ...) and runs
@@ -16,7 +17,8 @@ use serde_json::Value;
 
 /// One turn of a task scenario.
 pub struct Step {
-    pub tool: Option<String>,
+    /// Tools run in order before the final message (`"tool"` or `"tools": [...]`).
+    pub tools: Vec<String>,
     pub text: String,
 }
 
@@ -82,12 +84,16 @@ impl TaskScript {
             other if turn == 0 => other.clone(),
             _ => return None,
         };
-        let tool = step.get("tool").and_then(Value::as_str).map(str::to_owned);
+        let mut tools: Vec<String> =
+            step.get("tool").and_then(Value::as_str).map(str::to_owned).into_iter().collect();
+        if let Some(list) = step.get("tools").and_then(Value::as_array) {
+            tools.extend(list.iter().filter_map(Value::as_str).map(str::to_owned));
+        }
         let text = match (step.get("text"), step.get("report")) {
             (Some(Value::String(t)), _) => t.clone(),
             (_, Some(report)) => format!("Work summary.\n\n```switchyard-report\n{report}\n```"),
             _ => "No report in this step.".to_owned(),
         };
-        Some(Step { tool, text })
+        Some(Step { tools, text })
     }
 }

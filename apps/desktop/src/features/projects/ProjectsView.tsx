@@ -8,6 +8,7 @@ import type { Project } from "../../types/protocol";
 import { AddProjectForm } from "./AddProjectForm";
 import { GitStatusPanel } from "./GitStatusPanel";
 import { WorkspacesPanel } from "../workspaces/WorkspacesPanel";
+import { OrgSettingsPanel } from "../workflows/OrgSettingsPanel";
 import { WorkflowRolesPanel } from "../workflows/WorkflowRolesPanel";
 import { isProjectEvent, listProjects, removeProject } from "./api";
 
@@ -118,6 +119,7 @@ function ProjectDetail({ project, onRemoved }: { project: Project; onRemoved: ()
         </div>
       </header>
       <WorkflowRolesPanel project={project} />
+      <OrgSettingsPanel project={project} />
       <WorkspacesPanel project={project} />
       <GitStatusPanel project={project} />
       <Panel title="Registration">

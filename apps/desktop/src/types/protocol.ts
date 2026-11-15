@@ -641,7 +641,8 @@ export interface WorkflowInfo {
   definition: string;
   version: number;
   status: WorkflowStatus;
-  stage: "investigation" | "implementation" | "review" | "correction" | "delivery" | null;
+  /** `organization`: an agent organization works on the objective (M8.3). */
+  stage: "investigation" | "implementation" | "review" | "correction" | "delivery" | "organization" | null;
   step_key: string | null;
   reason: string | null;
   resume_action: string | null;
@@ -656,6 +657,136 @@ export interface WorkflowInfo {
   ended_at_ms: number | null;
   integration_id: Uuid | null;
   delivery: DeliveryPhase | null;
+}
+
+// --- agent organizations (M8.3) ---------------------------------------------------
+
+export type OrgStatus = "running" | "waiting" | "paused" | "done" | "cancelled";
+export type OrgTaskState =
+  | "planning"
+  | "delegated"
+  | "waiting"
+  | "ready"
+  | "working"
+  | "reported"
+  | "accepted"
+  | "cancelled";
+
+export interface OrgAgentInfo {
+  id: Uuid;
+  key: string;
+  title: string;
+  kind: "supervisor" | "specialist";
+  /** `null`: the lead, who reports to you. */
+  reports_to: string | null;
+  responsibility: string;
+  scope: string[];
+  capabilities: string[];
+  provider: AgentProvider;
+  model: string | null;
+  /** Why Switchyard chose this provider and model. */
+  selection: string;
+  status: "idle" | "active" | "done";
+  created_by: string;
+  depth: number;
+}
+
+export interface OrgTaskInfo {
+  key: string;
+  task_id: Uuid | null;
+  title: string;
+  description: string | null;
+  work: "coordination" | "implementation" | "investigation" | "documentation" | "testing" | "review";
+  parent: string | null;
+  owner: string;
+  scope: string[];
+  acceptance: string[];
+  depends_on: string[];
+  state: OrgTaskState;
+  corrections: number;
+  summary: string | null;
+  created_by: string;
+}
+
+export interface OrgContextEntry {
+  seq: number;
+  kind: string;
+  status: "verified" | "claim" | "proposal" | "decided" | "superseded";
+  text: string;
+  task: string | null;
+  source: string;
+  supersedes: number | null;
+  created_at_ms: number;
+}
+
+export interface OrganizationInfo {
+  task_id: Uuid;
+  workspace_id: Uuid;
+  status: OrgStatus;
+  reason: string | null;
+  agents: OrgAgentInfo[];
+  tasks: OrgTaskInfo[];
+  activity: { kind: "idle" | "supervising" | "working"; agent: string | null; task: string | null; items: string[] };
+  queued_checkpoints: number;
+  limits: Record<string, unknown>;
+  usage: {
+    supervision_turns: number;
+    max_supervision_turns: number;
+    agents: number;
+    max_agents: number;
+    tasks: number;
+    max_tasks: number;
+    cost_usd: number;
+    tokens: number;
+  };
+  question: string | null;
+  question_from: string | null;
+  context: OrgContextEntry[];
+  final_summary: string | null;
+  created_at_ms: number;
+  updated_at_ms: number;
+}
+
+export interface OrgLimits {
+  max_depth: number;
+  max_agents: number;
+  max_tasks: number;
+  max_concurrent_sessions: number;
+  max_corrections: number;
+  max_retries: number;
+  max_supervision_turns: number;
+  max_minutes: number;
+  max_cost_usd: number | null;
+  max_tokens: number | null;
+}
+
+export type SkillLevel = "unknown" | "unsupported" | "basic" | "good" | "strong";
+
+export interface OrgEstimate {
+  provider: string;
+  model?: string | null;
+  skills: Record<string, SkillLevel>;
+  relative_cost?: number | null;
+  relative_speed?: number | null;
+}
+
+export interface OrgProfileInfo {
+  provider: AgentProvider;
+  model: string | null;
+  display: string;
+  summary: string;
+  runtime: Record<string, { level: SkillLevel; basis: "verified" | "reported" | "configured" | "none" }>;
+  skills: Record<string, { level: SkillLevel; basis: "verified" | "reported" | "configured" | "none" }>;
+}
+
+export interface OrgSettingsInfo {
+  project_id: Uuid;
+  limits: OrgLimits;
+  estimates: OrgEstimate[];
+  overrides: { skill: string; provider: string; model?: string | null }[];
+  revision: number;
+  profiles: OrgProfileInfo[];
+  skills: string[];
 }
 
 export interface ModelOption {
@@ -1063,7 +1194,13 @@ export interface IntegrationMethods {
   "workflows.settings": { params: { project_id: Uuid }; result: WorkflowSettingsInfo };
   "workflows.set_settings": { params: { project_id: Uuid; bindings: RoleBindings }; result: WorkflowSettingsInfo };
   "workflows.start": {
-    params: { task_id: Uuid; overrides?: RoleBindingsPatch; workspace_id?: Uuid };
+    params: {
+      task_id: Uuid;
+      overrides?: RoleBindingsPatch;
+      workspace_id?: Uuid;
+      definition?: "engineering" | "organization";
+      lead?: RoleBinding;
+    };
     result: { workflow: WorkflowInfo };
   };
   "workflows.get": { params: { task_id: Uuid }; result: { workflow: WorkflowInfo | null } };
@@ -1071,4 +1208,11 @@ export interface IntegrationMethods {
   "workflows.resume": { params: { task_id: Uuid }; result: { workflow: WorkflowInfo } };
   "workflows.cancel": { params: { task_id: Uuid; reason?: string }; result: { workflow: WorkflowInfo } };
   "workflows.request_correction": { params: { task_id: Uuid; note?: string }; result: { workflow: WorkflowInfo } };
+  "organizations.get": { params: { task_id: Uuid }; result: { organization: OrganizationInfo | null } };
+  "organizations.answer": { params: { task_id: Uuid; text: string }; result: { organization: OrganizationInfo | null } };
+  "organizations.settings": { params: { project_id: Uuid }; result: OrgSettingsInfo };
+  "organizations.set_settings": {
+    params: { project_id: Uuid; limits?: Partial<OrgLimits>; estimates?: OrgEstimate[]; overrides?: OrgSettingsInfo["overrides"] };
+    result: OrgSettingsInfo;
+  };
 }

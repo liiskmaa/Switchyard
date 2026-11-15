@@ -166,7 +166,9 @@ pub async fn start(config: CoreConfig) -> Result<RunningCore, CoreError> {
     // session reconciliation, it first replays what it has not processed.
     crate::tasks::spawn_reactor(tasks.clone(), state.shutdown.subscribe());
     // Workflows follow task events the same way, after the reactor (M8.1).
-    crate::tasks::spawn_workflow_driver(tasks, state.shutdown.subscribe());
+    crate::tasks::spawn_workflow_driver(tasks.clone(), state.shutdown.subscribe());
+    // Agent organizations follow agents and tasks the same way (M8.3).
+    crate::tasks::spawn_org_driver(tasks, state.shutdown.subscribe());
     let server = tokio::spawn(server::run(listener, owner_uid, state.clone()));
     Ok(RunningCore { info, state, server, _lock: lock })
 }

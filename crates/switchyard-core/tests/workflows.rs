@@ -99,7 +99,13 @@ async fn create_task(f: &Fixture, spec: &Value) -> Uuid {
 
 async fn start(f: &Fixture, task: Uuid, overrides: RoleBindingsPatch) -> Result<WorkflowInfo, ErrorCode> {
     f.client
-        .call::<WorkflowsStart>(WorkflowsStartParams { task_id: task, overrides, workspace_id: None })
+        .call::<WorkflowsStart>(WorkflowsStartParams {
+            task_id: task,
+            overrides,
+            workspace_id: None,
+            definition: None,
+            lead: None,
+        })
         .await
         .map(|r| r.workflow)
         .map_err(|e| remote(e).code)
@@ -532,6 +538,8 @@ async fn unsupported_models_and_providers_are_refused() {
             task_id: task,
             overrides: bad(binding("claude_code", Some("gpt-6-luna"))),
             workspace_id: None,
+            definition: None,
+            lead: None,
         })
         .await
         .map_err(remote)

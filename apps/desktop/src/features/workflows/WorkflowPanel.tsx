@@ -8,7 +8,7 @@ import { useNow } from "../../lib/useNow";
 import { useCoreQuery } from "../../stores/useCoreQuery";
 import type { RoleBindings, TaskAssignment, TaskDetail } from "../../types/protocol";
 import { ROLE_LABEL } from "../tasks/labels";
-import { cancelWorkflow, pauseWorkflow, resumeWorkflow, startWorkflow, workflowSettings } from "./api";
+import { cancelWorkflow, pauseWorkflow, resumeWorkflow, startOrganization, startWorkflow, workflowSettings } from "./api";
 import {
   BINDING_KEYS,
   BINDING_LABEL,
@@ -21,6 +21,7 @@ import {
   stepName,
   workflowTone,
 } from "./labels";
+import { OrganizationPanel } from "./OrganizationPanel";
 import { RoleBindingsEditor } from "./RoleBindingsEditor";
 
 const STEP_STATUS: Record<TaskAssignment["status"], string> = {
@@ -50,7 +51,83 @@ function StepRow({ a, now }: { a: TaskAssignment; now: number }) {
   );
 }
 
+/** Start: a team the lead supervisor builds for the objective, or the fixed sequence. */
 function StartWorkflow({ detail, onDone }: { detail: TaskDetail; onDone: () => void }) {
+  const [mode, setMode] = useState<"organization" | "engineering">("organization");
+  const t = detail.task;
+  if (t.status !== "ready") {
+    return <p className="muted small">Work starts on a ready task (this one is {t.status}).</p>;
+  }
+  return (
+    <div className="start-choice">
+      <fieldset className="choice-group">
+        <legend className="sr-only">How should the work be organized?</legend>
+        <label className={`choice${mode === "organization" ? " chosen" : ""}`}>
+          <input type="radio" name="start-mode" checked={mode === "organization"} onChange={() => setMode("organization")} />
+          <span>
+            <strong>Let a supervisor build the team</strong>
+            <span className="muted small">
+              A lead supervisor plans the work, brings in the specialists it needs, checks every result against the
+              acceptance criteria and corrects what drifts. You answer questions and approve delivery.
+            </span>
+          </span>
+        </label>
+        <label className={`choice${mode === "engineering" ? " chosen" : ""}`}>
+          <input type="radio" name="start-mode" checked={mode === "engineering"} onChange={() => setMode("engineering")} />
+          <span>
+            <strong>Fixed sequence</strong>
+            <span className="muted small">Investigate, implement, review, correct, with the project&apos;s roles and models.</span>
+          </span>
+        </label>
+      </fieldset>
+      {mode === "organization" ? <StartOrganization detail={detail} onDone={onDone} /> : <StartSequence detail={detail} onDone={onDone} />}
+    </div>
+  );
+}
+
+function StartOrganization({ detail, onDone }: { detail: TaskDetail; onDone: () => void }) {
+  const [lead, setLead] = useState<"" | "claude_code" | "codex">("");
+  const [error, setError] = useState<CoreRequestError | null>(null);
+  const [busy, setBusy] = useState(false);
+  return (
+    <div className="start-org">
+      <label className="field-inline small">
+        Lead supervisor
+        <select className="input" value={lead} onChange={(e) => setLead(e.target.value as typeof lead)}>
+          <option value="">Let Switchyard choose</option>
+          <option value="claude_code">Claude Code</option>
+          <option value="codex">Codex</option>
+        </select>
+      </label>
+      {error ? <ErrorNotice title="Cannot start the team" message={error.message} code={error.code} /> : null}
+      <div className="form-actions start">
+        <Button
+          variant="primary"
+          icon="agents"
+          disabled={busy}
+          onClick={() =>
+            void (async () => {
+              setBusy(true);
+              setError(null);
+              try {
+                await startOrganization(detail.task.id, lead ? { provider: lead, model: null } : undefined);
+                onDone();
+              } catch (e) {
+                setError(toCoreError(e));
+              } finally {
+                setBusy(false);
+              }
+            })()
+          }
+        >
+          Start
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function StartSequence({ detail, onDone }: { detail: TaskDetail; onDone: () => void }) {
   const t = detail.task;
   const settings = useCoreQuery(`workflow-settings:${t.project_id}`, () => workflowSettings(t.project_id));
   const [chosen, setChosen] = useState<RoleBindings | null>(null);
@@ -136,10 +213,13 @@ export function WorkflowPanel({ detail, onChanged }: { detail: TaskDetail; onCha
     })();
   if (!w) {
     return (
-      <Panel title="Workflow">
+      <Panel title="Get it done">
         <StartWorkflow detail={detail} onDone={onChanged} />
       </Panel>
     );
+  }
+  if (w.definition === "organization") {
+    return <OrganizationPanel detail={detail} onChanged={onChanged} />;
   }
   const steps = detail.assignments.filter((a) => a.step_key !== null);
   const final = w.status === "completed" || w.status === "delivered" || w.status === "cancelled" || w.status === "failed";

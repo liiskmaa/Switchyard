@@ -244,7 +244,9 @@ export function describeEvent(event: EventEnvelope): string {
       return `${str(p, "changed_by") ?? "Operator"} ${str(p, "action") ?? "changed"} validation command ${name}`;
     }
     case "workflow.started":
-      return `Engineering workflow started by ${str(p, "started_by") ?? "?"}`;
+      return str(p, "definition") === "organization"
+        ? `Agent organization started by ${str(p, "started_by") ?? "?"}`
+        : `Engineering workflow started by ${str(p, "started_by") ?? "?"}`;
     case "workflow.stage_changed": {
       const model = str(p, "model");
       return `Workflow: ${str(p, "stage") ?? "?"} (${str(p, "step_key") ?? "?"}) by ${providerName(str(p, "provider") ?? "claude_code")}, ${model ?? "CLI default model"}`;
@@ -267,6 +269,30 @@ export function describeEvent(event: EventEnvelope): string {
       return `Workflow cancelled: ${str(p, "reason") ?? "?"}`;
     case "workflow.settings_changed":
       return `${str(p, "changed_by") ?? "Operator"} changed the project's workflow roles and models`;
+    case "organization.started":
+      return "An agent organization was created for the task";
+    case "organization.agent_added":
+      return `${str(p, "added_by") ?? "?"} added ${str(p, "title") ?? "an agent"} (${providerName(str(p, "provider") ?? "claude_code")})`;
+    case "organization.task_delegated":
+      return `${str(p, "delegated_by") ?? "?"} delegated “${str(p, "title") ?? "?"}” to ${str(p, "owner") ?? "?"}`;
+    case "organization.supervision_started":
+      return `${str(p, "supervisor") ?? "A supervisor"} is reviewing ${str(p, "key") ?? "its scope"}`;
+    case "organization.work_started":
+      return `${str(p, "agent") ?? "A specialist"} started on ${str(p, "key") ?? "?"}`;
+    case "organization.assessed":
+      return `${str(p, "by") ?? "?"}: ${str(p, "verdict") ?? "?"} ${str(p, "key") ?? ""}`.trim();
+    case "organization.observed":
+      return `Switchyard noticed: ${str(p, "text") ?? "?"}`;
+    case "organization.escalated":
+      return `${str(p, "by") ?? "?"} asks ${str(p, "to") === "user" ? "you" : "its supervisor"}: ${str(p, "question") ?? "?"}`;
+    case "organization.directive_rejected":
+      return `${str(p, "by") ?? "?"}'s plan was not accepted: ${str(p, "error") ?? "?"}`;
+    case "organization.context_added":
+      return "Shared context updated";
+    case "organization.status_changed":
+      return `Organization ${str(p, "status") ?? "?"}${str(p, "reason") ? `: ${str(p, "reason")}` : ""}`;
+    case "organization.settings_changed":
+      return "The project's organization settings changed";
     default:
       return event.event_type;
   }

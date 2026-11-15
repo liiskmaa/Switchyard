@@ -8,12 +8,14 @@
 //!   authorization.
 //! * [`context`]: the versioned task context Core gives an agent.
 //! * [`workflow`]: the built-in `engineering@1` workflow as a pure decision function.
+//! * [`organization`]: dynamic agent organizations (`organization@1`) as a pure decision function.
 //!
 //! Nothing here knows about Claude, Codex or any wire protocol.
 
 pub mod context;
 pub mod graph;
 pub mod model;
+pub mod organization;
 pub mod report;
 pub mod workflow;
 

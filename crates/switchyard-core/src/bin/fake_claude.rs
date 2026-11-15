@@ -332,6 +332,9 @@ impl Fake {
                     let decision = &m["response"]["response"];
                     if decision["behavior"] == "allow" {
                         let path = std::path::Path::new(&self.cwd).join(&file);
+                        if let Some(parent) = path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
                         match std::fs::write(&path, "written by fake claude\n") {
                             Ok(()) => self.tool_result(
                                 &tool,
@@ -480,9 +483,11 @@ impl Fake {
     /// One turn of the task scenario: an optional tool, then the final message.
     fn task_turn(&mut self) -> bool {
         self.init();
-        let step =
-            self.task.next().unwrap_or(report::Step { tool: None, text: "Nothing more to do.".into() });
-        if let Some(tool) = &step.tool {
+        let step = self
+            .task
+            .next()
+            .unwrap_or(report::Step { tools: Vec::new(), text: "Nothing more to do.".into() });
+        for tool in &step.tools {
             let (name, arg) = tool.split_once(':').unwrap_or((tool.as_str(), ""));
             let outcome = match name {
                 "write" => self.gated_writes(&[arg]),

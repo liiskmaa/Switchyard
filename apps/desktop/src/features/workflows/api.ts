@@ -17,3 +17,21 @@ export const pendingApprovals = async (sessionId: string) =>
   (await coreRequest("approvals.list", { status: "pending", session_id: sessionId, limit: 20 })).approvals;
 
 export const isWorkflowEvent = (e: EventEnvelope): boolean => e.event_type.startsWith("workflow.");
+
+// --- agent organizations (M8.3) ---------------------------------------------------
+export const startOrganization = (taskId: string, lead?: { provider: AgentProvider; model: string | null }) =>
+  coreRequest(
+    "workflows.start",
+    lead ? { task_id: taskId, definition: "organization", lead } : { task_id: taskId, definition: "organization" },
+  );
+export const getOrganization = async (taskId: string) =>
+  (await coreRequest("organizations.get", { task_id: taskId })).organization;
+export const answerOrganization = (taskId: string, text: string) =>
+  coreRequest("organizations.answer", { task_id: taskId, text });
+export const orgSettings = (projectId: string) => coreRequest("organizations.settings", { project_id: projectId });
+export const saveOrgSettings = (
+  projectId: string,
+  patch: { limits?: Partial<import("../../types/protocol").OrgLimits>; estimates?: import("../../types/protocol").OrgEstimate[] },
+) => coreRequest("organizations.set_settings", { project_id: projectId, ...patch });
+export const isOrganizationEvent = (e: EventEnvelope): boolean =>
+  e.event_type.startsWith("organization.") || e.event_type.startsWith("workflow.") || e.event_type.startsWith("task.");

@@ -228,7 +228,9 @@ fn wire(w: &WorkflowRecord) -> Result<WorkflowInfo, StorageError> {
         definition: w.definition.clone(),
         version: w.version,
         status: w.status.clone(),
-        stage: w.stage.clone(),
+        stage: w.stage.clone().or_else(|| {
+            (w.definition == switchyard_tasks::organization::DEFINITION).then(|| "organization".to_owned())
+        }),
         step_key: w.step_key.clone(),
         reason: w.reason.clone(),
         resume_action: resume_text(&state),
@@ -261,14 +263,14 @@ fn repair_note(n: u32, error: &str) -> String {
 }
 
 /// What a committed decision asks Core to do.
-struct Followup {
-    action: Action,
-    assignment: Option<Uuid>,
-    repair_error: Option<String>,
+pub(super) struct Followup {
+    pub(super) action: Action,
+    pub(super) assignment: Option<Uuid>,
+    pub(super) repair_error: Option<String>,
 }
 
 impl TaskService {
-    fn workflow_lock(&self, task: Uuid) -> Arc<AsyncMutex<()>> {
+    pub(super) fn workflow_lock(&self, task: Uuid) -> Arc<AsyncMutex<()>> {
         let mut locks = self.workflow_locks.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         Arc::clone(locks.entry(task).or_default())
     }
@@ -354,7 +356,7 @@ impl TaskService {
         self.storage.call(move |c| info(c, task_id)).await.map_err(errors::storage)
     }
 
-    async fn workflow_required(&self, task_id: Uuid) -> Result<WorkflowInfo, ProtocolError> {
+    pub(super) async fn workflow_required(&self, task_id: Uuid) -> Result<WorkflowInfo, ProtocolError> {
         self.workflow(task_id)
             .await?
             .ok_or_else(|| ProtocolError::new(ErrorCode::NotFound, format!("task {task_id} has no workflow")))
@@ -377,6 +379,13 @@ impl TaskService {
                 "a workflow starts on a ready task; the task is {}",
                 task.status
             )));
+        }
+        match p.definition.as_deref() {
+            None | Some(wf::DEFINITION) => {}
+            Some(switchyard_tasks::organization::DEFINITION) => {
+                return self.start_organization(task, p, actor).await;
+            }
+            Some(other) => return Err(invalid_params(format!("unknown workflow definition {other}"))),
         }
         let settings = self.workflow_settings(task.project_id).await?;
         let bindings = apply_patch(settings.bindings, p.overrides);
@@ -453,11 +462,27 @@ impl TaskService {
         self.workflow_required(task_id).await
     }
 
+    /// Whether the task's workflow is an organization that has not reached delivery.
+    async fn organizing(&self, task_id: Uuid) -> Result<bool, ProtocolError> {
+        let w = self.workflow_required(task_id).await?;
+        Ok(w.definition == switchyard_tasks::organization::DEFINITION
+            && w.stage.as_deref() != Some("delivery"))
+    }
+
     pub async fn pause_workflow(&self, task_id: Uuid, actor: String) -> Result<WorkflowInfo, ProtocolError> {
+        if self.organizing(task_id).await? {
+            self.org_operator(task_id, switchyard_tasks::organization::Input::Pause).await?;
+            return self.workflow_required(task_id).await;
+        }
         self.operator_input(task_id, Input::Pause, actor).await
     }
 
     pub async fn resume_workflow(&self, task_id: Uuid, actor: String) -> Result<WorkflowInfo, ProtocolError> {
+        if self.organizing(task_id).await? {
+            self.org_operator(task_id, switchyard_tasks::organization::Input::Resume { now_ms: now_ms() })
+                .await?;
+            return self.workflow_required(task_id).await;
+        }
         // An operator assignment must not be running underneath a resumed workflow.
         let open =
             self.storage.call(move |c| store::open_assignment(c, task_id)).await.map_err(errors::storage)?;
@@ -480,6 +505,10 @@ impl TaskService {
     ) -> Result<WorkflowInfo, ProtocolError> {
         let reason =
             reason.filter(|r| !r.trim().is_empty()).unwrap_or_else(|| format!("cancelled by {actor}"));
+        if self.organizing(task_id).await? {
+            self.org_operator(task_id, switchyard_tasks::organization::Input::Cancel { reason }).await?;
+            return self.workflow_required(task_id).await;
+        }
         self.operator_input(task_id, Input::Cancel { reason }, actor).await
     }
 
@@ -540,7 +569,7 @@ impl TaskService {
 
     /// Performs a committed decision's follow-up in the background (a session
     /// start can take seconds; the driver keeps following the journal).
-    fn perform(&self, task_id: Uuid, f: Followup) {
+    pub(super) fn perform(&self, task_id: Uuid, f: Followup) {
         let svc = self.clone();
         tokio::spawn(async move {
             match f.action {
@@ -611,6 +640,9 @@ impl TaskService {
             || matches!(w.status.as_str(), "delivered" | "cancelled" | "failed")
         {
             return Err(invalid_state("the workflow is not delivering; nothing to send back"));
+        }
+        if w.definition == switchyard_tasks::organization::DEFINITION {
+            return self.reopen_organization(task_id, note, actor).await;
         }
         if let Some(text) = note.filter(|n| !n.trim().is_empty()) {
             // Kept for the correction's assignment (delivered with its task context).
@@ -791,6 +823,12 @@ impl TaskService {
                 return;
             }
         };
+        // An organization drives its own workflow until it reaches delivery.
+        if w.definition == switchyard_tasks::organization::DEFINITION
+            && !state_of(&w).is_ok_and(|s| s.stage == Some(Stage::Delivery))
+        {
+            return;
+        }
         if e.event_type.starts_with("integration.") {
             // Only the workflow's own integration, and only while delivering.
             let ours = e.payload.get("integration_id").and_then(|v| v.as_str()).map(str::to_owned);
@@ -976,6 +1014,7 @@ fn decide_in_tx(
             origin: "workflow",
             step_key: Some(step.key()),
             by: "workflow".into(),
+            workspace_review: false,
         };
         // A savepoint keeps a refused step from leaving half its rows behind.
         tx.execute_batch("SAVEPOINT workflow_step")?;
