@@ -35,21 +35,20 @@ function StepApprovals({ sessionId, onDecided }: { sessionId: string; onDecided:
 function StepRow({ a, now }: { a: TaskAssignment; now: number }) {
   const correction = a.role === "implement" && a.step_key !== null && !a.step_key.startsWith("implement#1");
   const running = a.status === "active" || a.status === "pending";
-  const actual = a.actual_model && a.actual_model !== a.model ? ` → runs ${a.actual_model}` : "";
+  const model = a.actual_model && a.actual_model !== a.model ? `${modelLabel(a.model)} → ${a.actual_model}` : modelLabel(a.model);
   return (
-    <li className={`workflow-step${running ? " current" : ""}`}>
-      <span className="mini-title">
-        <code className="code-tag">{a.step_key}</code> {correction ? "Correction" : ROLE_LABEL[a.role]} ·{" "}
-        <strong>{providerName(a.provider)}</strong> · {modelLabel(a.model)}
-        {actual}{" "}
-        <Badge tone={a.status === "reported" ? "ok" : a.status === "failed" ? "error" : running ? "accent" : "neutral"}>
-          {a.status}
-        </Badge>
+    <div className={`step-row${running ? " current" : ""}`} role="row">
+      <code className="mono">{a.step_key}</code>
+      <span>{correction ? "Correction" : ROLE_LABEL[a.role]}</span>
+      <span className="step-agent">
+        <strong>{providerName(a.provider)}</strong> <span className="muted">{model}</span>
       </span>
-      <span className="mini-sub">
-        {a.outcome ?? (running ? "working…" : "")} · {formatRelative(a.created_at_ms, now)}
+      <span className="step-outcome muted">{a.outcome ?? (running ? "working…" : "")}</span>
+      <span className="step-status">
+        <Badge tone={a.status === "reported" ? "ok" : a.status === "failed" ? "error" : running ? "accent" : "neutral"}>{a.status}</Badge>
+        <span className="muted small">{formatRelative(a.created_at_ms, now)}</span>
       </span>
-    </li>
+    </div>
   );
 }
 
@@ -203,11 +202,18 @@ export function WorkflowPanel({ detail, onChanged }: { detail: TaskDetail; onCha
         </p>
       ) : null}
       <h3 className="policy-section">Steps</h3>
-      <ol className="mini-list workflow-steps">
+      <div className="step-table" role="table" aria-label="Workflow steps">
+        <div className="step-row step-head" role="row">
+          <span>Step</span>
+          <span>Role</span>
+          <span>Agent and model</span>
+          <span>Result</span>
+          <span>Status</span>
+        </div>
         {steps.map((a) => (
           <StepRow key={a.id} a={a} now={now} />
         ))}
-      </ol>
+      </div>
       <p className="muted small">
         Bindings snapshotted when it started:{" "}
         {BINDING_KEYS.map((k) => {

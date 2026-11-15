@@ -61,7 +61,7 @@ function Settings({ projectId, settings, onChanged }: { projectId: string; setti
         ))}
       </ul>
       <form
-        className="rule-form"
+        className="command-form"
         aria-label="Add a validation command"
         onSubmit={(e) => {
           e.preventDefault();
@@ -72,21 +72,32 @@ function Settings({ projectId, settings, onChanged }: { projectId: string; setti
           });
         }}
       >
-        <label htmlFor="cmd-name">Name</label>
-        <input id="cmd-name" className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Tests" />
-        <label htmlFor="cmd-argv">Program and arguments, one per line</label>
-        <textarea
-          id="cmd-argv"
-          className="input textarea"
-          rows={3}
-          value={argv}
-          onChange={(e) => setArgv(e.target.value)}
-          placeholder={"cargo\ntest"}
-        />
-        <label htmlFor="cmd-timeout">Timeout (seconds)</label>
-        <input id="cmd-timeout" className="input" inputMode="numeric" value={timeout} onChange={(e) => setTimeoutSecs(e.target.value)} />
-        {error ? <ErrorNotice title="Cannot save" message={error.message} code={error.code} /> : null}
-        <div className="form-actions start">
+        <div className="field">
+          <label htmlFor="cmd-name">Name</label>
+          <input id="cmd-name" className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Tests" />
+        </div>
+        <div className="field">
+          <label htmlFor="cmd-timeout">Timeout (seconds)</label>
+          <input id="cmd-timeout" className="input" inputMode="numeric" value={timeout} onChange={(e) => setTimeoutSecs(e.target.value)} />
+        </div>
+        <div className="field field-wide">
+          <label htmlFor="cmd-argv">Program and arguments, one per line</label>
+          <textarea
+            id="cmd-argv"
+            className="input textarea mono"
+            rows={3}
+            value={argv}
+            onChange={(e) => setArgv(e.target.value)}
+            placeholder={"cargo\ntest"}
+          />
+          <span className="muted small">Run directly, never through a shell: put each argument on its own line.</span>
+        </div>
+        {error ? (
+          <div className="field-wide">
+            <ErrorNotice title="Cannot save" message={error.message} code={error.code} />
+          </div>
+        ) : null}
+        <div className="form-actions start field-wide">
           <Button type="submit" disabled={busy || name.trim() === "" || args.length === 0}>
             Add command
           </Button>

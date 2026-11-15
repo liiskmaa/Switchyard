@@ -1,6 +1,6 @@
 import { useState } from "react";
 
-import { Badge, Button, EmptyState, ErrorNotice, KeyValue, Panel } from "../../components/ui";
+import { Badge, Button, EmptyState, ErrorNotice, Panel } from "../../components/ui";
 import { providerName } from "../../lib/agents";
 import { toCoreError, type CoreRequestError } from "../../lib/core";
 import { MESSAGE_LABEL, describeEvent, formatClock, formatRelative, shortId } from "../../lib/format";
@@ -29,6 +29,9 @@ import { isWorkflowEvent } from "../workflows/api";
 import { modelLabel } from "../workflows/labels";
 import { WorkflowPanel } from "../workflows/WorkflowPanel";
 import { DeliveryPanel } from "../workflows/DeliveryPanel";
+
+/** History events shown before "Show all". */
+const HISTORY_PREVIEW = 20;
 
 function useAction(onDone: () => void) {
   const [busy, setBusy] = useState(false);
@@ -229,6 +232,10 @@ export function TaskDetailView({
   const [note, setNote] = useState("");
   const [decisionNote, setDecisionNote] = useState("");
   const [newDep, setNewDep] = useState("");
+  const [tab, setTab] = useState<"messages" | "findings" | "assignments" | "dependencies" | "history">("messages");
+  const [fullDescription, setFullDescription] = useState(false);
+  const [systemMessages, setSystemMessages] = useState(false);
+  const [allHistory, setAllHistory] = useState(false);
 
   if (detail.error) return <ErrorNotice title="Cannot load the task" message={detail.error.message} code={detail.error.code} />;
   const d: TaskDetail | null = detail.data;
@@ -239,27 +246,54 @@ export function TaskDetailView({
   const open = t.open_assignment;
   const pendingProposals = d.proposals.filter((p) => p.status === "pending");
   const openFindings = d.findings.filter((f) => f.status === "open");
+  // The conversation: what agents reported or asked, and what the operator said.
+  // Assignment bookkeeping and Core's status notes are audit detail.
+  const isSystem = (m: TaskMessage) => m.kind === "task_assignment" || (m.sender === "core" && m.kind === "status_update");
+  const conversation = d.messages.filter((m) => systemMessages || !isSystem(m));
+  const hiddenMessages = d.messages.filter(isSystem).length;
+  const history = [...(events.data ?? [])].reverse();
+  const shownHistory = allHistory ? history : history.slice(0, HISTORY_PREVIEW);
 
   return (
     <div className="detail">
       <Panel
         title={t.title}
         actions={<Badge tone={statusTone(t.status)}>{STATUS_LABEL[t.status]}</Badge>}
+        className="task-head"
       >
-        <KeyValue
-          rows={[
-            ...(d.workflow
-              ? ([["Workflow", `${d.workflow.status}${d.workflow.step_key ? ` · ${d.workflow.step_key}` : ""}`]] as [string, string][])
-              : []),
-            [d.workflow ? "Task status (internal)" : "Status", `${STATUS_LABEL[t.status]}${t.status_reason ? ` — ${t.status_reason}` : ""}`],
-            ["Kind / priority", `${t.kind} · ${t.priority}`],
-            ["Origin", t.origin === "proposal" ? "Approved proposal" : "Operator"],
-            ["Dependencies", d.dependencies.length === 0 ? "None" : `${d.readiness}`],
-            ["Updated", formatRelative(t.updated_at_ms, now)],
-            ...(t.failure ? ([["Failure", t.failure]] as [string, string][]) : []),
-          ]}
-        />
-        {t.description ? <p className="task-description">{t.description}</p> : null}
+        <div className="task-meta small">
+          {d.workflow ? (
+            <span>
+              Workflow {d.workflow.definition}@{d.workflow.version}
+            </span>
+          ) : null}
+          <span>
+            {t.kind} · {t.priority} priority
+          </span>
+          <span>{t.origin === "proposal" ? "From an approved proposal" : "Created by the operator"}</span>
+          {d.dependencies.length > 0 ? <span>Dependencies {d.readiness}</span> : null}
+          <span>Updated {formatRelative(t.updated_at_ms, now)}</span>
+        </div>
+        {t.status_reason || t.failure ? (
+          <p className="muted small task-status-line">
+            {d.workflow ? "Task status (internal): " : ""}
+            {STATUS_LABEL[t.status]}
+            {t.status_reason ? ` — ${t.status_reason}` : ""}
+            {t.failure ? ` · ${t.failure}` : ""}
+          </p>
+        ) : null}
+        {t.description ? (
+          <div className="task-description-block">
+            <p className="task-description">
+              {!fullDescription && t.description.length > 320 ? `${t.description.slice(0, 320)}…` : t.description}
+            </p>
+            {t.description.length > 320 ? (
+              <button type="button" className="link small" onClick={() => setFullDescription(!fullDescription)}>
+                {fullDescription ? "Show less" : "Show the full description"}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
         {t.acceptance_criteria.length > 0 ? (
           <>
             <h3 className="policy-section">Acceptance criteria</h3>
@@ -325,56 +359,7 @@ export function TaskDetailView({
       <WorkflowPanel detail={d} onChanged={refresh} />
       <DeliveryPanel detail={d} onChanged={refresh} />
 
-      <Panel title={d.workflow ? "Assignments" : "Assignment"}>
-        {open && d.workflow && open.origin === "workflow" ? (
-          <p className="muted small">The workflow manages this task&apos;s assignments.</p>
-        ) : open ? (
-          <div className="ws-row">
-            <span>
-              {ROLE_LABEL[open.role]} by {providerName(open.provider)} in workspace “{wsName(open.workspace_id)}” · {open.status}
-            </span>
-            <div className="form-actions start">
-              {open.session_id ? (
-                <Button icon="agents" onClick={() => navigate("agents", { sessionId: open.session_id })}>
-                  Open session
-                </Button>
-              ) : null}
-              <Button variant="danger" disabled={action.busy} onClick={() => void action.run(() => cancelAssignment(open.id))}>
-                Cancel assignment
-              </Button>
-            </div>
-          </div>
-        ) : can.assign.length > 0 && d.workflow ? (
-          <details className="advanced">
-            <summary>Advanced: assign manually (take over from the workflow)</summary>
-            <p className="muted small">Pause or cancel the workflow first; a running workflow refuses manual assignments.</p>
-            <Assign task={t} roles={can.assign} workspaces={workspaces} onDone={refresh} />
-          </details>
-        ) : can.assign.length > 0 ? (
-          <Assign task={t} roles={can.assign} workspaces={workspaces} onDone={refresh} />
-        ) : (
-          <p className="muted small">No agent is working on this task.</p>
-        )}
-        {d.assignments.length > 0 ? (
-          <ul className="mini-list">
-            {[...d.assignments].reverse().map((a) => (
-              <li key={a.id}>
-                <span className="mini-title">
-                  {a.step_key ? <code className="code-tag">{a.step_key}</code> : null} {ROLE_LABEL[a.role]} · {providerName(a.provider)} ·{" "}
-                  {modelLabel(a.model)}
-                  {a.actual_model && a.actual_model !== a.model ? ` (runs ${a.actual_model})` : ""} · {a.status}
-                  {a.origin === "operator" ? " · manual" : ""}
-                </span>
-                <span className="mini-sub">
-                  {wsName(a.workspace_id)}
-                  {a.context_version ? ` · context v${a.context_version}` : ""}
-                  {a.outcome ? ` · ${a.outcome}` : ""} · {formatRelative(a.created_at_ms, now)}
-                </span>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-      </Panel>
+
 
       {pendingProposals.length > 0 || d.proposals.length > 0 ? (
         <Panel title="Proposed subtasks">
@@ -403,140 +388,242 @@ export function TaskDetailView({
         </Panel>
       ) : null}
 
-      <Panel title={`Findings${openFindings.length ? ` (${openFindings.length} open)` : ""}`}>
-        {d.findings.length === 0 ? (
-          <p className="muted small">No findings.</p>
-        ) : (
-          <ul className="findings">
-            {d.findings.map((f) => (
-              <li key={f.id} className={`finding small${f.status !== "open" ? " muted" : ""}`}>
-                <Badge tone={SEVERITY_TONE[f.severity]}>{f.severity}</Badge> <strong>{f.title}</strong>
-                {f.path ? (
-                  <code className="code-tag">
-                    {f.path}
-                    {f.line ? `:${f.line}` : ""}
-                  </code>
-                ) : null}
-                {f.status !== "open" ? ` (${f.status})` : ""}
-                {f.explanation ? <div>{f.explanation}</div> : null}
-                {f.suggestion ? <div className="muted">Suggestion: {f.suggestion}</div> : null}
-              </li>
-            ))}
-          </ul>
-        )}
-      </Panel>
 
-      <Panel title="Messages">
-        <p className="muted small">Messages from agents are claims or requests. They never approve, start or complete anything.</p>
-        {d.messages.length === 0 ? (
-          <EmptyState icon="activity" title="No messages yet" />
-        ) : (
-          <ol className="timeline">
-            {d.messages.map((m) => (
-              <li key={m.id} className="tl">
-                <span className="tl-time">{formatClock(m.created_at_ms)}</span>
-                <Badge tone={m.kind === "malformed_report" || m.kind === "blocker" ? "warn" : AGENT_KINDS.has(m.kind) ? "accent" : "neutral"}>
-                  {MESSAGE_LABEL[m.kind] ?? m.kind}
-                </Badge>
-                <span className="tl-body">
-                  <span className="muted small">
-                    {m.sender}
-                    {m.delivery === "pending" ? " · waits for the next assignment" : m.delivery === "delivered" ? " · delivered" : ""}
-                  </span>
-                  <div className="tl-message">{messageText(m)}</div>
-                </span>
-              </li>
-            ))}
-          </ol>
-        )}
-        {!["completed", "cancelled"].includes(t.status) ? (
-          <form
-            className="composer"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void action.run(async () => {
-                await sendNote(t.id, note);
-                setNote("");
-              });
-            }}
-          >
-            <textarea
-              className="input textarea"
-              aria-label="Note to the agent"
-              rows={2}
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              placeholder={open?.status === "active" ? "Answer or guide the working agent" : "A note for the next assignment"}
-            />
-            <div className="composer-actions">
-              <Button type="submit" disabled={action.busy || note.trim() === ""}>
-                Send note
-              </Button>
-            </div>
-          </form>
-        ) : null}
-      </Panel>
+
+
 
       {d.workflow && d.workflow.status !== "completed" ? null : <Delivery task={t} />}
 
-      <Panel title="Dependencies">
-        {d.dependencies.length === 0 ? <p className="muted small">This task does not wait for other tasks.</p> : null}
-        <ul className="mini-list">
-          {d.dependencies.map((dep) => (
-            <li key={dep.id}>
-              <span className="mini-title">
-                {dep.title} <Badge tone={statusTone(dep.status)}>{STATUS_LABEL[dep.status]}</Badge>
-              </span>
-              {can.dependencies ? (
-                <Button variant="ghost" disabled={action.busy} onClick={() => void deps.run(() => removeDependency(t.id, dep.id))}>
-                  Remove
-                </Button>
-              ) : null}
-            </li>
-          ))}
-        </ul>
-        {can.dependencies ? (
-          <div className="input-row">
-            <select className="input select" aria-label="Add a dependency" value={newDep} onChange={(e) => setNewDep(e.target.value)}>
-              <option value="">Wait for another task…</option>
-              {tasks
-                .filter((o) => o.id !== t.id && !t.dependency_ids.includes(o.id))
-                .map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {o.title}
-                  </option>
-                ))}
-            </select>
-            <Button
-              disabled={deps.busy || newDep === ""}
-              onClick={() =>
-                void deps.run(async () => {
-                  await addDependency(t.id, newDep);
-                  setNewDep("");
-                })
-              }
-            >
-              Add
-            </Button>
-          </div>
-        ) : null}
-        {deps.error ? <ErrorNotice title="Cannot change dependencies" message={deps.error.message} code={deps.error.code} /> : null}
-        {d.dependents.length > 0 ? (
-          <p className="muted small">Waiting for this task: {d.dependents.map((x) => x.title).join(", ")}</p>
-        ) : null}
-      </Panel>
 
-      <Panel title="History">
-        <ol className="timeline">
-          {(events.data ?? []).map((e) => (
-            <li key={e.seq} className="tl">
-              <span className="tl-time">{formatClock(e.occurred_at_ms)}</span>
-              <span className="muted small">{e.event_type.replace("task.", "")}</span>
-              <span className="tl-body">{describeEvent(e)}</span>
-            </li>
+
+
+      <section className="panel task-tabs-panel">
+        <nav className="project-tabs task-tabs" role="tablist" aria-label="Task details">
+          {(
+            [
+              ["messages", `Messages${conversation.length ? ` (${conversation.length})` : ""}`],
+              ["findings", `Findings${openFindings.length ? ` (${openFindings.length} open)` : ""}`],
+              ["assignments", `Assignments${d.assignments.length ? ` (${d.assignments.length})` : ""}`],
+              ["dependencies", "Dependencies"],
+              ["history", "History"],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              role="tab"
+              aria-selected={tab === key}
+              className={`project-tab${tab === key ? " active" : ""}`}
+              onClick={() => setTab(key)}
+            >
+              {label}
+            </button>
           ))}
-        </ol>
-      </Panel>
+        </nav>
+        <div className="panel-body">
+          {tab === "messages" ? (
+            <>
+                <p className="muted small">Messages from agents are claims or requests. They never approve, start or complete anything.</p>
+                {hiddenMessages > 0 ? (
+                  <label className="check small">
+                    <input type="checkbox" checked={systemMessages} onChange={(e) => setSystemMessages(e.target.checked)} /> Show
+                    system messages ({hiddenMessages})
+                  </label>
+                ) : null}
+                {conversation.length === 0 ? (
+                  <EmptyState icon="activity" title="No messages yet" />
+                ) : (
+                  <ol className="timeline">
+                    {conversation.map((m) => (
+                      <li key={m.id} className="tl">
+                        <span className="tl-time">{formatClock(m.created_at_ms)}</span>
+                        <Badge tone={m.kind === "malformed_report" || m.kind === "blocker" ? "warn" : AGENT_KINDS.has(m.kind) ? "accent" : "neutral"}>
+                          {MESSAGE_LABEL[m.kind] ?? m.kind}
+                        </Badge>
+                        <span className="tl-body">
+                          <span className="muted small">
+                            {m.sender}
+                            {m.delivery === "pending" ? " · waits for the next assignment" : m.delivery === "delivered" ? " · delivered" : ""}
+                          </span>
+                          <div className="tl-message">{messageText(m)}</div>
+                        </span>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+                {!["completed", "cancelled"].includes(t.status) ? (
+                  <form
+                    className="composer"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void action.run(async () => {
+                        await sendNote(t.id, note);
+                        setNote("");
+                      });
+                    }}
+                  >
+                    <textarea
+                      className="input textarea"
+                      aria-label="Note to the agent"
+                      rows={2}
+                      value={note}
+                      onChange={(e) => setNote(e.target.value)}
+                      placeholder={open?.status === "active" ? "Answer or guide the working agent" : "A note for the next assignment"}
+                    />
+                    <div className="composer-actions">
+                      <Button type="submit" disabled={action.busy || note.trim() === ""}>
+                        Send note
+                      </Button>
+                    </div>
+                  </form>
+                ) : null}
+            </>
+          ) : null}
+          {tab === "findings" ? (
+            <>
+                {d.findings.length === 0 ? (
+                  <p className="muted small">No findings.</p>
+                ) : (
+                  <ul className="findings">
+                    {d.findings.map((f) => (
+                      <li key={f.id} className={`finding small${f.status !== "open" ? " muted" : ""}`}>
+                        <Badge tone={SEVERITY_TONE[f.severity]}>{f.severity}</Badge> <strong>{f.title}</strong>
+                        {f.path ? (
+                          <code className="code-tag">
+                            {f.path}
+                            {f.line ? `:${f.line}` : ""}
+                          </code>
+                        ) : null}
+                        {f.status !== "open" ? ` (${f.status})` : ""}
+                        {f.explanation ? <div>{f.explanation}</div> : null}
+                        {f.suggestion ? <div className="muted">Suggestion: {f.suggestion}</div> : null}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+            </>
+          ) : null}
+          {tab === "assignments" ? (
+            <>
+                {open && d.workflow && open.origin === "workflow" ? (
+                  <p className="muted small">The workflow manages this task&apos;s assignments.</p>
+                ) : open ? (
+                  <div className="ws-row">
+                    <span>
+                      {ROLE_LABEL[open.role]} by {providerName(open.provider)} in workspace “{wsName(open.workspace_id)}” · {open.status}
+                    </span>
+                    <div className="form-actions start">
+                      {open.session_id ? (
+                        <Button icon="agents" onClick={() => navigate("agents", { sessionId: open.session_id })}>
+                          Open session
+                        </Button>
+                      ) : null}
+                      <Button variant="danger" disabled={action.busy} onClick={() => void action.run(() => cancelAssignment(open.id))}>
+                        Cancel assignment
+                      </Button>
+                    </div>
+                  </div>
+                ) : can.assign.length > 0 && d.workflow ? (
+                  <details className="advanced">
+                    <summary>Advanced: assign manually (take over from the workflow)</summary>
+                    <p className="muted small">Pause or cancel the workflow first; a running workflow refuses manual assignments.</p>
+                    <Assign task={t} roles={can.assign} workspaces={workspaces} onDone={refresh} />
+                  </details>
+                ) : can.assign.length > 0 ? (
+                  <Assign task={t} roles={can.assign} workspaces={workspaces} onDone={refresh} />
+                ) : (
+                  <p className="muted small">No agent is working on this task.</p>
+                )}
+                {d.assignments.length > 0 ? (
+                  <ul className="mini-list">
+                    {[...d.assignments].reverse().map((a) => (
+                      <li key={a.id}>
+                        <span className="mini-title">
+                          {a.step_key ? <code className="code-tag">{a.step_key}</code> : null} {ROLE_LABEL[a.role]} · {providerName(a.provider)} ·{" "}
+                          {modelLabel(a.model)}
+                          {a.actual_model && a.actual_model !== a.model ? ` (runs ${a.actual_model})` : ""} · {a.status}
+                          {a.origin === "operator" ? " · manual" : ""}
+                        </span>
+                        <span className="mini-sub">
+                          {wsName(a.workspace_id)}
+                          {a.context_version ? ` · context v${a.context_version}` : ""}
+                          {a.outcome ? ` · ${a.outcome}` : ""} · {formatRelative(a.created_at_ms, now)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+            </>
+          ) : null}
+          {tab === "dependencies" ? (
+            <>
+                {d.dependencies.length === 0 ? <p className="muted small">This task does not wait for other tasks.</p> : null}
+                <ul className="mini-list">
+                  {d.dependencies.map((dep) => (
+                    <li key={dep.id}>
+                      <span className="mini-title">
+                        {dep.title} <Badge tone={statusTone(dep.status)}>{STATUS_LABEL[dep.status]}</Badge>
+                      </span>
+                      {can.dependencies ? (
+                        <Button variant="ghost" disabled={action.busy} onClick={() => void deps.run(() => removeDependency(t.id, dep.id))}>
+                          Remove
+                        </Button>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+                {can.dependencies ? (
+                  <div className="input-row">
+                    <select className="input select" aria-label="Add a dependency" value={newDep} onChange={(e) => setNewDep(e.target.value)}>
+                      <option value="">Wait for another task…</option>
+                      {tasks
+                        .filter((o) => o.id !== t.id && !t.dependency_ids.includes(o.id))
+                        .map((o) => (
+                          <option key={o.id} value={o.id}>
+                            {o.title}
+                          </option>
+                        ))}
+                    </select>
+                    <Button
+                      disabled={deps.busy || newDep === ""}
+                      onClick={() =>
+                        void deps.run(async () => {
+                          await addDependency(t.id, newDep);
+                          setNewDep("");
+                        })
+                      }
+                    >
+                      Add
+                    </Button>
+                  </div>
+                ) : null}
+                {deps.error ? <ErrorNotice title="Cannot change dependencies" message={deps.error.message} code={deps.error.code} /> : null}
+                {d.dependents.length > 0 ? (
+                  <p className="muted small">Waiting for this task: {d.dependents.map((x) => x.title).join(", ")}</p>
+                ) : null}
+            </>
+          ) : null}
+          {tab === "history" ? (
+            <>
+                <p className="muted small">Newest first: every change to this task is journaled (the audit trail).</p>
+                <ol className="timeline">
+                  {shownHistory.map((e) => (
+                    <li key={e.seq} className="tl">
+                      <span className="tl-time">{formatClock(e.occurred_at_ms)}</span>
+                      <span className="muted small">{e.event_type.replace("task.", "")}</span>
+                      <span className="tl-body">{describeEvent(e)}</span>
+                    </li>
+                  ))}
+                </ol>
+                {history.length > HISTORY_PREVIEW ? (
+                  <button type="button" className="link small" onClick={() => setAllHistory(!allHistory)}>
+                    {allHistory ? "Show the latest only" : `Show all ${history.length} events`}
+                  </button>
+                ) : null}
+            </>
+          ) : null}
+        </div>
+      </section>
     </div>
   );
 }

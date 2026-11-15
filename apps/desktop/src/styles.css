@@ -300,7 +300,7 @@ button { font: inherit; color: inherit; }
 .mini-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .mini-list li { display: flex; align-items: baseline; gap: 10px; padding: 6px 0; min-width: 0; }
 .mini-list li + li { border-top: 1px solid var(--border); }
-.mini-title { color: var(--text-strong); flex: none; }
+.mini-title { color: var(--text-strong); flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .mini-sub { color: var(--faint); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
 
 /* Events ----------------------------------------------------------------- */
@@ -513,8 +513,6 @@ span.findings { padding-left: 0; }
 .workflow-stage { padding: 4px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border); color: var(--muted); font-size: 12px; }
 .workflow-stage.done { color: var(--ok); border-color: var(--ok); background: var(--ok-soft); }
 .workflow-stage.current { color: var(--text-strong); border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
-.workflow-step.current .mini-title { color: var(--text-strong); font-weight: 600; }
-.workflow-steps li { flex-direction: column; gap: 2px; }
 .workflow-reason { display: block; padding: 8px 10px; border-left: 3px solid var(--warn); background: var(--warn-soft); color: var(--text-strong); }
 .workflow-approvals { margin: 8px 0; }
 details.advanced > summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 4px 0; }
@@ -576,3 +574,37 @@ details.advanced > summary { cursor: pointer; color: var(--muted); font-size: 13
 .delivery-head { display: inline-flex; align-items: center; gap: 10px; }
 .delivery-step { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
 .delivery-commits code { overflow-wrap: anywhere; }
+
+/* Validation command form (Integration settings) */
+.command-form {
+  display: grid; grid-template-columns: minmax(0, 1fr) 160px; gap: 12px 16px; max-width: 720px;
+  padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel-raised);
+}
+.field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.field > label { font-size: 12px; font-weight: 600; color: var(--text); }
+.field-wide { grid-column: 1 / -1; }
+
+/* Task page (M8.2 UI) */
+.task-head .panel-head h2 { text-transform: none; letter-spacing: 0; font-size: 15px; color: var(--text-strong); }
+.task-meta { display: flex; flex-wrap: wrap; gap: 4px 16px; color: var(--muted); }
+.task-status-line { margin-top: 6px; overflow-wrap: anywhere; }
+.task-description-block { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.task-description { margin: 0; }
+.task-tabs { padding: 0 12px; margin: 0; }
+.task-tabs-panel .panel-body { display: flex; flex-direction: column; gap: 10px; }
+
+.step-table { display: flex; flex-direction: column; }
+.step-row {
+  display: grid; grid-template-columns: 104px 104px minmax(0, 1.3fr) minmax(0, 1fr) 150px; gap: 4px 12px;
+  align-items: baseline; padding: 7px 0; border-top: 1px solid var(--border); min-width: 0;
+}
+.step-row > * { min-width: 0; overflow-wrap: anywhere; }
+.step-row.step-head { border-top: 0; padding-top: 0; color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.step-row.current { background: var(--accent-soft); margin: 0 -8px; padding-left: 8px; padding-right: 8px; border-radius: var(--radius-sm); }
+.step-agent .muted { font-family: var(--mono); font-size: 12px; }
+.step-outcome { font-size: 12px; }
+.step-status { display: inline-flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+@media (max-width: 1100px) {
+  .step-row { grid-template-columns: 96px minmax(0, 1fr) 130px; }
+  .step-row > :nth-child(2), .step-row > :nth-child(4) { display: none; }
+}
