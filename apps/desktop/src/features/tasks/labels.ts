@@ -7,7 +7,7 @@ export const STATUS_LABEL: Record<TaskStatus, string> = {
   blocked: "Blocked",
   assigned: "Assigned",
   in_progress: "In progress",
-  awaiting_review: "Awaiting your review",
+  awaiting_review: "Work reported",
   in_review: "In review",
   completed: "Completed",
   failed: "Failed",

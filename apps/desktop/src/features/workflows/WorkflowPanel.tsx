@@ -7,45 +7,43 @@ import { formatRelative } from "../../lib/format";
 import { useNow } from "../../lib/useNow";
 import { useCoreQuery } from "../../stores/useCoreQuery";
 import type { RoleBindings, TaskAssignment, TaskDetail } from "../../types/protocol";
-import { isApprovalEvent } from "../agents/api";
-import { ApprovalCard } from "../approvals/ApprovalCard";
 import { ROLE_LABEL } from "../tasks/labels";
-import { cancelWorkflow, pauseWorkflow, pendingApprovals, resumeWorkflow, startWorkflow, workflowSettings } from "./api";
-import { BINDING_KEYS, BINDING_LABEL, WORKFLOW_STATUS_LABEL, effectiveBinding, modelLabel, overridesOf, stageOrder, workflowTone } from "./labels";
+import { cancelWorkflow, pauseWorkflow, resumeWorkflow, startWorkflow, workflowSettings } from "./api";
+import {
+  BINDING_KEYS,
+  BINDING_LABEL,
+  WORKFLOW_STATUS_LABEL,
+  effectiveBinding,
+  humanizeSteps,
+  modelLabel,
+  overridesOf,
+  stageOrder,
+  stepName,
+  workflowTone,
+} from "./labels";
 import { RoleBindingsEditor } from "./RoleBindingsEditor";
 
-/** Permission requests of the running step, answered right here. */
-function StepApprovals({ sessionId, onDecided }: { sessionId: string; onDecided: () => void }) {
-  const approvals = useCoreQuery(`approvals:${sessionId}`, () => pendingApprovals(sessionId), {
-    refreshOn: isApprovalEvent,
-    intervalMs: 5_000,
-  });
-  const list = approvals.data ?? [];
-  if (list.length === 0) return null;
-  return (
-    <div className="workflow-approvals">
-      <h3 className="policy-section">Waiting for your approval</h3>
-      {list.map((a) => (
-        <ApprovalCard key={a.id} approval={a} onDecided={onDecided} />
-      ))}
-    </div>
-  );
-}
+const STEP_STATUS: Record<TaskAssignment["status"], string> = {
+  pending: "Starting",
+  active: "Working",
+  reported: "Done",
+  failed: "Failed",
+  cancelled: "Cancelled",
+};
 
 function StepRow({ a, now }: { a: TaskAssignment; now: number }) {
-  const correction = a.role === "implement" && a.step_key !== null && !a.step_key.startsWith("implement#1");
   const running = a.status === "active" || a.status === "pending";
-  const model = a.actual_model && a.actual_model !== a.model ? `${modelLabel(a.model)} → ${a.actual_model}` : modelLabel(a.model);
+  const model = a.actual_model ?? modelLabel(a.model);
+  const detail = `${a.step_key ?? ""} · ${ROLE_LABEL[a.role]} · ${providerName(a.provider)} · chosen ${modelLabel(a.model)}${a.actual_model ? ` · ran ${a.actual_model}` : ""}`;
   return (
-    <div className={`step-row${running ? " current" : ""}`} role="row">
-      <code className="mono">{a.step_key}</code>
-      <span>{correction ? "Correction" : ROLE_LABEL[a.role]}</span>
+    <div className={`step-row${running ? " current" : ""}`} role="listitem" title={detail}>
+      <strong>{stepName(a.step_key ?? "")}</strong>
       <span className="step-agent">
-        <strong>{providerName(a.provider)}</strong> <span className="muted">{model}</span>
+        {providerName(a.provider)} <span className="muted">{model}</span>
       </span>
-      <span className="step-outcome muted">{a.outcome ?? (running ? "working…" : "")}</span>
+      <span className="step-outcome muted">{a.outcome ?? (running ? "Working…" : "")}</span>
       <span className="step-status">
-        <Badge tone={a.status === "reported" ? "ok" : a.status === "failed" ? "error" : running ? "accent" : "neutral"}>{a.status}</Badge>
+        <Badge tone={a.status === "reported" ? "ok" : a.status === "failed" ? "error" : running ? "accent" : "neutral"}>{STEP_STATUS[a.status]}</Badge>
         <span className="muted small">{formatRelative(a.created_at_ms, now)}</span>
       </span>
     </div>
@@ -144,11 +142,10 @@ export function WorkflowPanel({ detail, onChanged }: { detail: TaskDetail; onCha
     );
   }
   const steps = detail.assignments.filter((a) => a.step_key !== null);
-  const running = steps.find((a) => a.status === "active" && a.session_id !== null);
   const final = w.status === "completed" || w.status === "delivered" || w.status === "cancelled" || w.status === "failed";
   return (
     <Panel
-      title={`Workflow ${w.definition}@${w.version}`}
+      title="Progress"
       actions={<Badge tone={workflowTone(w.status)}>{WORKFLOW_STATUS_LABEL[w.status]}</Badge>}
     >
       <ol className="workflow-stages" aria-label="Workflow stages">
@@ -161,26 +158,22 @@ export function WorkflowPanel({ detail, onChanged }: { detail: TaskDetail; onCha
       <p className="small">
         {w.status === "running" ? (
           <>
-            Running <code className="code-tag">{w.step_key}</code> automatically — nothing needed from you unless an approval
-            appears below.
+            {w.step_key ? stepName(w.step_key) : "The next step"} is running. Nothing is needed from you until something appears
+            under “Needs you”.
           </>
         ) : null}
-        {w.status !== "running" && w.reason ? <span className={w.status === "waiting" ? "workflow-reason" : ""}>{w.reason}</span> : null}
-      </p>
-      <p className="muted small">
-        Correction rounds: {w.corrections} of {w.max_corrections} automatic
-        {detail.task.status === "awaiting_review" && w.status === "running" ? " · the task status “awaiting review” here is an internal hand-off, not a request to you" : ""}
+        {w.status !== "running" && w.status !== "waiting" && w.status !== "delivered" && w.reason ? <span>{humanizeSteps(w.reason)}</span> : null}
+        {w.status === "waiting" ? <span className="muted">Stopped: see “Needs you” above.</span> : null}
       </p>
       {w.warnings.map((m) => (
         <p key={m} className="muted small">
           ⚠ {m}
         </p>
       ))}
-      {running?.session_id ? <StepApprovals sessionId={running.session_id} onDecided={onChanged} /> : null}
       {error ? <ErrorNotice title="Workflow action failed" message={error.message} code={error.code} /> : null}
       {!final ? (
         <div className="form-actions start">
-          {w.status === "waiting" || w.status === "paused" ? (
+          {w.status === "paused" ? (
             <Button variant="primary" disabled={busy} onClick={() => act(() => resumeWorkflow(w.task_id))}>
               Resume{w.resume_action ? `: ${w.resume_action}` : ""}
             </Button>
@@ -202,25 +195,24 @@ export function WorkflowPanel({ detail, onChanged }: { detail: TaskDetail; onCha
         </p>
       ) : null}
       <h3 className="policy-section">Steps</h3>
-      <div className="step-table" role="table" aria-label="Workflow steps">
-        <div className="step-row step-head" role="row">
-          <span>Step</span>
-          <span>Role</span>
-          <span>Agent and model</span>
-          <span>Result</span>
-          <span>Status</span>
-        </div>
+      <div className="step-table" role="list" aria-label="Workflow steps">
         {steps.map((a) => (
           <StepRow key={a.id} a={a} now={now} />
         ))}
       </div>
-      <p className="muted small">
-        Bindings snapshotted when it started:{" "}
+      <details className="small muted workflow-tech">
+        <summary>Details</summary>
+        <p>
+          Workflow {w.definition}@{w.version} · automatic corrections {w.corrections} of {w.max_corrections}
+        </p>
+        <p>
+        Agents chosen when it started:{" "}
         {BINDING_KEYS.map((k) => {
           const b = effectiveBinding(w.bindings, k);
           return `${BINDING_LABEL[k]} ${providerName(b.provider)} (${modelLabel(b.model)})`;
         }).join(" · ")}
-      </p>
+        </p>
+      </details>
     </Panel>
   );
 }

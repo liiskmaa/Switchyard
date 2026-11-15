@@ -26,8 +26,9 @@ import { createIntegration, isIntegrationEvent, listIntegrations } from "../inte
 import { STATUS_LABEL as INTEGRATION_LABEL, shortOid, statusTone as integrationTone } from "../integrations/labels";
 import { AGENT_KINDS, ROLE_LABEL, SEVERITY_TONE, STATUS_LABEL, statusTone, taskActions } from "./labels";
 import { isWorkflowEvent } from "../workflows/api";
-import { modelLabel } from "../workflows/labels";
+import { modelLabel, workflowStageText } from "../workflows/labels";
 import { WorkflowPanel } from "../workflows/WorkflowPanel";
+import { TaskNeedsYou, deliveryNeedsYou } from "../workflows/TaskNeedsYou";
 import { DeliveryPanel } from "../workflows/DeliveryPanel";
 
 /** History events shown before "Show all". */
@@ -252,112 +253,117 @@ export function TaskDetailView({
   const conversation = d.messages.filter((m) => systemMessages || !isSystem(m));
   const hiddenMessages = d.messages.filter(isSystem).length;
   const history = [...(events.data ?? [])].reverse();
+  const workflowActive = d.workflow !== null && ["pending", "running", "waiting", "paused"].includes(d.workflow.status);
   const shownHistory = allHistory ? history : history.slice(0, HISTORY_PREVIEW);
 
   return (
     <div className="detail">
-      <Panel
-        title={t.title}
-        actions={<Badge tone={statusTone(t.status)}>{STATUS_LABEL[t.status]}</Badge>}
-        className="task-head"
-      >
-        <div className="task-meta small">
-          {d.workflow ? (
-            <span>
-              Workflow {d.workflow.definition}@{d.workflow.version}
-            </span>
-          ) : null}
-          <span>
-            {t.kind} · {t.priority} priority
-          </span>
-          <span>{t.origin === "proposal" ? "From an approved proposal" : "Created by the operator"}</span>
-          {d.dependencies.length > 0 ? <span>Dependencies {d.readiness}</span> : null}
-          <span>Updated {formatRelative(t.updated_at_ms, now)}</span>
-        </div>
-        {t.status_reason || t.failure ? (
-          <p className="muted small task-status-line">
-            {d.workflow ? "Task status (internal): " : ""}
-            {STATUS_LABEL[t.status]}
-            {t.status_reason ? ` — ${t.status_reason}` : ""}
-            {t.failure ? ` · ${t.failure}` : ""}
-          </p>
-        ) : null}
-        {t.description ? (
-          <div className="task-description-block">
-            <p className="task-description">
-              {!fullDescription && t.description.length > 320 ? `${t.description.slice(0, 320)}…` : t.description}
-            </p>
-            {t.description.length > 320 ? (
-              <button type="button" className="link small" onClick={() => setFullDescription(!fullDescription)}>
-                {fullDescription ? "Show less" : "Show the full description"}
-              </button>
-            ) : null}
+      <header className="task-header">
+        <div className="task-header-main">
+          <h2 className="task-title">{t.title}</h2>
+          <div className="task-meta small">
+            <Badge tone={workflowActive ? "accent" : statusTone(t.status)}>
+              {d.workflow && workflowActive ? workflowStageText(d.workflow) : STATUS_LABEL[t.status]}
+            </Badge>
+            <span>Updated {formatRelative(t.updated_at_ms, now)}</span>
+            {d.dependencies.length > 0 ? <span>Dependencies {d.readiness}</span> : null}
+            {t.origin === "proposal" ? <span>From an approved proposal</span> : null}
           </div>
-        ) : null}
-        {t.acceptance_criteria.length > 0 ? (
-          <>
-            <h3 className="policy-section">Acceptance criteria</h3>
-            <ul className="findings">
-              {t.acceptance_criteria.map((c) => (
-                <li key={c} className="small">
-                  {c}
-                </li>
-              ))}
-            </ul>
-          </>
-        ) : null}
-        {t.result ? (
-          <p className="small">
-            <strong>Accepted result:</strong> {String(t.result["summary"] ?? "")}
-            {t.result["accepted_by"] ? ` (by ${String(t.result["accepted_by"])})` : ""}
-          </p>
-        ) : null}
-        {action.error ? <ErrorNotice title="Action failed" message={action.error.message} code={action.error.code} /> : null}
-        <div className="form-actions start">
+        </div>
+        <div className="task-header-actions">
           {can.publish ? (
             <Button variant="primary" disabled={action.busy} onClick={() => void action.run(() => publishTask(t.id))}>
               Publish
             </Button>
           ) : null}
-          {can.complete ? (
+          {can.complete && !workflowActive ? (
             <Button variant="primary" disabled={action.busy} onClick={() => void action.run(() => decideTask("complete", t.id, decisionNote || undefined))}>
               Accept and complete
             </Button>
           ) : null}
-          {can.retry ? (
-            <Button disabled={action.busy} onClick={() => void action.run(() => decideTask("retry", t.id, decisionNote || undefined))}>
-              Retry
-            </Button>
-          ) : null}
-          {can.fail ? (
-            <Button variant="danger" disabled={action.busy} onClick={() => void action.run(() => decideTask("fail", t.id, decisionNote || undefined))}>
-              Mark failed
-            </Button>
-          ) : null}
-          {can.cancel ? (
-            <Button variant="ghost" disabled={action.busy} onClick={() => void action.run(() => decideTask("cancel", t.id, decisionNote || undefined))}>
-              Cancel task
-            </Button>
+          {can.retry || can.fail || can.cancel ? (
+            <details className="menu">
+              <summary className="btn btn-ghost">More</summary>
+              <div className="menu-pop">
+                <input
+                  className="input"
+                  aria-label="Note for your decision"
+                  placeholder="Optional note"
+                  value={decisionNote}
+                  onChange={(e) => setDecisionNote(e.target.value)}
+                />
+                {can.retry ? (
+                  <Button disabled={action.busy} onClick={() => void action.run(() => decideTask("retry", t.id, decisionNote || undefined))}>
+                    Retry the task
+                  </Button>
+                ) : null}
+                {can.cancel ? (
+                  <Button disabled={action.busy} onClick={() => void action.run(() => decideTask("cancel", t.id, decisionNote || undefined))}>
+                    Cancel the task
+                  </Button>
+                ) : null}
+                {can.fail ? (
+                  <Button variant="danger" disabled={action.busy} onClick={() => void action.run(() => decideTask("fail", t.id, decisionNote || undefined))}>
+                    Mark as failed
+                  </Button>
+                ) : null}
+              </div>
+            </details>
           ) : null}
         </div>
-        {can.complete || can.fail || can.cancel ? (
-          <input
-            className="input"
-            aria-label="Note for your decision"
-            placeholder="Optional note for your decision"
-            value={decisionNote}
-            onChange={(e) => setDecisionNote(e.target.value)}
-          />
-        ) : null}
-        {can.complete ? (
-          <p className="muted small">
-            Completing is your decision. A review verdict or an agent&apos;s report is a statement; it never completes a task.
-          </p>
-        ) : null}
-      </Panel>
+      </header>
+      {action.error ? <ErrorNotice title="Action failed" message={action.error.message} code={action.error.code} /> : null}
+      {!d.workflow && (t.status_reason || t.failure) ? (
+        <p className="muted small task-status-line">
+          {t.status_reason}
+          {t.failure ? ` · ${t.failure}` : ""}
+        </p>
+      ) : null}
 
+      <TaskNeedsYou detail={d} onChanged={refresh} />
       <WorkflowPanel detail={d} onChanged={refresh} />
-      <DeliveryPanel detail={d} onChanged={refresh} />
+      {deliveryNeedsYou(d) ? null : <DeliveryPanel detail={d} onChanged={refresh} />}
+
+      <details className="panel task-request" open={!d.workflow}>
+        <summary className="task-request-summary">What was asked</summary>
+        <div className="panel-body">
+          {t.description ? (
+            <div className="task-description-block">
+              <p className="task-description">
+                {!fullDescription && t.description.length > 320 ? `${t.description.slice(0, 320)}…` : t.description}
+              </p>
+              {t.description.length > 320 ? (
+                <button type="button" className="link small" onClick={() => setFullDescription(!fullDescription)}>
+                  {fullDescription ? "Show less" : "Show the full description"}
+                </button>
+              ) : null}
+            </div>
+          ) : (
+            <p className="muted small">No description.</p>
+          )}
+          {t.acceptance_criteria.length > 0 ? (
+            <>
+              <h3 className="policy-section">Done when</h3>
+              <ul className="findings">
+                {t.acceptance_criteria.map((c) => (
+                  <li key={c} className="small">
+                    {c}
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+          <p className="muted small">
+            {t.kind} · {t.priority} priority
+            {d.workflow ? ` · workflow ${d.workflow.definition}@${d.workflow.version}` : ""}
+          </p>
+          {t.result ? (
+            <p className="small">
+              <strong>Result:</strong> {String(t.result["note"] ?? t.result["summary"] ?? "")}
+            </p>
+          ) : null}
+        </div>
+      </details>
 
 
 

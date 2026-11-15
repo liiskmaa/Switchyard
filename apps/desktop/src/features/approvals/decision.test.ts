@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { approvalIsStale, otherInputFields } from "./decision";
+import { approvalIsStale, otherInputFields, requestAction, shortPath } from "./decision";
 
 describe("approvalIsStale", () => {
   it("reloads after the approval was settled elsewhere or denied by policy", () => {
@@ -34,5 +34,19 @@ describe("otherInputFields for Codex input", () => {
       ["grant_root", "/"],
       ["other_thread", "false"],
     ]);
+  });
+});
+
+describe("plain-language requests", () => {
+  it("names the file relative to the workspace", () => {
+    expect(shortPath("/data/workspaces/p1/w1/src/greeter.py")).toBe("src/greeter.py");
+    expect(shortPath("/Users/me/notes/todo.md")).toBe("…/notes/todo.md");
+  });
+  it("describes patches, commands and file tools", () => {
+    const patch = { changes: [{ path: "/d/workspaces/p/w/greeter.py", kind: "add" }] };
+    expect(requestAction("apply_patch", patch)).toBe("create greeter.py");
+    expect(requestAction("Bash", { command: "npm test" })).toBe("run `npm test`");
+    expect(requestAction("Edit", { file_path: "/d/workspaces/p/w/a.ts" })).toBe("edit a.ts");
+    expect(requestAction("WebFetch", {}, "Network access")).toBe("network access");
   });
 });

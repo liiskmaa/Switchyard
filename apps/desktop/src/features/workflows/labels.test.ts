@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { RoleBindings, WorkflowInfo } from "../../types/protocol";
-import { effectiveBinding, overridesOf, stageOrder } from "./labels";
+import { effectiveBinding, humanizeSteps, overridesOf, stageOrder, stepName } from "./labels";
 
 const project: RoleBindings = {
   investigate: { provider: "claude_code", model: "sonnet" },
@@ -30,5 +30,21 @@ describe("workflow stages", () => {
   });
   it("a completed workflow shows every stage done", () => {
     expect(stageOrder(w("delivery", "completed")).every((s) => s.state === "done")).toBe(true);
+  });
+});
+
+describe("plain step names", () => {
+  it("names steps and rounds", () => {
+    expect(stepName("investigate#1")).toBe("Investigation");
+    expect(stepName("implement#1")).toBe("Implementation");
+    expect(stepName("implement#2")).toBe("Correction 1");
+    expect(stepName("review#1")).toBe("Review");
+    expect(stepName("review#2")).toBe("Re-review");
+    expect(stepName("review#3@2")).toBe("Re-review 2 (attempt 2)");
+  });
+  it("rewrites keys inside reasons", () => {
+    expect(humanizeSteps("review#1 approved the implementation; preparing its integration.")).toBe(
+      "Review approved the implementation; preparing its integration.",
+    );
   });
 });

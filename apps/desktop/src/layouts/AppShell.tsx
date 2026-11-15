@@ -8,7 +8,7 @@ import { useCoreQuery } from "../stores/useCoreQuery";
 export type Section = "dashboard" | "projects" | "tasks" | "integrations" | "agents" | "activity" | "approvals" | "policies" | "settings";
 
 const primary: { id: Section; label: string; icon: IconName }[] = [
-  { id: "dashboard", label: "Dashboard", icon: "dashboard" },
+  { id: "dashboard", label: "Home", icon: "dashboard" },
   { id: "projects", label: "Projects", icon: "projects" },
   { id: "tasks", label: "Tasks", icon: "tasks" },
   { id: "integrations", label: "Integrations", icon: "branch" },

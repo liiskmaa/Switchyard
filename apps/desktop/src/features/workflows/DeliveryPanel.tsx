@@ -4,7 +4,7 @@ import { Badge, Button, ErrorNotice, Panel } from "../../components/ui";
 import { toCoreError, type CoreRequestError } from "../../lib/core";
 import { navigate } from "../../stores/navigation";
 import { useCoreQuery } from "../../stores/useCoreQuery";
-import type { DeliveryPhase, IntegrationDetail, TaskDetail, WorkflowInfo } from "../../types/protocol";
+import type { IntegrationDetail, TaskDetail, WorkflowInfo } from "../../types/protocol";
 import {
   approveIntegration,
   commitWorkspace,
@@ -16,22 +16,9 @@ import {
 import { Changes, Runs } from "../integrations/IntegrationDetailView";
 import { consequences, shortOid } from "../integrations/labels";
 import { isWorkflowEvent, requestCorrection, resumeWorkflow } from "./api";
+import { DELIVERY_LABEL, humanizeSteps } from "./labels";
 
-/** Delivery phases in plain words. */
-export const DELIVERY_LABEL: Record<DeliveryPhase, string> = {
-  preparing: "Preparing the integration",
-  needs_commit: "Commit the reviewed changes",
-  validation_starting: "Starting validation",
-  awaiting_validation_authorization: "Authorize validation",
-  validating: "Validating",
-  validation_failed: "Validation failed",
-  blocked: "Delivery blocked",
-  awaiting_approval: "Approve the integration",
-  integrating: "Integrating",
-  delivered: "Delivered",
-  delivery_failed: "Integration failed",
-  cancelled: "Integration cancelled",
-};
+
 
 function useRun(onDone: () => void) {
   const [busy, setBusy] = useState(false);
@@ -59,13 +46,13 @@ function Commits({ d }: { d: IntegrationDetail }) {
       <div className="kv-row">
         <dt>Source</dt>
         <dd>
-          {i.source_branch} at <code className="mono">{i.source_commit}</code>
+          {i.source_branch} at <code className="mono" title={i.source_commit}>{shortOid(i.source_commit)}</code>
         </dd>
       </div>
       <div className="kv-row">
         <dt>Target</dt>
         <dd>
-          {i.target_branch} at <code className="mono">{i.target_commit}</code>
+          {i.target_branch} at <code className="mono" title={i.target_commit}>{shortOid(i.target_commit)}</code>
         </dd>
       </div>
     </dl>
@@ -169,7 +156,7 @@ export function DeliveryPanel({ detail, onChanged }: { detail: TaskDetail; onCha
         </span>
       }
     >
-      {w.reason ? <p className="small">{w.reason}</p> : null}
+      {w.reason && phase !== "delivered" ? <p className="small">{humanizeSteps(w.reason)}</p> : null}
       {action.error ? <ErrorNotice title="Action failed" message={action.error.message} code={action.error.code} /> : null}
 
       {phase === "needs_commit" && i ? (
@@ -282,13 +269,23 @@ export function DeliveryPanel({ detail, onChanged }: { detail: TaskDetail; onCha
       {phase === "integrating" && d ? <Commits d={d} /> : null}
 
       {phase === "delivered" && i ? (
-        <div className="delivery-step">
-          <p className="small">
-            <strong>{i.target_branch}</strong> is at merge commit <code className="mono">{i.merge_commit}</code>
-            {i.approved_by ? ` · approved by ${i.approved_by}` : ""}. The task was completed. Nothing was pushed or deployed.
-          </p>
+        <p className="small">
+          Merged into <strong>{i.target_branch}</strong>
+          {i.merge_commit ? (
+            <>
+              {" "}
+              as <code className="mono" title={i.merge_commit}>{shortOid(i.merge_commit)}</code>
+            </>
+          ) : null}
+          . The task is complete; nothing was pushed or deployed.
+        </p>
+      ) : null}
+      {phase === "delivered" && d ? (
+        <details className="small muted workflow-tech">
+          <summary>Details</summary>
           <Commits d={d} />
-        </div>
+          {d.integration.approved_by ? <p>Approved by {d.integration.approved_by}</p> : null}
+        </details>
       ) : null}
 
       {(phase === "blocked" || phase === "delivery_failed" || phase === "cancelled") && w.status === "waiting" ? (
@@ -303,9 +300,9 @@ export function DeliveryPanel({ detail, onChanged }: { detail: TaskDetail; onCha
           ) : null}
         </div>
       ) : null}
-      {i ? (
-        <p className="muted small">
-          Integration {shortOid(i.id)} · {i.source_branch} → {i.target_branch}
+      {i && phase !== "delivered" ? (
+        <p className="muted small" title={`Integration ${i.id} · ${i.source_branch}`}>
+          Into {i.target_branch}
         </p>
       ) : null}
     </Panel>

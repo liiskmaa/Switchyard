@@ -1,4 +1,4 @@
-import type { RoleBinding, RoleBindings, RoleBindingsPatch, WorkflowInfo, WorkflowStatus } from "../../types/protocol";
+import type { DeliveryPhase, RoleBinding, RoleBindings, RoleBindingsPatch, WorkflowInfo, WorkflowStatus } from "../../types/protocol";
 
 export type BindingKey = keyof RoleBindings;
 
@@ -77,3 +77,65 @@ export function overridesOf(project: RoleBindings, chosen: RoleBindings): RoleBi
   return patch;
 }
 
+
+/** Delivery phases in plain words. */
+export const DELIVERY_LABEL: Record<DeliveryPhase, string> = {
+  preparing: "Preparing the integration",
+  needs_commit: "Commit the reviewed changes",
+  validation_starting: "Starting validation",
+  awaiting_validation_authorization: "Authorize validation",
+  validating: "Validating",
+  validation_failed: "Validation failed",
+  blocked: "Delivery blocked",
+  awaiting_approval: "Approve the integration",
+  integrating: "Integrating",
+  delivered: "Delivered",
+  delivery_failed: "Integration failed",
+  cancelled: "Integration cancelled",
+};
+
+/** Where a workflow is, in a few plain words (for lists and Home). */
+export function workflowStageText(w: WorkflowInfo): string {
+  if (w.status === "paused") return "Paused";
+  if (w.status === "delivered") return "Delivered";
+  if (w.stage === "delivery") return w.delivery ? DELIVERY_LABEL[w.delivery] : "Preparing delivery";
+  const round = w.step_key ? Number(/#(\d+)/.exec(w.step_key)?.[1] ?? "1") : 1;
+  switch (w.stage) {
+    case "investigation":
+      return "Investigating";
+    case "implementation":
+      return "Implementing";
+    case "review":
+      return round > 1 ? "Reviewing the correction" : "Reviewing";
+    case "correction":
+      return `Correcting (round ${round - 1})`;
+    default:
+      return "Starting";
+  }
+}
+
+const STEP_KEY = /\b(investigate|implement|review)#(\d+)(?:@(\d+))?/g;
+
+/** A workflow step in plain words: `implement#2` → "Correction 1", `review#2@2` → "Re-review (attempt 2)". */
+export function stepName(key: string): string {
+  return key.replace(STEP_KEY, (_m, role: string, roundText: string, attemptText?: string) => {
+    const round = Number(roundText);
+    const n = round > 2 ? ` ${round - 1}` : "";
+    const base =
+      role === "investigate"
+        ? round > 1
+          ? `Investigation ${round}`
+          : "Investigation"
+        : role === "implement"
+          ? round > 1
+            ? `Correction ${round - 1}`
+            : "Implementation"
+          : round > 1
+            ? `Re-review${n}`
+            : "Review";
+    return attemptText ? `${base} (attempt ${attemptText})` : base;
+  });
+}
+
+/** Core's workflow reasons name steps by key; show them in plain words. */
+export const humanizeSteps = (text: string): string => stepName(text);

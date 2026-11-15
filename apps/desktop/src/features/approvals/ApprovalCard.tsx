@@ -6,7 +6,7 @@ import { toCoreError, type CoreRequestError } from "../../lib/core";
 import { formatRelative } from "../../lib/format";
 import type { Approval } from "../../types/protocol";
 import { decideApproval } from "../agents/api";
-import { approvalIsStale, otherInputFields } from "./decision";
+import { approvalIsStale, otherInputFields, requestAction, shortPath } from "./decision";
 import { CATEGORY_LABEL, ruleRefLabel } from "../policies/labels";
 
 function field(input: unknown, key: string): string | undefined {
@@ -52,19 +52,9 @@ function patchChanges(input: unknown): PatchChange[] | null {
 const CHANGE_LABEL: Record<string, string> = { add: "new file", update: "edit", delete: "delete" };
 
 export function ToolInput({ tool, input }: { tool: string; input: unknown }) {
-  // The JSON fallback already shows every field.
+  // The remaining raw fields are under "Details" (TechnicalDetails).
   const patch = tool === "apply_patch" ? patchChanges(input) : null;
-  const special =
-    ((tool === "Bash" || tool === "shell") && field(input, "command") !== undefined) ||
-    field(input, "file_path") !== undefined ||
-    field(input, "notebook_path") !== undefined ||
-    patch !== null;
-  return (
-    <>
-      {patch ? <PatchInput changes={patch} /> : <MainInput tool={tool} input={input} />}
-      {special ? <OtherFields input={input} rendered={patch ? ["changes"] : []} /> : null}
-    </>
-  );
+  return patch ? <PatchInput changes={patch} /> : <MainInput tool={tool} input={input} />;
 }
 
 function PatchInput({ changes }: { changes: PatchChange[] }) {
@@ -74,7 +64,9 @@ function PatchInput({ changes }: { changes: PatchChange[] }) {
         <li key={`${c.path}-${i}`} className="tool-input">
           <span>
             <Badge tone={c.kind === "delete" ? "error" : c.kind === "add" ? "ok" : "neutral"}>{CHANGE_LABEL[c.kind] ?? c.kind}</Badge>{" "}
-            <code className="path">{c.path}</code>
+            <code className="path" title={c.path}>
+              {shortPath(c.path)}
+            </code>
             {c.move_path ? (
               <>
                 {" → "}
@@ -101,7 +93,9 @@ function MainInput({ tool, input }: { tool: string; input: unknown }) {
   if (path) {
     return (
       <div className="tool-input">
-        <code className="path">{path}</code>
+        <code className="path" title={path}>
+          {shortPath(path)}
+        </code>
         {oldString !== undefined ? (
           <>
             <pre className="code-block diff-old">{oldString}</pre>
@@ -151,15 +145,19 @@ function ScopeNotice({ approval }: { approval: Approval }) {
 export function ApprovalCard({
   approval,
   projectName,
+  context,
   onDecided,
 }: {
   approval: Approval;
   projectName?: string | undefined;
+  /** What the request is for, in the user's words (usually the task title). */
+  context?: string | undefined;
   onDecided?: () => void;
 }) {
   const [busy, setBusy] = useState<"approve" | "deny" | null>(null);
   const [error, setError] = useState<CoreRequestError | null>(null);
   const [note, setNote] = useState("");
+  const [noting, setNoting] = useState(false);
   // Core refused the decision because the request was already settled
   // (elsewhere, by expiry or by policy). Keep the explanation visible here and
   // stop offering a decision; reloading moves the card to the decided list.
@@ -185,72 +183,126 @@ export function ApprovalCard({
   const expiresIn = Math.max(0, Math.round((approval.expires_at_ms - Date.now()) / 1000));
   const policy = approval.policy;
   const byPolicy = approval.decision_source === "policy";
-  return (
-    <div className={`approval${pending ? " approval-pending" : ""}`}>
-      <div className="approval-head">
-        <Badge tone="accent">{approval.tool_name}</Badge>
-        {policy ? <span className="small">{CATEGORY_LABEL[policy.category]}</span> : null}
-        <span className="muted small">
-          {projectName ? `${projectName} · ` : ""}session {approval.session_id.slice(-6)} · {providerName(approval.provider)} · requested{" "}
-          {formatRelative(approval.requested_at_ms, Date.now())}
-        </span>
-        {pending && stale ? (
-          <Badge>no longer waiting</Badge>
-        ) : pending ? (
-          <span className="small approval-expiry">
-            <strong>Awaiting your decision</strong>
-            <span className="muted"> · auto-denied in {Math.ceil(expiresIn / 60)} min</span>
+  const agent = providerName(approval.provider);
+  const action = requestAction(approval.tool_name, approval.input, policy ? CATEGORY_LABEL[policy.category] : undefined);
+  const where = context ?? projectName;
+  const outside = policy?.scope && policy.scope.kind !== "workspace";
+  const outcome = approval.status === "approved" ? "approved" : byPolicy ? "denied by policy" : approval.status;
+
+  if (!pending) {
+    // A past decision: one line, details on request.
+    return (
+      <details className="approval approval-past">
+        <summary>
+          <span className="approval-line">
+            {agent} asked to {action}
+            {where ? <span className="muted"> · {where}</span> : null}
           </span>
-        ) : (
-          <Badge tone={approval.status === "approved" ? "ok" : approval.status === "denied" ? "error" : "neutral"}>
-            {byPolicy ? "denied by policy" : approval.status}
-            {approval.decision_source && approval.decision_source !== "operator" && !byPolicy ? ` · ${approval.decision_source}` : ""}
-          </Badge>
-        )}
-      </div>
-      {policy ? (
-        <div className="approval-policy small">
-          <p>
-            <span className="muted">{pending ? "Policy result: ask every time." : "Policy result when requested: ask every time."}</span>{" "}
-            {policy.explanation}
-          </p>
-          {policy.deciding_rule ? <p className="muted">Matching rule: {ruleRefLabel(policy.deciding_rule)}</p> : null}
+          <Badge tone={approval.status === "approved" ? "ok" : approval.status === "denied" ? "error" : "neutral"}>{outcome}</Badge>
+          <span className="muted small">{formatRelative(approval.requested_at_ms, Date.now())}</span>
+        </summary>
+        <div className="approval-details">
+          {approval.decision_note ? (
+            <p className="small">
+              {byPolicy ? "Why" : "Note"}: {approval.decision_note}
+            </p>
+          ) : null}
+          <ToolInput tool={approval.tool_name} input={approval.input} />
+          <TechnicalDetails approval={approval} />
         </div>
-      ) : (
-        <p className="muted small">Recorded before approval policies existed.</p>
-      )}
-      <ScopeNotice approval={approval} />
+      </details>
+    );
+  }
+
+  return (
+    <div className="approval approval-pending">
+      <div className="approval-headline">
+        <p className="approval-title">
+          {agent} wants to {action}
+        </p>
+        <p className="muted small">
+          {where ? `For ${where} · ` : ""}asked {formatRelative(approval.requested_at_ms, Date.now())}
+          {stale ? " · no longer waiting" : ` · denied automatically in ${Math.ceil(expiresIn / 60)} min`}
+        </p>
+      </div>
+      {outside ? <ScopeNotice approval={approval} /> : null}
       {approval.description ? <p className="small">{approval.description}</p> : null}
       <ToolInput tool={approval.tool_name} input={approval.input} />
       {error ? <ErrorNotice title="Decision not recorded" message={error.message} code={error.code} /> : null}
-      {pending && stale ? (
+      {stale ? (
         <div className="approval-actions">
           <span className="muted small">This request is no longer waiting for a decision.</span>
-          <Button onClick={() => onDecided?.()}>Reload approvals</Button>
+          <Button onClick={() => onDecided?.()}>Reload</Button>
         </div>
-      ) : pending ? (
-        <div className="approval-actions">
-          <input
-            className="input"
-            placeholder={
-              denialReasonReachesAgent(approval.provider)
-                ? "Reason shown to the agent if denied (optional)"
-                : `Note kept with a denial (${providerName(approval.provider)} is not told the reason)`
-            }
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            disabled={busy !== null}
-          />
-          <Button variant="danger" onClick={() => void decide("deny")} disabled={busy !== null}>
-            {busy === "deny" ? "Denying…" : "Deny"}
-          </Button>
-          <Button variant="primary" onClick={() => void decide("approve")} disabled={busy !== null}>
-            {busy === "approve" ? "Approving…" : "Approve"}
-          </Button>
-        </div>
-      ) : approval.decision_note ? (
-        <p className="muted small">{byPolicy ? "Why" : "Note"}: {approval.decision_note}</p>
-      ) : null}
+      ) : (
+        <>
+          {noting ? (
+            <input
+              className="input"
+              aria-label="Reason for denying"
+              placeholder={
+                denialReasonReachesAgent(approval.provider)
+                  ? `Reason shown to ${agent} if you deny (optional)`
+                  : `Note kept with the denial (${agent} is not told the reason)`
+              }
+              value={note}
+              autoFocus
+              onChange={(e) => setNote(e.target.value)}
+              disabled={busy !== null}
+            />
+          ) : null}
+          <div className="approval-actions">
+            <TechnicalDetails approval={approval} />
+            {!noting ? (
+              <button type="button" className="link small" onClick={() => setNoting(true)}>
+                Add a reason
+              </button>
+            ) : null}
+            <Button variant="danger" onClick={() => void decide("deny")} disabled={busy !== null}>
+              {busy === "deny" ? "Denying…" : "Deny"}
+            </Button>
+            <Button variant="primary" onClick={() => void decide("approve")} disabled={busy !== null}>
+              {busy === "approve" ? "Approving…" : "Approve"}
+            </Button>
+          </div>
+        </>
+      )}
     </div>
+  );
+}
+
+/** Everything Core recorded about the request, for those who want it. */
+function TechnicalDetails({ approval }: { approval: Approval }) {
+  const policy = approval.policy;
+  return (
+    <details className="approval-tech small">
+      <summary>Details</summary>
+      <dl className="kv">
+        <div className="kv-row">
+          <dt>Tool</dt>
+          <dd className="mono">{approval.tool_name}</dd>
+        </div>
+        <div className="kv-row">
+          <dt>Why it asks</dt>
+          <dd>
+            {policy ? policy.explanation : "Recorded before approval policies existed."}
+            {policy?.deciding_rule ? ` Matching rule: ${ruleRefLabel(policy.deciding_rule)}.` : ""}
+          </dd>
+        </div>
+        {policy?.scope ? (
+          <div className="kv-row">
+            <dt>Reaches</dt>
+            <dd>{policy.scope.note}</dd>
+          </div>
+        ) : null}
+        <div className="kv-row">
+          <dt>Session</dt>
+          <dd className="mono">
+            {approval.session_id} · {approval.workspace_name ?? ""}
+          </dd>
+        </div>
+      </dl>
+      <OtherFields input={approval.input} rendered={["changes", "command", "file_path", "notebook_path", "content", "old_string", "new_string"]} />
+    </details>
   );
 }
