@@ -1138,7 +1138,30 @@ impl TaskService {
             DomainEvent::TaskStatusChanged { to, .. } if matches!(to.as_str(), "cancelled" | "failed") => {
                 let Some(task) = e.context.task_id else { return };
                 let found = self.storage.call(move |c| org_store::find(c, task)).await;
-                let Ok(Some(rec)) = found else { return };
+                let Ok(Some(rec)) = found else {
+                    // One of an organization's own tasks, closed by the user.
+                    let owner = self
+                        .storage
+                        .call(move |c| {
+                            for rec in org_store::active(c)? {
+                                let state = state_of(&rec)?;
+                                if let Some(t) = state.task_by_id(task) {
+                                    return Ok(Some((rec, t.key.clone())));
+                                }
+                            }
+                            Ok(None)
+                        })
+                        .await;
+                    let Ok(Some((rec, key))) = owner else { return };
+                    if seq <= rec.last_event_seq {
+                        return;
+                    }
+                    let input = Input::TaskClosed { task: key, status: to.clone(), now_ms: now_ms() };
+                    if let Err(err) = self.apply_org(rec.task_id, input, Some(seq)).await {
+                        tracing::warn!(?err, "organization did not take a closed subtask");
+                    }
+                    return;
+                };
                 if seq <= rec.last_event_seq
                     || !matches!(rec.status.as_str(), "running" | "waiting" | "paused")
                 {
@@ -1291,6 +1314,36 @@ impl TaskService {
         let state = state_of(&rec).map_err(errors::storage)?;
         org::decide(&state, &input).map_err(|e| invalid_state(e.to_string()))?;
         self.apply_org(task_id, input, None).await
+    }
+
+    /// Feeds the organization every one of its tasks whose M6 task the user
+    /// closed (cancelled or failed) while it still counts it open. `true` if any.
+    pub(super) async fn org_catch_up_closed(&self, task_id: Uuid) -> Result<bool, ProtocolError> {
+        let closed = self
+            .storage
+            .call(move |c| {
+                let rec = org_store::get(c, task_id)?;
+                let state = state_of(&rec)?;
+                let mut out = Vec::new();
+                for t in &state.tasks {
+                    let (Some(id), false, Some(_)) = (t.task_id, t.state.is_final(), t.parent.as_ref())
+                    else {
+                        continue;
+                    };
+                    let m6 = store::get_task(c, id)?;
+                    if matches!(m6.status, TaskStatus::Cancelled | TaskStatus::Failed) {
+                        out.push((t.key.clone(), m6.status.to_string()));
+                    }
+                }
+                Ok(out)
+            })
+            .await
+            .map_err(errors::storage)?;
+        let any = !closed.is_empty();
+        for (task, status) in closed {
+            self.apply_org(task_id, Input::TaskClosed { task, status, now_ms: now_ms() }, None).await?;
+        }
+        Ok(any)
     }
 
     pub async fn answer_organization(

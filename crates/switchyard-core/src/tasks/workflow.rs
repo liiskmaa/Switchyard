@@ -498,8 +498,18 @@ impl TaskService {
 
     pub async fn resume_workflow(&self, task_id: Uuid, actor: String) -> Result<WorkflowInfo, ProtocolError> {
         if self.organizing(task_id).await? {
-            self.org_operator(task_id, switchyard_tasks::organization::Input::Resume { now_ms: now_ms() })
-                .await?;
+            // Subtasks the user closed outside the organization first (a
+            // missed event must not leave it retrying a cancelled task).
+            let caught_up = self.org_catch_up_closed(task_id).await?;
+            let resumed = self
+                .org_operator(task_id, switchyard_tasks::organization::Input::Resume { now_ms: now_ms() })
+                .await;
+            // Catching up may already have set it running.
+            if let Err(e) = resumed
+                && !caught_up
+            {
+                return Err(e);
+            }
             return self.workflow_required(task_id).await;
         }
         // An operator assignment must not be running underneath a resumed workflow.

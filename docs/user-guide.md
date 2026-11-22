@@ -401,19 +401,24 @@ With auto mode on:
 | Create, edit, delete files inside the workspace | Runs without asking |
 | Any shell command (pipes, `&&`, `npm install`, `rm`, …) | Runs without asking |
 | Validation commands at delivery | Run without asking for authorization |
-| Files outside the workspace, writes into `.git` | Still asks |
-| Background (long-running) commands, requests with unknown fields | Still asks |
-| Your own **Ask every time** and **Block** rules | Still win |
-| Review sessions | Unchanged: cannot change files, commands ask |
+| Background (long-running) commands, e.g. a dev server | Run without asking |
+| Commands of review sessions and team supervisors | Run without asking (they still cannot edit files) |
+| **git commit, git push, publishing, deployments** (`npm publish`, `vercel`, `fly deploy`, `kubectl apply`, `terraform apply`, `docker push`, `ssh`, …) | **Always ask** |
+| Files outside the workspace, writes into `.git`, requests with unknown fields | Still asks |
+| Your own **Ask every time** and **Block** rules | Still win (an exact **Allow** rule for e.g. `git push` lets that one through) |
 | Network and MCP tools | Still blocked |
+
+When something does ask, a panel appears in the **bottom-right corner of every page** with
+**Approve** and **Deny**; you don't have to open the Approvals page. Click its header to fold it.
 
 Things to know:
 
 - **This is the risky switch.** A shell command can't be confined to the workspace: with auto mode
   on, an agent can run anything your user account can, anywhere on your Mac, without you seeing it
   first. Use it on projects (and machines) where that is acceptable.
-- Add **Block** rules for commands you never want run, e.g. `git push` or `rm -rf /`. They still
-  apply.
+- Releases are recognized from the command's text. A command that releases without saying so (a
+  script called `go.sh`) is not caught: add **Block** rules for anything you never want run, and
+  protect your branches on GitHub.
 - Tasks and sessions of the project show an **Auto mode** badge while it is on.
 - Requests already waiting when you turn it on still need your answer.
 - Every automatic decision is still recorded (reason "Auto mode") under **Policies**.

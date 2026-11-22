@@ -9,6 +9,7 @@
 
 mod evaluate;
 mod model;
+mod release;
 mod validate;
 
 pub use evaluate::{Evaluation, ReasonCode, Restriction, RuleRef, evaluate, system_restrictions};
@@ -16,6 +17,7 @@ pub use model::{
     Conditions, Decision, EvaluationInput, Operation, OperationCategory, PathFact, RequestScope, Rule,
     RuleScope, SYSTEM_POLICY_VERSION, UnknownValue,
 };
+pub use release::release_action;
 pub use validate::{
     MAX_COMMAND_BYTES, MAX_DESCRIPTION_CHARS, MAX_PATH_PREFIX_BYTES, RuleError, normalize_path_prefix,
     same_match, validate_command, validate_path_prefix, validate_rule,

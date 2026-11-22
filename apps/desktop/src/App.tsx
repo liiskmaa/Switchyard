@@ -2,6 +2,7 @@ import { ConnectionNotice } from "./components/ConnectionNotice";
 import { ActivityView } from "./features/activity/ActivityView";
 import { AgentsView } from "./features/agents/AgentsView";
 import { ApprovalsView } from "./features/approvals/ApprovalsView";
+import { ApprovalDock } from "./features/approvals/ApprovalDock";
 import { DashboardView } from "./features/dashboard/DashboardView";
 import { IntegrationsView } from "./features/integrations/IntegrationsView";
 import { PoliciesView } from "./features/policies/PoliciesView";
@@ -25,6 +26,7 @@ export function App() {
       {section === "approvals" ? <ApprovalsView /> : null}
       {section === "policies" ? <PoliciesView /> : null}
       {section === "settings" ? <SettingsView /> : null}
+      <ApprovalDock />
     </AppShell>
   );
 }

@@ -208,15 +208,28 @@ fn caps(input: &EvaluationInput, deciding: Option<&Rule>, auto: bool) -> Vec<Res
             ),
         ));
     }
-    if op.category == OperationCategory::Shell && input.scope.review_session {
+    if op.category == OperationCategory::Shell && input.scope.review_session && !auto {
         out.push(restriction(
             "review_session",
             "this is a review session: commands are never allowed automatically, and an approved command could still change files",
         ));
     }
     if op.category == OperationCategory::Shell {
-        if op.background {
+        // Auto mode allows background commands too (ADR 0042).
+        if op.background && !auto {
             out.push(restriction("background_command", "the command would keep running in the background"));
+        }
+        // Auto mode never releases work by itself: commits, pushes, publishing
+        // and deployments always ask (ADR 0042). An exact-command rule the
+        // operator wrote still decides for its command.
+        if auto
+            && exact_rule_absent(deciding)
+            && let Some(what) = op.command.as_deref().and_then(crate::release::release_action)
+        {
+            out.push(restriction(
+                "release_action",
+                format!("{what} commits, pushes, publishes or deploys, and auto mode leaves that to you"),
+            ));
         }
         let exact = deciding.and_then(|r| r.conditions.command.as_deref());
         let ok = match (exact, op.command.as_deref()) {
@@ -235,14 +248,20 @@ fn caps(input: &EvaluationInput, deciding: Option<&Rule>, auto: bool) -> Vec<Res
     out
 }
 
-/// Auto mode (ADR 0037) replaces the `ask` default of file changes and shell
-/// commands with `allow`. It never applies to review sessions, never
-/// overrides a configured rule, and its `allow` is still capped.
+fn exact_rule_absent(deciding: Option<&Rule>) -> bool {
+    deciding.and_then(|r| r.conditions.command.as_deref()).is_none()
+}
+
+/// Auto mode (ADR 0037, ADR 0042) replaces the `ask` default of file changes
+/// and shell commands with `allow`, including shell commands of review
+/// sessions (their file changes stay denied, and Core fingerprints a review's
+/// workspace). It never overrides a configured rule, and its `allow` is still
+/// capped: outside the workspace, Git metadata, unknown input fields, and
+/// commits, pushes, publishing and deployments.
 fn auto_mode_applies(input: &EvaluationInput) -> bool {
     let category = input.operation.category;
     input.scope.auto_mode
-        && !input.scope.review_session
-        && (category.is_mutation() || category == OperationCategory::Shell)
+        && (category == OperationCategory::Shell || (category.is_mutation() && !input.scope.review_session))
 }
 
 /// Evaluates one request against the configured rules.
@@ -397,16 +416,20 @@ pub fn system_restrictions() -> Vec<Restriction> {
         restriction("git_metadata", "Changes to Git metadata (.git) are never allowed automatically."),
         restriction(
             "shell_not_exact",
-            "Shell commands are allowed automatically only by an exact, plain command rule, or by the project's auto mode; background commands always ask.",
+            "Shell commands are allowed automatically only by an exact, plain command rule, or by the project's auto mode; without auto mode, background commands always ask.",
         ),
         restriction("unexpected_fields", "Requests with input fields Switchyard does not know always ask."),
         restriction(
             "auto_mode",
-            "Auto mode allows file changes and shell commands inside the workspace; configured rules, the restrictions above and review sessions still apply.",
+            "Auto mode allows file changes and shell commands inside the workspace, background commands and review sessions' commands included; configured rules and the restrictions above still apply.",
+        ),
+        restriction(
+            "release_action",
+            "Auto mode never commits, pushes, publishes or deploys by itself: git commit, git push, package publishing, deployments and releases always ask.",
         ),
         restriction(
             "review_session",
-            "Review sessions cannot change files, and their shell commands always ask.",
+            "Review sessions cannot change files; without auto mode, their shell commands always ask.",
         ),
         restriction("fail_closed", "If a request cannot be evaluated or recorded, it is denied."),
     ]

@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 /// Version of the compiled-in system restrictions and built-in defaults.
 /// Recorded with every evaluation; bump whenever either changes.
-pub const SYSTEM_POLICY_VERSION: u32 = 3;
+pub const SYSTEM_POLICY_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("unknown {kind} value {value:?}")]

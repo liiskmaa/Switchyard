@@ -532,6 +532,14 @@ pub enum Input {
         text: String,
         now_ms: i64,
     },
+    /// The user cancelled one of the organization's tasks outside it (its M6
+    /// task was cancelled or failed): it and what is open under it are
+    /// cancelled, and its supervisor decides what happens next.
+    TaskClosed {
+        task: String,
+        status: String,
+        now_ms: i64,
+    },
 }
 
 /// What Core must do after committing the decision.
@@ -850,6 +858,66 @@ pub fn decide(state: &OrgState, input: &Input) -> Result<Decision, OrgError> {
                 d.state.enqueue(&r, &home, CheckpointItem::Observed { task: task.clone(), text });
             }
             d.action = Action::Interrupt { task: task.clone() };
+        }
+        Input::TaskClosed { task, status, now_ms } => {
+            let Some(t) = state.task(task).cloned() else { return Ok(d) };
+            if t.state.is_final()
+                || t.parent.is_none()
+                || matches!(state.status, OrgStatus::Done | OrgStatus::Cancelled)
+            {
+                return Ok(d);
+            }
+            let mut stack = vec![task.clone()];
+            let mut stopped = false;
+            while let Some(k) = stack.pop() {
+                let kids: Vec<String> = d.state.children(&k).map(|c| c.key.clone()).collect();
+                if let Some(tt) = d.state.task_mut(&k)
+                    && !tt.state.is_final()
+                {
+                    tt.state = TaskState::Cancelled;
+                    // Its own M6 task is already closed; the open ones under it are closed now.
+                    if &k != task {
+                        d.closed_tasks.push((k.clone(), false));
+                    }
+                }
+                if matches!(&state.activity, Activity::Working { task: running, .. } if *running == k) {
+                    stopped = true;
+                }
+                stack.extend(kids);
+            }
+            if stopped && let Activity::Working { agent, .. } = &state.activity {
+                let agent = agent.clone();
+                d.state.activity = Activity::Idle;
+                if let Some(a) = d.state.agent_mut(&agent) {
+                    a.status = AgentStatus::Idle;
+                }
+            }
+            let text = format!(
+                "The user {status} \u{201c}{}\u{201d} outside the organization; decide what happens to the work that depended on it.",
+                t.title
+            );
+            d.changes.push(Change::Observed { task: task.clone(), text: text.clone() });
+            d.context.push(ctx(
+                ContextKind::Observation,
+                ContextStatus::Verified,
+                text.clone(),
+                Some(task),
+                "user",
+            ));
+            if let Some(r) = d.state.reviewer_of(task) {
+                let home = t.parent.clone().unwrap_or_default();
+                d.state.enqueue(&r, &home, CheckpointItem::Observed { task: task.clone(), text });
+            }
+            // A wait that was not a question to the user (a step that could not
+            // start, for example on this very task) is over: the supervisor decides.
+            if state.status == OrgStatus::Waiting && state.question_from.is_none() {
+                d.state.status = OrgStatus::Running;
+                d.state.reason = None;
+                d.changes.push(Change::Resumed);
+            }
+            if d.state.status == OrgStatus::Running {
+                schedule(&mut d, *now_ms);
+            }
         }
         Input::Usage { cost_usd, tokens } => {
             d.state.cost_usd += cost_usd.unwrap_or(0.0).max(0.0);

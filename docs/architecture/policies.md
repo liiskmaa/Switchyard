@@ -56,15 +56,18 @@ Design: [ADR 0016](../decisions/0016-approval-policy-model.md) (model and preced
 
    **Auto mode** (per project, off by default, [ADR 0037](../decisions/0037-policy-auto-mode.md)):
    with no matching rule, file changes and shell commands get `allow` (reason `auto_mode`)
-   instead of the `ask` default. It never applies to review sessions and never overrides a rule.
+   instead of the `ask` default, review sessions' shell commands included (their file changes stay
+   denied; [ADR 0042](../decisions/0042-auto-mode-releases.md)). It never overrides a rule.
 
 4. **Caps: an `allow` becomes `ask`** when:
    - a target is outside the workspace or unresolvable;
    - a write, edit or delete targets `.git`;
    - the input has unknown fields;
-   - a shell command would run in the background;
+   - a shell command would run in the background (lifted in auto mode);
    - a shell command is not an exact match of a validated command rule (lifted when the `allow`
-     came from auto mode).
+     came from auto mode);
+   - in auto mode, a shell command commits, pushes, publishes or deploys (`release_action`,
+     ADR 0042), unless an exact-command rule allows it.
 
 ## Rules
 
@@ -96,9 +99,11 @@ Design: [ADR 0016](../decisions/0016-approval-policy-model.md) (model and preced
   is versioned, journaled as `policy.settings_changed`, and takes the next global policy revision.
 - Core reads it inside the evaluating transaction and records it in the input (`scope.auto_mode`).
   Validation commands (M7) follow it too: an `ask` command runs without authorization.
-- Still asking: paths outside the workspace or unresolvable, `.git` writes, background commands,
-  unknown input fields, review sessions, and any configured Ask rule. Still blocked: Block rules,
-  network and external tools, everything the system denies.
+- Since ADR 0042 it also allows review sessions' shell commands and background commands.
+- Still asking: commits, pushes, publishing and deployments (`release_action`), paths outside the
+  workspace or unresolvable, `.git` writes, unknown input fields, and any configured Ask rule.
+  Still blocked: Block rules, review sessions' file changes, network and external tools,
+  everything the system denies.
 - Turning it on does not answer pending approvals.
 - **An auto-allowed shell command can do anything your user can**, anywhere on the machine. Use
   Block rules for commands you never want run.

@@ -11,6 +11,7 @@ import { isWorkspaceEvent, listWorkspaces } from "../workspaces/api";
 import { isTaskEvent, listTasks } from "./api";
 import { ROLE_LABEL, STATUS_LABEL, statusTone } from "./labels";
 import { TaskDetailView } from "./TaskDetailView";
+import { taskTree } from "./tree";
 import { TaskForm } from "./TaskForm";
 
 /**
@@ -111,16 +112,24 @@ export function TasksView() {
               Create a task, then assign an agent to investigate or implement it.
             </EmptyState>
           ) : null}
-          {list.map((t) => (
+          {taskTree(list).map(({ task: t, depth, last, orphan, children }) => (
             <button
               key={t.id}
               type="button"
               role="option"
               aria-selected={t.id === selected}
-              className={`list-item${t.id === selected ? " active" : ""}`}
+              aria-level={depth + 1}
+              className={`list-item${t.id === selected ? " active" : ""}${depth > 0 ? " subtask" : ""}`}
+              style={depth > 0 ? { paddingLeft: `${12 + depth * 18}px` } : undefined}
               onClick={() => navigate("tasks", { taskId: t.id })}
             >
+              {orphan ? <span className="list-item-parent">↳ part of a task not shown</span> : null}
               <span className="list-item-title">
+                {depth > 0 ? (
+                  <span className="tree-branch" aria-hidden="true">
+                    {last ? "└" : "├"}
+                  </span>
+                ) : null}
                 {t.title}
                 <Badge tone={statusTone(t.status)}>{STATUS_LABEL[t.status]}</Badge>
                 {t.pending_proposals > 0 ? <Badge tone="warn">{t.pending_proposals} proposed</Badge> : null}
@@ -129,6 +138,7 @@ export function TasksView() {
                 {t.open_assignment
                   ? `${ROLE_LABEL[t.open_assignment.role]} · ${providerName(t.open_assignment.provider)} · `
                   : ""}
+                {children > 0 ? `${children} subtask${children > 1 ? "s" : ""} · ` : ""}
                 {t.priority} · {formatRelative(t.updated_at_ms, now)}
               </span>
             </button>

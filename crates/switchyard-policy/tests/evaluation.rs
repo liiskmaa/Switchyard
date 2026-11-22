@@ -480,23 +480,46 @@ fn auto_mode_never_overrides_rules_or_system_restrictions() {
     let git = evaluate(&auto(w.file(FileWrite, ".git/config")), &[], 0);
     assert_eq!(git.decision, Ask);
     assert!(git.restrictions.iter().any(|r| r.code == "git_metadata"));
+    // ADR 0042: background commands are allowed in auto mode (and still ask without it).
     let mut bg = auto(w.shell("npm run dev"));
     bg.operation.background = true;
-    let e = evaluate(&bg, &[], 0);
-    assert_eq!(e.decision, Ask);
-    assert!(e.restrictions.iter().any(|r| r.code == "background_command"));
-    assert!(!e.restrictions.iter().any(|r| r.code == "shell_not_exact"));
+    assert_eq!(evaluate(&bg, &[], 0).decision, Allow);
+    let mut bg_manual = w.shell("npm run dev");
+    bg_manual.operation.background = true;
+    assert_eq!(evaluate(&bg_manual, &[], 0).decision, Ask);
+    // Commits, pushes, publishing and deployments always ask, however they are wrapped.
+    for cmd in [
+        "git commit -m x",
+        "/bin/zsh -lc \"git add -A && git push\"",
+        "npm publish",
+        "vercel --prod",
+        "kubectl apply -f k.yaml",
+    ] {
+        let e = evaluate(&auto(w.shell(cmd)), &[], 0);
+        assert_eq!((e.decision, e.reason), (Ask, ReasonCode::Capped), "{cmd}");
+        assert!(e.restrictions.iter().any(|r| r.code == "release_action"), "{cmd}");
+    }
+    // An exact-command rule the operator wrote still decides for its command.
+    let allow_push = with_command(w.rule(Shell, Allow), "git push");
+    assert_eq!(evaluate(&auto(w.shell("git push")), std::slice::from_ref(&allow_push), 0).decision, Allow);
     let mut unknown_fields = auto(w.shell("ls"));
     unknown_fields.operation.unexpected_fields = vec!["sandbox".into()];
     assert_eq!(evaluate(&unknown_fields, &[], 0).decision, Ask);
-    // Review sessions are unaffected.
+    // Review sessions still cannot change files; their commands run in auto mode
+    // (ADR 0042), except releases; without auto mode they ask.
     let mut review = auto(w.file(FileWrite, "a"));
     review.scope.review_session = true;
     assert_eq!(evaluate(&review, &[], 0).decision, Deny);
     let mut review_shell = auto(w.shell("ls"));
     review_shell.scope.review_session = true;
     let e = evaluate(&review_shell, &[], 0);
-    assert_eq!((e.decision, e.reason), (Ask, ReasonCode::Default));
+    assert_eq!((e.decision, e.reason), (Allow, ReasonCode::AutoMode));
+    let mut review_push = auto(w.shell("git push"));
+    review_push.scope.review_session = true;
+    assert_eq!(evaluate(&review_push, &[], 0).decision, Ask);
+    let mut review_manual = w.shell("ls");
+    review_manual.scope.review_session = true;
+    assert_eq!(evaluate(&review_manual, &[], 0).decision, Ask);
     // Network, external and unknown tools stay blocked.
     for category in [Network, ExternalTool] {
         let input =

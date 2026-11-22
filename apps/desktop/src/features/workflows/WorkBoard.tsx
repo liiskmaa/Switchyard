@@ -58,7 +58,8 @@ export function showLane(key: string) {
 }
 
 function Item({ item }: { item: BoardItem }) {
-  const [open, setOpen] = useState(item.current);
+  // Closed by default: the current item is highlighted, its details open on a click.
+  const [open, setOpen] = useState(false);
   return (
     <li className={`board-item${item.current ? " current" : ""}${item.done ? " done" : ""}`}>
       <button type="button" className="board-item-head" aria-expanded={open} onClick={() => setOpen(!open)}>

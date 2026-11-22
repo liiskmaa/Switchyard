@@ -498,3 +498,36 @@ fn prompts_carry_scope_evidence_and_status_labels() {
     let all = [entries.clone(), vec![superseding]].concat();
     assert_eq!(current(&all)[0].status, ContextStatus::Superseded);
 }
+
+#[test]
+fn a_subtask_the_user_cancels_is_closed_and_its_supervisor_decides() {
+    let s = supervise(&started(), LEAD, PLAN).state;
+    assert!(matches!(s.activity, Activity::Working { ref task, .. } if task == "greet"));
+    let closed = Input::TaskClosed { task: "greet".into(), status: "cancelled".into(), now_ms: T0 + 5 };
+    let d = decide(&s, &closed).unwrap();
+    assert_eq!(d.state.task("greet").unwrap().state, TaskState::Cancelled);
+    assert!(d.closed_tasks.is_empty(), "its own M6 task is already closed");
+    assert!(d.context.iter().any(|c| c.kind == ContextKind::Observation && c.text.contains("cancelled")));
+    // The worker stopped; the lead looks at it next.
+    let Action::Supervise { checkpoint } = &d.action else { panic!("{:?}", d.action) };
+    assert_eq!(checkpoint.supervisor, LEAD);
+    assert!(
+        checkpoint
+            .items
+            .iter()
+            .any(|i| matches!(i, CheckpointItem::Observed { task, .. } if task == "greet"))
+    );
+    // Repeats and the objective itself change nothing here.
+    assert_eq!(decide(&d.state, &closed).unwrap().state, d.state);
+    let root = Input::TaskClosed { task: ROOT.into(), status: "cancelled".into(), now_ms: T0 + 6 };
+    assert_eq!(decide(&s, &root).unwrap().state, s);
+
+    // A team stuck waiting (not on a question) carries on.
+    let mut stuck = s.clone();
+    stuck.activity = Activity::Idle;
+    stuck.status = OrgStatus::Waiting;
+    stuck.reason = Some("greet could not be started".into());
+    let d = decide(&stuck, &closed).unwrap();
+    assert_eq!(d.state.status, OrgStatus::Running);
+    assert!(matches!(d.action, Action::Supervise { .. }));
+}

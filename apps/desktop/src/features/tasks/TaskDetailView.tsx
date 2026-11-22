@@ -61,7 +61,7 @@ function messageText(m: TaskMessage): string {
     const q = typeof report["question"] === "string" ? `\nQuestion: ${report["question"]}` : "";
     return `${report["summary"]}${q}`;
   }
-  for (const key of ["text", "error", "reason"]) {
+  for (const key of ["text", "summary", "error", "reason"]) {
     if (typeof p[key] === "string") return p[key] as string;
   }
   if (typeof p["action"] === "string") return `${p["action"]}${typeof p["note"] === "string" ? `: ${p["note"]}` : ""}`;
