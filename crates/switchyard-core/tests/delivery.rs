@@ -48,6 +48,7 @@ async fn fixture() -> Fixture {
         .await
         .unwrap()
         .project;
+    common::allow_test_command(&client, project.id, common::PASSING_TEST).await;
     Fixture { core, client, project_id: project.id, repo }
 }
 
@@ -61,8 +62,14 @@ fn script(spec: &Value) -> String {
     format!("[fake:report:{hex}]")
 }
 
+/// An agent report; an implementation names passing tests for every required
+/// kind (ADR 0039), which the fixture's policy allows.
 fn report(kind: &str, summary: &str) -> Value {
-    json!({ "type": kind, "summary": summary })
+    let mut r = json!({ "type": kind, "summary": summary });
+    if kind == "implementation" {
+        r["tests"] = common::passing_tests();
+    }
+    r
 }
 
 fn review(result: &str) -> Value {

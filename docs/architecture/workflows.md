@@ -1,26 +1,61 @@
-# Workflows (milestone 8.1)
+# Workflows (milestone 8.1; engineering@2)
 
 One task, one *Start*: Switchyard coordinates the agents through investigation, implementation,
-review and correction, and stops when the result is ready for your delivery decision. Decision:
-ADR 0033.
+tests and review, loops back through reasoning when something is found, and stops when the result
+is ready for your delivery decision. Decisions: ADR 0033 (the workflow), ADR 0038 (reasoning on
+findings, no correction role), ADR 0039 (the test gate), ADR 0040 (subtasks).
 
-## `engineering@1`
+## `engineering@2`
+
+```text
+            ┌───────────── dispute ─────────────┐
+            ▼                                    │
+ Task → Reasoning ── plan/fix ──► Coding ──► Tests ──► Review ──► Delivery (M7) ──► branch
+            ▲                                │        │
+            └──────── failed tests ──────────┘        │
+            ▲                                          │
+            └──────────── findings ────────────────────┘
+```
 
 | Step | Runs as | Binding | Next |
 |---|---|---|---|
-| `investigate#1` | investigate | investigation | any usable report → `implement#1` |
-| `implement#n` | implement | implementation (n = 1), correction (n > 1) | usable report → `review#n` |
-| `review#n` | review (read-only) | review | `approved` → **ready for delivery**; `changes_requested` → `implement#n+1` (while n ≤ 2) |
+| `investigate#1` | investigate | investigation | a plan of 2–8 subtasks → the subtasks in turn; otherwise → `implement#1` |
+| `implement#n` | implement | implementation | usable report → **test gate** |
+| test gate | Core | — | all required kinds pass → `review#n`; failed / missing / blocked → `investigate#n+1` |
+| `review#n` | review (read-only) | review | `approved` → delivery (or the next subtask); `changes_requested` → `investigate#n+1` |
+| `investigate#n` (n > 1) | investigate (triage) | investigation | `triage: fix` → `implement#n`; `triage: dispute` → `review#n` (implementation skipped) |
 
-A correction gets the open review findings in its task context, and continues the implementer's
-previous session when the provider, model and workspace are the same and the CLI can resume.
+- **Reasoning on findings (ADR 0038).** A review's findings and failed tests go to reasoning first
+  (stage `triage`, the investigation binding). It answers with a `triage` report: `fix` (the next
+  implementation gets its reasoning with the findings) or `dispute` (the reviewer gets the
+  reasoning and reviews again without any change). Fixes and disputes share the 2 automatic
+  rounds; then the workflow waits for you to break the tie.
+- **No correction role.** A fix is another implementation round with the implementation binding
+  (`implement#n`). A stored `correct` binding is ignored for new steps.
+- **Test gate (ADR 0039).** The implementer's report names its test commands
+  (`"tests": [{"kind": "unit|integration|regression|browser", "command": [...]}]`). Core runs them
+  in the workspace, without a shell, before the review: each goes through the policy like a
+  validation command (`allow` runs, `ask` waits for your resume, `deny` fails the gate). Unit,
+  integration and regression tests are required; browser tests too when the changed files (read
+  from Git) include UI files (`.tsx`, `.jsx`, `.vue`, `.svelte`, `.html`, `.css`, …). Results are
+  recorded (`workflow_test_runs`) and passed to reasoning and the reviewer as verified evidence.
+- **Subtasks (ADR 0040).** When the first investigation proposes 2–8 subtasks, they become the
+  workflow's plan (not proposals to decide). Each subtask runs implementation → tests → review →
+  reasoning in turn (`s2/implement#1`, `s2/review#1`, …) with its own rounds; a subtask is done
+  when its review approves; after the last one the task goes to delivery once. More than 8 waits
+  for you.
+- Workflows started before engineering@2 keep their old routing (their stored state has no
+  `review_triage`/`test_gate`).
 
 ### When it stops for you (`waiting`)
 
 | Situation | Resume does |
 |---|---|
-| Review still requests changes after 2 correction rounds | one more correction round |
-| Review `rejected` | a correction round |
+| Review still requests changes (or tests still fail) after 2 rounds | reasoning decides once more |
+| Test commands your policies ask about | authorize and run them (or turn on auto mode) |
+| Core restarted while the tests ran | run the tests again |
+| Reasoning planned more than 8 subtasks | implement the task as one piece |
+| Review `rejected` | an implementation round |
 | Review `blocked` (e.g. the workspace changed during it) | the review again (`review#n@2`) |
 | An agent reports a blocker | the step again |
 | No usable report after 2 automatic repair notes | another repair note |
@@ -47,8 +82,8 @@ the merge commit is on the task.
 
 ## Roles and models
 
-- **Project roles** (Projects → *Workflow roles*): provider and model for investigation,
-  implementation, review and correction (correction defaults to implementation).
+- **Project roles** (Projects → *Workflow roles*): provider and model for investigation &
+  reasoning, implementation and review. There is no separate correction role (ADR 0038).
 - **Task overrides** (New task → *Override roles and models for this task*, or the task's *Start
   workflow*): only the roles you change.
 - The effective roles are **snapshotted** when the workflow starts.

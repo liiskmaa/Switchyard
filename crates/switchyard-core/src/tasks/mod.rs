@@ -15,6 +15,7 @@ mod assign;
 mod convert;
 mod organization;
 mod reactor;
+mod tests;
 mod workflow;
 
 use std::collections::HashMap;
@@ -485,6 +486,20 @@ impl TaskService {
                         .map(|a| convert::assignment(c, a))
                         .collect::<Result<_, _>>()?,
                     workflow: workflow::info(c, id)?,
+                    test_runs: switchyard_storage::workflows::test_runs_for_task(c, id)?
+                        .into_iter()
+                        .map(|r| switchyard_protocol::methods::TestRunInfo {
+                            id: r.id,
+                            step_key: r.step_key,
+                            status: r.status,
+                            summary: r.summary,
+                            results: r.results,
+                            ui_change: r.ui_change,
+                            authorized_by: r.authorized_by,
+                            started_at_ms: r.started_at_ms,
+                            ended_at_ms: r.ended_at_ms,
+                        })
+                        .collect(),
                     messages: store::messages_for_task(c, id)?.into_iter().map(convert::message).collect(),
                     findings: store::findings_for_task(c, id)?.into_iter().map(convert::finding).collect(),
                     proposals: store::proposals_for_task(c, id)?.into_iter().map(convert::proposal).collect(),

@@ -184,8 +184,7 @@ fn apply_patch(mut b: RoleBindings, p: RoleBindingsPatch) -> RoleBindings {
 fn warnings_for(b: &RoleBindings) -> Vec<String> {
     let mut out = Vec::new();
     let review = &b.review.provider;
-    let correct = binding_for(b, Binding::Correct);
-    if &b.implement.provider == review || &correct.provider == review {
+    if &b.implement.provider == review {
         out.push(format!(
             "Implementation and review both use {}: the review is less independent. Consider a different provider \
              for review.",
@@ -217,6 +216,8 @@ fn resume_text(state: &WorkflowState) -> Option<String> {
         Some(Resume::Start { step }) => format!("start {}", step.key()),
         Some(Resume::Deliver) => "check the delivery again".into(),
         Some(Resume::Validate) => "run validation again".into(),
+        Some(Resume::RunTests { authorized: true }) => "authorize and run the tests".into(),
+        Some(Resume::RunTests { authorized: false }) => "run the tests again".into(),
     })
 }
 
@@ -245,6 +246,16 @@ fn wire(w: &WorkflowRecord) -> Result<WorkflowInfo, StorageError> {
         ended_at_ms: w.ended_at_ms,
         integration_id: w.integration_id,
         delivery: state.delivery.clone(),
+        plan: state
+            .plan
+            .iter()
+            .map(|s| switchyard_protocol::model::WorkflowPlanItem {
+                title: s.title.clone(),
+                description: s.description.clone(),
+                done: s.done,
+            })
+            .collect(),
+        subtask: state.current.as_ref().and_then(|s| s.subtask),
     })
 }
 
@@ -267,6 +278,8 @@ pub(super) struct Followup {
     pub(super) action: Action,
     pub(super) assignment: Option<Uuid>,
     pub(super) repair_error: Option<String>,
+    /// Who caused the decision (an operator's resume authorizes the test gate's `ask` commands).
+    pub(super) by: Option<String>,
 }
 
 impl TaskService {
@@ -494,6 +507,12 @@ impl TaskService {
             ));
         }
         self.unblock_for_resume(task_id).await?;
+        // Continuing a workflow that failed with its task: retry the task first.
+        let status =
+            self.storage.call(move |c| store::get_task(c, task_id)).await.map_err(errors::storage)?.status;
+        if status == TaskStatus::Failed {
+            self.retry(task_id, Some("continued by the workflow".into()), actor.clone()).await?;
+        }
         self.operator_input(task_id, Input::Resume, actor).await
     }
 
@@ -619,6 +638,10 @@ impl TaskService {
                     if let Err(e) = svc.deliver_complete(task_id).await {
                         tracing::warn!(%task_id, ?e, "cannot record the delivered task as completed");
                     }
+                }
+                Action::RunTests { authorized } => {
+                    svc.run_tests(task_id, authorized, f.by.clone().unwrap_or_else(|| "operator".into()))
+                        .await;
                 }
                 Action::None => {}
             }
@@ -871,13 +894,40 @@ impl TaskService {
                 match status.as_str() {
                     "reported" => {
                         let summary = t.status_reason.as_deref().map(|r| r.trim_start_matches("agent: "));
-                        match Outcome::from_assignment(&outcome, summary) {
+                        let plan = if step == "investigate#1" && outcome == "reported: proposal" {
+                            let id = a.id;
+                            self.storage
+                                .call(move |c| plan_of(c, a.task_id, id))
+                                .await
+                                .map_err(errors::storage)?
+                        } else {
+                            None
+                        };
+                        match plan.or_else(|| Outcome::from_assignment(&outcome, summary)) {
                             Some(o) => Some(Input::Reported { step, outcome: o }),
                             None => Some(Input::Ended { step, cancelled: false, reason: outcome }),
                         }
                     }
                     "cancelled" => Some(Input::Ended { step, cancelled: true, reason: outcome }),
-                    _ => Some(Input::Ended { step, cancelled: false, reason: outcome }),
+                    _ => {
+                        // Core stopped the session while shutting down: an
+                        // interruption to resume, not a failure to retry now.
+                        let session = a.session_id;
+                        let shutdown = match session {
+                            Some(s) => self
+                                .storage
+                                .call(move |c| switchyard_storage::sessions::get(c, s))
+                                .await
+                                .map(|r| r.failure.as_deref() == Some("core_shutdown"))
+                                .unwrap_or(false),
+                            None => false,
+                        };
+                        if shutdown {
+                            Some(Input::Interrupted { step })
+                        } else {
+                            Some(Input::Ended { step, cancelled: false, reason: outcome })
+                        }
+                    }
                 }
             }
             DomainEvent::TaskMessageRecorded { kind, sender, assignment_id: Some(id), summary, .. } => {
@@ -903,6 +953,8 @@ impl TaskService {
             {
                 Some(Input::TaskClosed { status: to.clone() })
             }
+            // "Retry the task" on a failed task brings its workflow back.
+            DomainEvent::TaskStatusChanged { from, .. } if from == "failed" => Some(Input::TaskReopened),
             _ => None,
         })
     }
@@ -939,6 +991,15 @@ impl TaskService {
             if state.status != WorkflowStatus::Running {
                 continue;
             }
+            if state.stage == Some(Stage::Testing) {
+                // The test run did not survive the restart: the operator decides.
+                if let Err(err) =
+                    self.apply_input(w.task_id, Input::TestsInterrupted, None, "core".into()).await
+                {
+                    tracing::error!(task_id = %w.task_id, ?err, "cannot record an interrupted test gate");
+                }
+                continue;
+            }
             let Some(step) = state.current.clone() else { continue };
             let (task_id, key) = (w.task_id, step.key());
             let k = key.clone();
@@ -955,7 +1016,12 @@ impl TaskService {
                     tracing::info!(%task_id, step = %key, "starting a workflow step created before the restart");
                     self.perform(
                         task_id,
-                        Followup { action: Action::Start(step), assignment: Some(a.id), repair_error: None },
+                        Followup {
+                            action: Action::Start(step),
+                            assignment: Some(a.id),
+                            repair_error: None,
+                            by: None,
+                        },
                     );
                 }
                 Ok(Some(a)) if a.status != AssignmentStatus::Reported => {
@@ -976,10 +1042,38 @@ impl TaskService {
     }
 }
 
+/// Reasoning's proposed subtasks as a plan (ADR 0040), from Core's record of
+/// the report; `None` when it proposed fewer than two.
+fn plan_of(c: &Connection, task: Uuid, assignment: Uuid) -> Result<Option<Outcome>, StorageError> {
+    for m in store::messages_for_task(c, task)?.into_iter().rev() {
+        if m.assignment_id != Some(assignment) {
+            continue;
+        }
+        let Some(subtasks) = m.payload["report"]["proposed_subtasks"].as_array() else { return Ok(None) };
+        if subtasks.len() < 2 {
+            return Ok(None);
+        }
+        let plan = subtasks
+            .iter()
+            .map(|s| wf::PlannedSubtask {
+                title: s["title"].as_str().unwrap_or("subtask").to_owned(),
+                description: s["description"].as_str().map(str::to_owned),
+                acceptance_criteria: s["acceptance_criteria"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|c| c.as_str().map(str::to_owned)).collect())
+                    .unwrap_or_default(),
+                done: false,
+            })
+            .collect();
+        return Ok(Some(Outcome::Plan(plan)));
+    }
+    Ok(None)
+}
+
 /// Decides on `input` for the task's workflow inside `tx`: writes the new
 /// state, its `workflow.*` events and (for a start) the step's assignment.
 /// `None` when nothing changed.
-fn decide_in_tx(
+pub(super) fn decide_in_tx(
     tx: &Connection,
     task_id: Uuid,
     input: &Input,
@@ -1072,6 +1166,15 @@ fn decide_in_tx(
                 reason: reason.clone(),
                 integration_id: w.integration_id,
             },
+            Change::Planned(titles) => DomainEvent::WorkflowPlanned { subtasks: titles.clone() },
+            Change::SubtaskDone(number, title) => {
+                DomainEvent::WorkflowSubtaskCompleted { number: *number, title: title.clone() }
+            }
+            Change::Tests(phase, reason) => DomainEvent::WorkflowTestsChanged {
+                phase: (*phase).into(),
+                reason: reason.clone(),
+                step_key: step_key.clone(),
+            },
             Change::Delivered(reason) => {
                 DomainEvent::WorkflowDelivered { reason: reason.clone(), integration_id: w.integration_id }
             }
@@ -1095,7 +1198,7 @@ fn decide_in_tx(
         ended: d.state.status.is_final(),
     };
     wf_store::update_workflow(tx, task_id, w.revision, &update, now)?;
-    Ok(Ok(Some(Followup { action: d.action, assignment, repair_error })))
+    Ok(Ok(Some(Followup { action: d.action, assignment, repair_error, by: Some(by.to_owned()) })))
 }
 
 /// Follows the journal for the workflows of all tasks. Started after the

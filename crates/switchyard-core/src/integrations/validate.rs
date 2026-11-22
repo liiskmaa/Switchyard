@@ -49,7 +49,7 @@ const KILL_GRACE: Duration = Duration::from_secs(3);
 const OUTPUT_GRACE: Duration = Duration::from_secs(5);
 
 /// The policy's answer for running `argv` as a validation command in the workspace.
-fn evaluate_command(
+pub(crate) fn evaluate_command(
     c: &Connection,
     project_id: Uuid,
     workspace_id: Uuid,
@@ -204,7 +204,7 @@ fn signal_group(pid: Option<u32>, signal: Signal) {
 }
 
 /// Runs one command; never panics, every outcome is a status.
-async fn run_command(
+pub(crate) async fn run_command(
     argv: &[String],
     cwd: &Path,
     timeout: Duration,

@@ -37,6 +37,12 @@ Rust process, **Switchyard Core**. The Tauri desktop app is only a client.
   `crates/switchyard-core/src/tasks/organization.rs` the driver; `migrations/0010_organizations.sql`;
   `apps/desktop/src/features/workflows/OrganizationPanel.tsx`). See `docs/architecture/organizations.md`
   and ADRs 0035–0036.
+- engineering@2 (ADRs 0037–0040): per-project auto mode (`switchyard-policy`, `PolicyService::set_auto_mode`,
+  `migrations/0011_policy_auto_mode.sql`); review findings and failed tests go to reasoning (`triage` reports, no
+  correction role); Core's test gate before every review (`crates/switchyard-core/src/tasks/tests.rs`,
+  `migrations/0012_workflow_tests.sql`); reasoning's plan of 2–8 subtasks runs in turn (`s<n>/` step keys); the task
+  page's flow display (`apps/desktop/src/features/workflows/flow.ts`, `TaskFlow.tsx`); Core start/stop/restart from
+  Settings (`apps/desktop/src-tauri/src/commands.rs`: `core_stop`, `core_start`, `core_restart`).
 
 The verified Claude CLI behaviour is in `docs/architecture/agent-integration.md`, the verified Codex
 app-server behaviour (0.166.0) in `docs/architecture/codex-integration.md`, and the contract in
@@ -216,6 +222,12 @@ When running Core or the app manually, set `SWITCHYARD_DATA_DIR` (and, if that p
     never pushes; it completes the task only after M7 reports `integrated`.
   - Models are passed to the CLI exactly; choices come only from the installed CLI
     (`agents.models`). Never add a model list to Switchyard, never substitute a model.
+  - engineering@2 flags live in the stored state (`review_triage`, `test_gate`, set at start); never change the
+    routing of a workflow started under the old rules. Reasoning's `triage` report and the plan are claims that only
+    route work; they never approve, complete or create tasks outside the workflow's own plan (ADR 0040).
+  - The test gate runs only commands the implementer's report names, each through `evaluate_command` (the
+    validation policy path), never through a shell; `ask` needs the operator's resume; results and the decision are
+    one transaction. Never let a review session run tests (it must stay read-only).
 - **Organizations.**
   - Decisions stay pure (`switchyard_tasks::organization::decide`); `decide_in_tx` commits state,
     `organization.*` events, subtasks (proposal path, decided by `organization:<key>`), closed subtasks

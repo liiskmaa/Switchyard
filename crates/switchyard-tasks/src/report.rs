@@ -41,6 +41,72 @@ pub enum ReportKind {
     Blocker,
     /// The agent needs an answer from the operator.
     Question,
+    /// Reasoning's decision on a review's findings (workflow, ADR 0038):
+    /// `decision` is `fix` (send them to implementation) or `dispute` (send
+    /// the reasoning back to the reviewer).
+    Triage,
+}
+
+/// Which kind of test a command runs (ADR 0039). Unit, integration and
+/// regression tests are always required; browser tests when the change
+/// touches the UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TestKind {
+    Unit,
+    Integration,
+    Regression,
+    Browser,
+}
+
+impl TestKind {
+    pub const REQUIRED: [TestKind; 3] = [TestKind::Unit, TestKind::Integration, TestKind::Regression];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unit => "unit",
+            Self::Integration => "integration",
+            Self::Regression => "regression",
+            Self::Browser => "browser",
+        }
+    }
+}
+
+/// A test command the implementer names (ADR 0039). Core runs it, without a
+/// shell, after the policy allows it; the agent never runs it on its behalf.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestCommand {
+    pub kind: TestKind,
+    /// The program and its arguments.
+    pub command: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Seconds; Core caps it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u32>,
+}
+
+/// Most test commands one implementation report may name.
+pub const MAX_TESTS: usize = 20;
+
+/// What reasoning decided about a review's findings (ADR 0038).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriageDecision {
+    /// The findings should be addressed: implementation fixes them.
+    Fix,
+    /// The findings should not be addressed as reported: the reviewer gets
+    /// the reasoning and reviews again.
+    Dispute,
+}
+
+impl TriageDecision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fix => "fix",
+            Self::Dispute => "dispute",
+        }
+    }
 }
 
 impl ReportKind {
@@ -48,7 +114,7 @@ impl ReportKind {
     pub fn allowed_for(self, role: Role) -> bool {
         use ReportKind::*;
         match role {
-            Role::Investigate => matches!(self, Findings | Proposal | Blocker | Question),
+            Role::Investigate => matches!(self, Findings | Proposal | Triage | Blocker | Question),
             Role::Implement => matches!(self, Implementation | Proposal | Blocker | Question),
             Role::Review => matches!(self, Review | Blocker | Question),
         }
@@ -124,6 +190,12 @@ pub struct Report {
     pub changed_files: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question: Option<String>,
+    /// The test commands to run before review (only for `implementation`, ADR 0039).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tests: Vec<TestCommand>,
+    /// Reasoning's decision (only for `triage`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<TriageDecision>,
     /// Top-level fields the schema does not know (kept for the operator).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unexpected_fields: Vec<String>,
@@ -153,6 +225,8 @@ const KNOWN: &[&str] = &[
     "acceptance",
     "changed_files",
     "question",
+    "decision",
+    "tests",
 ];
 
 /// Finds the last `switchyard-report` block in `text` and validates it for
@@ -216,6 +290,37 @@ fn validate(r: &Report, role: Role) -> Result<(), ReportError> {
             return Err(ReportError::Invalid("only a review has a result".into()));
         }
         _ => {}
+    }
+    match (r.kind, r.decision) {
+        (ReportKind::Triage, None) => {
+            return Err(ReportError::Invalid("a triage report needs a decision: fix or dispute".into()));
+        }
+        (k, Some(_)) if k != ReportKind::Triage => {
+            return Err(ReportError::Invalid("only a triage report has a decision".into()));
+        }
+        _ => {}
+    }
+    if !r.tests.is_empty() && r.kind != ReportKind::Implementation {
+        return Err(ReportError::Invalid("only an implementation report names test commands".into()));
+    }
+    if r.tests.len() > MAX_TESTS {
+        return Err(ReportError::Invalid(format!("more than {MAX_TESTS} test commands")));
+    }
+    for (i, t) in r.tests.iter().enumerate() {
+        if t.command.is_empty() || t.command.iter().any(|a| a.is_empty() || a.contains('\0')) {
+            return Err(ReportError::Invalid(format!("test {i} has an empty command or argument")));
+        }
+        if t.command.len() > 64 || t.command.iter().any(|a| a.chars().count() > 1000) {
+            return Err(ReportError::Invalid(format!("test {i}'s command is too long")));
+        }
+        if let Some(n) = &t.name {
+            too_long("test name", n, 200)?;
+        }
+    }
+    if r.kind == ReportKind::Triage && !r.findings.is_empty() {
+        return Err(ReportError::Invalid(
+            "a triage report has no findings of its own: put the reasoning in summary and details".into(),
+        ));
     }
     if !r.proposed_subtasks.is_empty() && r.kind != ReportKind::Proposal {
         return Err(ReportError::Invalid("only a proposal can propose subtasks".into()));
@@ -331,5 +436,51 @@ mod tests {
         assert!(matches!(parse_report(&impl_report, Role::Review), Err(ReportError::WrongKind { .. })));
         let review = wrap(r#"{"type":"review","summary":"ok","result":"approved"}"#);
         assert!(matches!(parse_report(&review, Role::Implement), Err(ReportError::WrongKind { .. })));
+    }
+
+    #[test]
+    fn reasoning_reports_a_triage_decision() {
+        let r = parse_report(
+            &wrap(r#"{"type":"triage","decision":"dispute","summary":"Checked upstream","details":"why"}"#),
+            Role::Investigate,
+        )
+        .unwrap();
+        assert_eq!((r.kind, r.decision), (ReportKind::Triage, Some(TriageDecision::Dispute)));
+        for bad in [
+            r#"{"type":"triage","summary":"no decision"}"#,
+            r#"{"type":"findings","decision":"fix","summary":"decision on findings"}"#,
+            r#"{"type":"triage","decision":"maybe","summary":"x"}"#,
+            r#"{"type":"triage","decision":"fix","summary":"x","findings":[{"severity":"low","title":"t"}]}"#,
+        ] {
+            assert!(parse_report(&wrap(bad), Role::Investigate).is_err(), "{bad}");
+        }
+        assert!(matches!(
+            parse_report(&wrap(r#"{"type":"triage","decision":"fix","summary":"x"}"#), Role::Review),
+            Err(ReportError::WrongKind { .. })
+        ));
+    }
+
+    #[test]
+    fn implementation_reports_name_their_test_commands() {
+        let r = parse_report(
+            &wrap(
+                r#"{"type":"implementation","summary":"done","tests":[
+                {"kind":"unit","command":["cargo","test","--lib"]},
+                {"kind":"browser","command":["npx","playwright","test"],"name":"UI","timeout_secs":600}]}"#,
+            ),
+            Role::Implement,
+        )
+        .unwrap();
+        assert_eq!(r.tests.len(), 2);
+        assert_eq!((r.tests[1].kind, r.tests[1].timeout_secs), (TestKind::Browser, Some(600)));
+        for bad in [
+            r#"{"type":"implementation","summary":"x","tests":[{"kind":"unit","command":[]}]}"#,
+            r#"{"type":"implementation","summary":"x","tests":[{"kind":"unit","command":["a",""]}]}"#,
+            r#"{"type":"implementation","summary":"x","tests":[{"kind":"smoke","command":["a"]}]}"#,
+        ] {
+            assert!(parse_report(&wrap(bad), Role::Implement).is_err(), "{bad}");
+        }
+        let findings = r#"{"type":"findings","summary":"x","tests":[{"kind":"unit","command":["a"]}]}"#;
+        assert!(parse_report(&wrap(findings), Role::Investigate).is_err());
     }
 }

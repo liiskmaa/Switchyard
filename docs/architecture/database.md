@@ -94,6 +94,12 @@ Constraints: a `worktree` row must have `branch` and `base_commit`. Indexes:
 - Migration 0011 also rebuilds `policy_evaluations` so `reason` accepts `auto_mode`; existing rows
   are copied unchanged.
 
+### `workflow_test_runs` (v12)
+- One row per run of a workflow's test gate (ADR 0039): the implementation step tested, status
+  (`passed`, `failed`, `needs_authorization`), summary, every command with its policy decision and
+  result (output tails), whether the change touched UI files, and who authorized `ask` commands.
+- Append-only (trigger); `task_id` → `tasks` (`ON DELETE CASCADE`).
+
 ### `agents`
 One row per detected executable and vendor.
 

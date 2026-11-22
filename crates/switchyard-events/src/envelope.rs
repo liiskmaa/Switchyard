@@ -441,6 +441,16 @@ pub enum DomainEvent {
     /// Delivery progressed (M8.2): `phase` as in `WorkflowInfo.delivery`.
     #[serde(rename = "workflow.delivery_changed")]
     WorkflowDeliveryChanged { phase: String, reason: String, integration_id: Option<Uuid> },
+    /// The test gate progressed (ADR 0039): `phase` is `running`, `passed`,
+    /// `failed` or `needs_authorization`.
+    #[serde(rename = "workflow.tests_changed")]
+    WorkflowTestsChanged { phase: String, reason: String, step_key: Option<String> },
+    /// Reasoning split the task; the workflow runs these subtasks in order (ADR 0040).
+    #[serde(rename = "workflow.planned")]
+    WorkflowPlanned { subtasks: Vec<String> },
+    /// A subtask's review approved (ADR 0040).
+    #[serde(rename = "workflow.subtask_completed")]
+    WorkflowSubtaskCompleted { number: u32, title: String },
     /// The approved integration landed on the target branch (M8.2).
     #[serde(rename = "workflow.delivered")]
     WorkflowDelivered { reason: String, integration_id: Option<Uuid> },
@@ -593,6 +603,9 @@ impl DomainEvent {
             Self::WorkflowResumed { .. } => "workflow.resumed",
             Self::WorkflowCompleted { .. } => "workflow.completed",
             Self::WorkflowDeliveryChanged { .. } => "workflow.delivery_changed",
+            Self::WorkflowTestsChanged { .. } => "workflow.tests_changed",
+            Self::WorkflowPlanned { .. } => "workflow.planned",
+            Self::WorkflowSubtaskCompleted { .. } => "workflow.subtask_completed",
             Self::WorkflowDelivered { .. } => "workflow.delivered",
             Self::WorkflowFailed { .. } => "workflow.failed",
             Self::WorkflowCancelled { .. } => "workflow.cancelled",
@@ -822,6 +835,13 @@ mod tests {
             DomainEvent::WorkflowResumed { by: "desktop".into() },
             DomainEvent::WorkflowCompleted { reason: "approved".into() },
             DomainEvent::WorkflowFailed { reason: "x".into() },
+            DomainEvent::WorkflowPlanned { subtasks: vec!["a".into(), "b".into()] },
+            DomainEvent::WorkflowSubtaskCompleted { number: 1, title: "a".into() },
+            DomainEvent::WorkflowTestsChanged {
+                phase: "failed".into(),
+                reason: "unit failed".into(),
+                step_key: Some("implement#1".into()),
+            },
             DomainEvent::WorkflowDeliveryChanged {
                 phase: "validating".into(),
                 reason: "x".into(),

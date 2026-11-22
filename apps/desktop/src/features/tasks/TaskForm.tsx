@@ -143,7 +143,7 @@ export function TaskForm({
       </label>
       <label className="check">
         <input type="checkbox" checked={runWorkflow && canRun} disabled={!canRun} onChange={(e) => setRunWorkflow(e.target.checked)} /> Run
-        the engineering workflow (engineering@1): Switchyard assigns investigation, implementation, review and corrections itself
+        the engineering workflow (engineering@2): Switchyard assigns investigation, implementation and review itself, and loops back through reasoning when review finds something
       </label>
       {runWorkflow && canRun && bindings ? (
         <div className="workflow-form-bindings">

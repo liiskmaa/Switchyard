@@ -183,22 +183,52 @@ Start with a project you don't mind experimenting on (a copy, or a fresh branch)
 
 Good for: exploring, quick fixes, asking questions about the code.
 
-### B. "Do this task for me, end to end" (fixed sequence workflow)
+### B. "Do this task for me, end to end" (the engineering workflow)
 
 New task with *Run the engineering workflow* ticked, or on an existing ready task **Start workflow**
-→ **Fixed sequence**. Switchyard then:
+→ **Fixed sequence**. Switchyard then runs the work around a loop:
 
-1. **Investigate**: one AI reads the code and reports findings.
-2. **Implement**: an AI makes the change.
-3. **Review**: an AI reviews it **read-only** (it cannot change files; its commands always ask).
-4. If the review requests changes: **Correct** (up to 2 rounds automatically), then review again.
-5. Approved review → **Delivery** (see [§9](#9-delivering-work-into-your-branch)).
+```text
+            ┌──────── disputed ────────┐
+            ▼                           │
+  Task → Reasoning → Coding → Tests → Review → Delivery → your branch
+            ▲                   │        │
+            └── failed tests ───┘        │
+            ▲                            │
+            └──────── findings ──────────┘
+```
+
+1. **Reasoning** (the investigation agent) reads the code and makes a plan. If the task is too big
+   for one change, it **splits it into 2–8 subtasks**; each one then goes around the loop on its
+   own, in order.
+2. **Coding** (the implementation agent) makes the change **and writes the tests**: unit,
+   integration and regression tests, plus browser tests when the change touches the UI. Its report
+   lists the commands that run them.
+3. **Tests**: Switchyard runs those commands itself, before anyone reviews. Missing kinds or
+   failing tests go back to Reasoning with the results. (Commands still go through your policies:
+   with auto mode on they just run; otherwise the workflow asks you once.)
+4. **Review** checks the change **read-only**, with Switchyard's test results in hand.
+5. When the review finds something, it goes to **Reasoning**, which decides:
+   - **fix**: Coding fixes it (another round), then tests and review again;
+   - **dispute**: the findings are not worth changing; Reasoning explains why and the Review looks
+     again, without any code change.
+6. A green review finishes the task (or the subtask; then the next subtask starts). After the last
+   one: **Delivery** (see [§9](#9-delivering-work-into-your-branch)).
+
+The task page shows this as a **live flow diagram**: You in the middle, Reasoning, Coding, Tests
+and Review around you, Validation and your branch on the right. The hand-off in progress moves
+along its arrow, routes used before stay lit with how often (×2), and a line under it says what is
+happening now. A split task also shows its **work plan** as a checklist, and the latest **test
+results** are listed with each command's output.
 
 It stops and waits for you ("Needs you") when:
 
 | Situation | What you can do |
 |---|---|
-| Review still wants changes after 2 corrections, or rejects the work | **Resume** (one more correction), or take over |
+| Review and Reasoning still disagree, or tests still fail, after 2 rounds | **Resume** (Reasoning decides once more), send a note, or take over |
+| Review rejects the work | **Resume** (another implementation round) |
+| Tests use commands your policies ask about | **Resume** authorizes and runs them (or turn on auto mode) |
+| Reasoning planned more than 8 subtasks | **Resume** implements the task as one piece |
 | Review is *blocked* (e.g. files changed during review) | **Resume** reruns the review |
 | An agent reports a blocker | Fix the cause, then **Resume** |
 | An agent asks a question | **Send answer**; it continues |
@@ -209,7 +239,8 @@ It stops and waits for you ("Needs you") when:
 Other controls: **Pause**, **Cancel workflow**, and *Advanced* on the task to assign steps by hand.
 
 **Choosing who does what:** the project's **Workflow roles** set provider and model for
-Investigation, Implementation, Review and Correction (Correction can *Inherit from Implementation*).
+Investigation & reasoning, Implementation and Review. There is no separate "correction" role:
+fixes are done by the Implementation agent.
 Override them for one task with **Override roles and models for this task** (new task) or
 **Override roles for this task** (on start). The roles are frozen when the workflow starts.
 Tip: use a *different provider* for Review than for Implementation; Switchyard warns you when they
@@ -450,11 +481,21 @@ cargo run -p switchyard-core -- --log-format text
 
 Start the app with `SWITCHYARD_AUTO_LAUNCH_CORE=0` and it connects to the Core you started.
 
-### 10.3 Settings page (read-only)
+### 10.3 Settings page: Core controls
 
-Shows connection state, Core version, protocol version, process ID, start time, and the paths in
-use (data directory, socket, database, Core program, Core log). **Reconnect** forces a new
-connection. To change paths, use the environment variables above.
+Shows connection state, Core version, protocol version, process ID, start time, when the Core
+program on disk was built, and the paths in use (data directory, socket, database, Core program,
+Core log).
+
+- **Start** starts Core (when it is stopped).
+- **Restart…** stops Core gracefully and starts the program on disk again. Use it after updating
+  or rebuilding Switchyard; the page tells you when **a newer Core build is on disk**.
+- **Stop…** stops Core gracefully: running agents stop (their sessions can be resumed later),
+  pending approvals are denied, workflows wait for you. Nothing starts Core again until you press
+  **Start** (a yellow banner says so on every page).
+- **Reconnect** only reconnects; it does not restart Core.
+
+To change paths, use the environment variables above.
 
 ### 10.4 Per project: Workflow roles (Projects → *Workflow roles*)
 
@@ -462,10 +503,9 @@ For each role, a **Provider** (Claude Code / Codex) and a **Model**:
 
 | Role | Used for |
 |---|---|
-| Investigation | the first look at the task |
-| Implementation | making the change |
-| Review | read-only checking |
-| Correction | fixing review findings (default: *Inherit from Implementation*) |
+| Investigation & reasoning | the first look and the plan, and deciding on review findings and failed tests |
+| Implementation | making the change and its tests, and every fix |
+| Review | read-only checking, with Switchyard's test results |
 
 Model choices: **CLI default**, the models the installed program reports, or **Other full model
 name…** (for Claude, a full `claude-…` name; checked only when the session starts). Tasks can
@@ -553,7 +593,8 @@ in it (`node_modules`, `target/`…). Clean up finished ones.
 
 | Symptom | What to do |
 |---|---|
-| App says it cannot connect to Core | **Settings → Reconnect**. Check the Core log path shown there. Make sure only one Core uses the same data dir. |
+| App says it cannot connect to Core | **Settings → Reconnect**, or **Start** if it was stopped. Check the Core log path shown there. Make sure only one Core uses the same data dir. |
+| "unknown method" or a feature missing after an update | An older Core is still running (Core outlives the app). **Settings → Restart…** starts the new build. |
 | "Incompatible Core" | The app and Core versions don't match; rebuild both (`npm run dev` rebuilds Core). |
 | An agent program isn't listed under **Agents** | Install and log in; or point `SWITCHYARD_CLAUDE_BIN` / `SWITCHYARD_CODEX_BIN` at it. |
 | Codex refused as untested | Use Codex 0.166.0, or set `SWITCHYARD_ALLOW_UNTESTED_CODEX=1` at your own risk. |

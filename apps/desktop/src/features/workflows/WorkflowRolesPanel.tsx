@@ -36,8 +36,7 @@ export function WorkflowRolesPanel({ project }: { project: Project }) {
   if (!s) return null;
   const value = draft ?? s.bindings;
   // Same rule as Core's warning, applied to the draft as it is edited.
-  const correctProvider = (value.correct ?? value.implement).provider;
-  const sameProvider = value.implement.provider === value.review.provider || correctProvider === value.review.provider;
+  const sameProvider = value.implement.provider === value.review.provider;
   const state: SaveState = busy ? "saving" : error ? "error" : draft ? "dirty" : s.revision === 0 ? "defaults" : "saved";
 
   async function save() {

@@ -52,6 +52,11 @@ export async function coreRequest<M extends CoreMethod>(
 export const getConnection = (): Promise<ConnectionState> => invoke<ConnectionState>("core_connection");
 export const getEnvironment = (): Promise<CoreEnvironment> => invoke<CoreEnvironment>("core_environment");
 export const reconnectNow = (): Promise<void> => invoke<void>("core_reconnect");
+/** Stops Core gracefully; nothing restarts it until {@link startCore}. */
+export const stopCore = (): Promise<void> => invoke<void>("core_stop");
+export const startCore = (): Promise<void> => invoke<void>("core_start");
+/** Stops Core and starts the executable on disk again (picks up a new build). */
+export const restartCore = (): Promise<void> => invoke<void>("core_restart");
 
 export const onConnection = (handler: (state: ConnectionState) => void): Promise<UnlistenFn> =>
   listen<ConnectionState>("core://connection", (e) => handler(e.payload));

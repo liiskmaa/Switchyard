@@ -16,7 +16,7 @@ mod execute;
 mod facts;
 mod inspect;
 mod operations;
-mod validate;
+pub(crate) mod validate;
 mod workspace_ops;
 
 use std::collections::{HashMap, HashSet};

@@ -1,5 +1,5 @@
-//! The built-in engineering workflow `engineering@1` (milestone 8.1, ADR 0033),
-//! as a pure decision function.
+//! The built-in engineering workflow (`engineering@1`, milestone 8.1, ADR 0033;
+//! `engineering@2` adds review triage, ADR 0038), as a pure decision function.
 //!
 //! A workflow drives one task through investigation, implementation, review
 //! and bounded correction rounds, and stops at the human delivery gate. Core
@@ -10,7 +10,33 @@
 //! Every assignment the workflow creates has a stable step key:
 //! `investigate#1`, `implement#1`, `review#1`, `implement#2` (the first
 //! correction), … A retry of a step that failed appends the attempt:
-//! `implement#1@2`. Core stores the key with a unique index, so replaying an
+//! `implement#1@2`.
+//!
+//! Review triage (ADR 0038): in workflows started with it, a review that
+//! requests changes goes to reasoning first (`investigate#n+1`, stage
+//! `triage`, the investigation binding). Reasoning decides `fix` (the
+//! correction `implement#n+1` follows) or `dispute` (the reviewer gets the
+//! reasoning and reviews again as `review#n+1`, skipping implementation).
+//! Fixes and disputes share the [`MAX_CORRECTIONS`] rounds; then a person
+//! breaks the tie.
+//!
+//! Test gate (ADR 0039): in workflows started with it, a finished
+//! implementation goes to stage `testing`: Core runs the test commands the
+//! implementer named (unit, integration, regression; browser when the UI
+//! changed) and reports [`Input::Tested`]. Passing tests start the review
+//! with their results as evidence; failing ones go to reasoning like review
+//! findings, sharing the same rounds.
+//!
+//! Subtasks (ADR 0040): when the first investigation reports a plan of 2 to
+//! [`MAX_SUBTASKS`] subtasks, the workflow takes it as its work plan and runs
+//! each subtask through implementation, tests, review and reasoning in turn
+//! (step keys `s2/implement#1`, …). A subtask is done when its review
+//! approves; after the last one the task goes to delivery once.
+//!
+//! There is no separate correction role (ADR 0038): a fix is another
+//! implementation round (`implement#n`, stage `implementation`) with the
+//! implementation binding. `Binding::Correct` and `Stage::Correction` remain
+//! only so states stored by earlier versions still load and resume. Core stores the key with a unique index, so replaying an
 //! event can never create the same step twice.
 //!
 //! Nothing here performs I/O or knows about providers.
@@ -18,15 +44,19 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{ReviewResult, Role};
+use crate::report::TriageDecision;
 
 pub const DEFINITION: &str = "engineering";
-pub const VERSION: u32 = 1;
+/// v2 (ADR 0038): review findings go to reasoning before implementation.
+pub const VERSION: u32 = 2;
 /// Automatic correction rounds after a review requests changes.
 pub const MAX_CORRECTIONS: u32 = 2;
 /// Automatic repair notes for a turn without a usable report.
 pub const MAX_REPAIRS: u32 = 2;
 /// Automatic retries of a step whose session failed.
 pub const MAX_RETRIES: u32 = 1;
+/// Most subtasks reasoning's plan may split a task into (ADR 0040).
+pub const MAX_SUBTASKS: usize = 8;
 
 /// Which role binding (provider and model) a step uses. A correction is an
 /// implement assignment with its own binding.
@@ -69,6 +99,10 @@ pub enum Stage {
     Implementation,
     Review,
     Correction,
+    /// Reasoning decides whether a review's findings should be fixed (ADR 0038).
+    Triage,
+    /// Core runs the implementer's test commands before the review (ADR 0039).
+    Testing,
     /// Reached the human delivery gate (integration and completion are the operator's).
     Delivery,
 }
@@ -80,6 +114,8 @@ impl Stage {
             Self::Implementation => "implementation",
             Self::Review => "review",
             Self::Correction => "correction",
+            Self::Triage => "triage",
+            Self::Testing => "testing",
             Self::Delivery => "delivery",
         }
     }
@@ -140,6 +176,44 @@ impl WorkflowStatus {
     }
 }
 
+/// Whether `step_key` names a review-triage step: an investigation after the
+/// first (`investigate#2`, `investigate#3@2`, …; ADR 0038).
+/// A subtask never starts with an investigation, so any investigation inside
+/// one (`s2/investigate#2`) is a triage too.
+pub fn is_triage_step(step_key: &str) -> bool {
+    let (subtask, key) = split_subtask(step_key);
+    let round = key
+        .strip_prefix("investigate#")
+        .and_then(|rest| rest.split('@').next())
+        .and_then(|n| n.parse::<u32>().ok());
+    round.is_some_and(|n| n > 1 || subtask.is_some())
+}
+
+/// The subtask a step key belongs to and the key without it:
+/// `s2/implement#1` → `(Some(2), "implement#1")`.
+pub fn split_subtask(step_key: &str) -> (Option<u32>, &str) {
+    if let Some(rest) = step_key.strip_prefix('s')
+        && let Some((n, key)) = rest.split_once('/')
+        && let Ok(n) = n.parse::<u32>()
+    {
+        return (Some(n), key);
+    }
+    (None, step_key)
+}
+
+/// One subtask of reasoning's plan (ADR 0040).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlannedSubtask {
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub acceptance_criteria: Vec<String>,
+    /// Its review approved.
+    #[serde(default)]
+    pub done: bool,
+}
+
 /// One step of the workflow: one assignment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Step {
@@ -149,17 +223,29 @@ pub struct Step {
     pub round: u32,
     /// 1 for the first run of the step, 2 for its retry, …
     pub attempt: u32,
+    /// The plan's subtask this step works on, 1-based (ADR 0040).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtask: Option<u32>,
 }
 
 impl Step {
     fn new(binding: Binding, stage: Stage, round: u32) -> Self {
-        Self { binding, stage, round, attempt: 1 }
+        Self { binding, stage, round, attempt: 1, subtask: None }
     }
 
-    /// The unique step key, e.g. `implement#2` or `review#1@2`.
+    /// A step of the same subtask as `current`.
+    fn within(current: &Step, binding: Binding, stage: Stage, round: u32) -> Self {
+        Self { subtask: current.subtask, ..Self::new(binding, stage, round) }
+    }
+
+    /// The unique step key, e.g. `implement#2`, `review#1@2` or `s2/implement#1`.
     pub fn key(&self) -> String {
         let base = format!("{}#{}", self.binding.role().as_str(), self.round);
-        if self.attempt > 1 { format!("{base}@{}", self.attempt) } else { base }
+        let base = if self.attempt > 1 { format!("{base}@{}", self.attempt) } else { base };
+        match self.subtask {
+            Some(n) => format!("s{n}/{base}"),
+            None => base,
+        }
     }
 
     pub fn role(&self) -> Role {
@@ -194,6 +280,9 @@ pub enum Resume {
     Deliver,
     /// Run the validation again.
     Validate,
+    /// Run the test gate again; `authorized` means the operator's resume
+    /// authorizes the commands the policy asks about (ADR 0039).
+    RunTests { authorized: bool },
 }
 
 /// The durable state of one workflow run.
@@ -214,6 +303,15 @@ pub struct WorkflowState {
     /// Delivery: the source commit the workflow already asked to validate
     /// (validation is started at most once per commit automatically).
     pub validated_source: Option<String>,
+    /// Review findings go to reasoning before implementation (ADR 0038).
+    /// Set when the workflow starts; workflows started before it keep the
+    /// direct review → correction routing.
+    pub review_triage: bool,
+    /// A finished implementation is tested by Core before the review
+    /// (ADR 0039). Set when the workflow starts.
+    pub test_gate: bool,
+    /// Reasoning's plan, when it split the task (ADR 0040).
+    pub plan: Vec<PlannedSubtask>,
 }
 
 /// Where the delivery of the reviewed work stands, read by Core from the
@@ -283,6 +381,10 @@ pub enum Outcome {
     Review(ReviewResult),
     /// The agent cannot continue.
     Blocker(String),
+    /// Reasoning's decision on a review's findings (ADR 0038).
+    Triage(TriageDecision),
+    /// The first investigation planned these subtasks (ADR 0040).
+    Plan(Vec<PlannedSubtask>),
 }
 
 impl Outcome {
@@ -298,11 +400,27 @@ impl Outcome {
             };
             return Some(Self::Review(r));
         }
+        match outcome {
+            "triage: fix" => return Some(Self::Triage(TriageDecision::Fix)),
+            "triage: dispute" => return Some(Self::Triage(TriageDecision::Dispute)),
+            _ => {}
+        }
         if outcome == "blocker" {
             return Some(Self::Blocker(summary.unwrap_or("no reason given").to_owned()));
         }
         outcome.starts_with("reported: ").then_some(Self::Done)
     }
+}
+
+/// The result of the test gate for an implementation step (ADR 0039).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Tested {
+    /// Every required kind ran and every command passed.
+    Passed(String),
+    /// A command failed, was blocked, or a required kind is missing.
+    Failed(String),
+    /// Some commands need the operator's authorization (policy `ask`).
+    NeedsAuthorization(String),
 }
 
 /// Something that happened, as the workflow sees it.
@@ -350,6 +468,16 @@ pub enum Input {
     /// Delivery (M8.2): the operator sends the work back for a correction
     /// round (for example after a failed validation).
     RequestCorrection,
+    /// The test gate finished for this implementation step (ADR 0039).
+    Tested {
+        step: String,
+        result: Tested,
+    },
+    /// Core restarted while the test gate ran.
+    TestsInterrupted,
+    /// The operator retried the task after it failed: a workflow that ended
+    /// with it comes back and waits to continue where it stopped.
+    TaskReopened,
 }
 
 /// What Core must do after committing the decision.
@@ -371,6 +499,10 @@ pub enum Action {
     Validate,
     /// Delivery: the integration landed; record the task as completed.
     CompleteTask,
+    /// Run the test gate for the current implementation step (ADR 0039).
+    RunTests {
+        authorized: bool,
+    },
 }
 
 /// A journal-worthy change the decision made.
@@ -384,6 +516,12 @@ pub enum Change {
     Completed(String),
     /// Delivery progressed: phase and explanation.
     Delivery(&'static str, String),
+    /// The test gate: `running`, `passed`, `failed` or `needs_authorization`, and why.
+    Tests(&'static str, String),
+    /// Reasoning's plan was taken (ADR 0040): the subtasks' titles.
+    Planned(Vec<String>),
+    /// A subtask's review approved: its number and title.
+    SubtaskDone(u32, String),
     Delivered(String),
     Cancelled(String),
     Failed(String),
@@ -414,6 +552,8 @@ pub fn decide(state: &WorkflowState, input: &Input) -> Result<Decision, Workflow
                 return Err(WorkflowError::NotAllowed(status.as_str()));
             }
             d.changes.push(Change::Started);
+            d.state.review_triage = true;
+            d.state.test_gate = true;
             begin(&mut d, Step::new(Binding::Investigate, Stage::Investigation, 1));
         }
         Input::Pause => match status {
@@ -426,6 +566,26 @@ pub fn decide(state: &WorkflowState, input: &Input) -> Result<Decision, Workflow
             s => return Err(WorkflowError::NotAllowed(s.as_str())),
         },
         Input::Resume => match status {
+            // The operator continues a workflow that ended with its task
+            // (ADR 0040 addendum): the step that stopped runs again.
+            WorkflowStatus::Failed if state.current.is_some() => {
+                let step = state
+                    .current
+                    .clone()
+                    .unwrap_or_else(|| Step::new(Binding::Investigate, Stage::Investigation, 1));
+                d.changes.push(Change::Resumed);
+                match state.stage {
+                    Some(Stage::Delivery) => {
+                        run(&mut d);
+                        d.action = Action::Prepare;
+                    }
+                    Some(Stage::Testing) => {
+                        run(&mut d);
+                        d.action = Action::RunTests { authorized: false };
+                    }
+                    _ => begin(&mut d, step.retry()),
+                }
+            }
             WorkflowStatus::Waiting | WorkflowStatus::Paused => {
                 d.changes.push(Change::Resumed);
                 match state.on_resume.clone().unwrap_or(Resume::Continue) {
@@ -445,6 +605,12 @@ pub fn decide(state: &WorkflowState, input: &Input) -> Result<Decision, Workflow
                         d.state.validated_source = None;
                         d.action = Action::Validate;
                     }
+                    Resume::RunTests { authorized } => {
+                        run(&mut d);
+                        d.state.stage = Some(Stage::Testing);
+                        d.changes.push(Change::Tests("running", "Running the tests again.".into()));
+                        d.action = Action::RunTests { authorized };
+                    }
                 }
             }
             s => return Err(WorkflowError::NotAllowed(s.as_str())),
@@ -461,7 +627,7 @@ pub fn decide(state: &WorkflowState, input: &Input) -> Result<Decision, Workflow
             if status.is_final() {
                 return Ok(d);
             }
-            let reason = format!("the task was {task_status} by the operator");
+            let reason = format!("the task was {task_status}");
             if task_status == "failed" {
                 finish(&mut d, WorkflowStatus::Failed, reason.clone());
                 d.changes.push(Change::Failed(reason));
@@ -491,7 +657,50 @@ pub fn decide(state: &WorkflowState, input: &Input) -> Result<Decision, Workflow
             let round = state.current.as_ref().map(|s| s.round).unwrap_or(1);
             d.state.validated_source = None;
             d.state.delivery = None;
-            begin(&mut d, Step::new(Binding::Correct, Stage::Correction, round + 1));
+            begin(&mut d, Step::new(Binding::Implement, Stage::Implementation, round + 1));
+        }
+        Input::Tested { step, result } => {
+            if state.stage != Some(Stage::Testing) {
+                return Ok(d);
+            }
+            let Some(current) = current_for(state, step) else { return Ok(d) };
+            tested(&mut d, &current, result);
+        }
+        Input::TaskReopened => {
+            if status != WorkflowStatus::Failed {
+                return Ok(d);
+            }
+            let Some(step) = state.current.clone() else { return Ok(d) };
+            d.changes.push(Change::Resumed);
+            if state.stage == Some(Stage::Delivery) {
+                wait(
+                    &mut d,
+                    "The task was retried. Resume to check the delivery again.".into(),
+                    Resume::Deliver,
+                );
+            } else if state.stage == Some(Stage::Testing) {
+                wait(
+                    &mut d,
+                    "The task was retried. Resume to run the tests again.".into(),
+                    Resume::RunTests { authorized: false },
+                );
+            } else {
+                let key = step.key();
+                wait(
+                    &mut d,
+                    format!("The task was retried. Resume to run {key} again."),
+                    Resume::Start { step: step.retry() },
+                );
+            }
+        }
+        Input::TestsInterrupted => {
+            if state.stage == Some(Stage::Testing) && state.status == WorkflowStatus::Running {
+                wait(
+                    &mut d,
+                    "Core restarted while the tests ran. Resume to run them again.".into(),
+                    Resume::RunTests { authorized: false },
+                );
+            }
         }
         Input::Unusable { step, error } => {
             if current_for(state, step).is_none() {
@@ -581,13 +790,80 @@ fn reported(d: &mut Decision, current: &Step, outcome: &Outcome) {
             // A blocked review is re-run; blocked work is retried, both on the operator's word.
             wait(d, format!("{key} reported a blocker: {why}"), Resume::Start { step: current.retry() });
         }
+        (Binding::Investigate, outcome) if current.stage == Stage::Triage => {
+            match outcome {
+                Outcome::Triage(TriageDecision::Dispute) => {
+                    // Skip implementation: the reviewer gets the reasoning.
+                    start_or_hold(d, Step::within(current, Binding::Review, Stage::Review, current.round));
+                }
+                // `fix`, or a report without a decision: the findings are addressed.
+                _ => {
+                    start_or_hold(
+                        d,
+                        Step::within(current, Binding::Implement, Stage::Implementation, current.round),
+                    );
+                }
+            }
+        }
+        (Binding::Investigate, Outcome::Plan(items)) if current.subtask.is_none() && items.len() >= 2 => {
+            let first = Step { subtask: Some(1), ..Step::new(Binding::Implement, Stage::Implementation, 1) };
+            if items.len() > MAX_SUBTASKS {
+                wait(
+                    d,
+                    format!(
+                        "{key} planned {} subtasks, more than the limit of {MAX_SUBTASKS}. Send a note asking for a \
+                         smaller plan and resume to implement the task as one piece, or take over.",
+                        items.len()
+                    ),
+                    Resume::Start { step: Step::new(Binding::Implement, Stage::Implementation, 1) },
+                );
+                return;
+            }
+            d.state.plan = items.iter().map(|s| PlannedSubtask { done: false, ..s.clone() }).collect();
+            d.changes.push(Change::Planned(items.iter().map(|s| s.title.clone()).collect()));
+            start_or_hold(d, first);
+        }
         (Binding::Investigate, _) => {
-            start_or_hold(d, Step::new(Binding::Implement, Stage::Implementation, 1));
+            start_or_hold(d, Step::within(current, Binding::Implement, Stage::Implementation, 1));
+        }
+        (Binding::Implement | Binding::Correct, _) if d.state.test_gate => {
+            // ADR 0039: Core tests the work before anyone reviews it.
+            d.state.stage = Some(Stage::Testing);
+            let reason = format!("Running the tests {key} named before the review.");
+            d.changes.push(Change::Tests("running", reason.clone()));
+            if d.state.status == WorkflowStatus::Paused {
+                d.state.on_resume = Some(Resume::RunTests { authorized: false });
+                d.state.reason = Some("paused by the operator; the tests run when you resume".into());
+            } else {
+                run(d);
+                d.state.reason = Some(reason);
+                d.action = Action::RunTests { authorized: false };
+            }
         }
         (Binding::Implement | Binding::Correct, _) => {
-            start_or_hold(d, Step::new(Binding::Review, Stage::Review, current.round));
+            start_or_hold(d, Step::within(current, Binding::Review, Stage::Review, current.round));
+        }
+        (Binding::Review, Outcome::Review(ReviewResult::Approved))
+            if current.subtask.is_some_and(|n| (n as usize) < d.state.plan.len()) =>
+        {
+            // ADR 0040: this subtask is done; the next one starts.
+            let n = current.subtask.unwrap_or(1);
+            if let Some(s) = d.state.plan.get_mut(n as usize - 1) {
+                s.done = true;
+                d.changes.push(Change::SubtaskDone(n, s.title.clone()));
+            }
+            let next =
+                Step { subtask: Some(n + 1), ..Step::new(Binding::Implement, Stage::Implementation, 1) };
+            start_or_hold(d, next);
         }
         (Binding::Review, Outcome::Review(ReviewResult::Approved)) => {
+            // ADR 0040: the last subtask's approval completes the plan.
+            if let Some(n) = current.subtask
+                && let Some(s) = d.state.plan.get_mut(n as usize - 1)
+            {
+                s.done = true;
+                d.changes.push(Change::SubtaskDone(n, s.title.clone()));
+            }
             // M8.2: the approved work goes on to delivery (prepare, validate,
             // the operator's approval, integration).
             d.state.stage = Some(Stage::Delivery);
@@ -605,9 +881,23 @@ fn reported(d: &mut Decision, current: &Step, outcome: &Outcome) {
             }
         }
         (Binding::Review, Outcome::Review(ReviewResult::ChangesRequested)) => {
-            let correction = Step::new(Binding::Correct, Stage::Correction, current.round + 1);
+            let next = if d.state.review_triage {
+                Step::within(current, Binding::Investigate, Stage::Triage, current.round + 1)
+            } else {
+                Step::within(current, Binding::Implement, Stage::Implementation, current.round + 1)
+            };
             if current.round <= MAX_CORRECTIONS {
-                start_or_hold(d, correction);
+                start_or_hold(d, next);
+            } else if d.state.review_triage {
+                wait(
+                    d,
+                    format!(
+                        "{key} still requests changes after {MAX_CORRECTIONS} rounds of fixes or reasoning. Read the \
+                         findings and the reasoning; resume to let reasoning decide once more, send a note, or take \
+                         over."
+                    ),
+                    Resume::Start { step: next },
+                );
             } else {
                 wait(
                     d,
@@ -615,7 +905,7 @@ fn reported(d: &mut Decision, current: &Step, outcome: &Outcome) {
                         "{key} still requests changes after {MAX_CORRECTIONS} correction rounds. Review the findings; \
                          resume to allow one more correction round, or take over."
                     ),
-                    Resume::Start { step: correction },
+                    Resume::Start { step: next },
                 );
             }
         }
@@ -625,7 +915,9 @@ fn reported(d: &mut Decision, current: &Step, outcome: &Outcome) {
                 format!(
                     "{key} rejected the implementation. Review the findings; resume to start a correction round."
                 ),
-                Resume::Start { step: Step::new(Binding::Correct, Stage::Correction, current.round + 1) },
+                Resume::Start {
+                    step: Step::within(current, Binding::Implement, Stage::Implementation, current.round + 1),
+                },
             );
         }
         (Binding::Review, Outcome::Review(ReviewResult::Blocked)) => {
@@ -638,12 +930,50 @@ fn reported(d: &mut Decision, current: &Step, outcome: &Outcome) {
                 Resume::Start { step: current.retry() },
             );
         }
-        (Binding::Review, Outcome::Done) => {
+        (Binding::Review, Outcome::Done | Outcome::Triage(_) | Outcome::Plan(_)) => {
             // A review that reported something other than a verdict.
             wait(
                 d,
                 format!("{key} ended without a verdict. Resume to review again."),
                 Resume::Start { step: current.retry() },
+            );
+        }
+    }
+}
+
+/// The test gate's result for `current` (an implementation step, ADR 0039).
+fn tested(d: &mut Decision, current: &Step, result: &Tested) {
+    let key = current.key();
+    match result {
+        Tested::Passed(summary) => {
+            d.changes.push(Change::Tests("passed", summary.clone()));
+            start_or_hold(d, Step::within(current, Binding::Review, Stage::Review, current.round));
+        }
+        Tested::Failed(why) => {
+            d.changes.push(Change::Tests("failed", why.clone()));
+            let next = Step::within(current, Binding::Investigate, Stage::Triage, current.round + 1);
+            if current.round <= MAX_CORRECTIONS {
+                start_or_hold(d, next);
+            } else {
+                wait(
+                    d,
+                    format!(
+                        "The tests of {key} still fail after {MAX_CORRECTIONS} rounds ({why}). Read the results; resume \
+                         to let reasoning decide once more, send a note, or take over."
+                    ),
+                    Resume::Start { step: next },
+                );
+            }
+        }
+        Tested::NeedsAuthorization(commands) => {
+            d.changes.push(Change::Tests("needs_authorization", commands.clone()));
+            wait(
+                d,
+                format!(
+                    "The tests of {key} include commands your policies ask about: {commands}. Resume to authorize and \
+                     run them, or turn on auto mode for the project."
+                ),
+                Resume::RunTests { authorized: true },
             );
         }
     }
@@ -805,9 +1135,143 @@ mod tests {
         }
     }
 
+    /// Reports `outcome` for the current step; a finished implementation's
+    /// test gate passes (tested separately below).
     fn report(d: &Decision, outcome: Outcome) -> Decision {
         let step = d.state.current.as_ref().unwrap().key();
+        let next = apply(&d.state, Input::Reported { step: step.clone(), outcome });
+        if matches!(next.action, Action::RunTests { .. }) {
+            return apply(&next.state, Input::Tested { step, result: Tested::Passed("all passed".into()) });
+        }
+        next
+    }
+
+    fn reported_raw(d: &Decision, outcome: Outcome) -> Decision {
+        let step = d.state.current.as_ref().unwrap().key();
         apply(&d.state, Input::Reported { step, outcome })
+    }
+
+    fn plan(n: usize) -> Outcome {
+        Outcome::Plan(
+            (1..=n)
+                .map(|i| PlannedSubtask {
+                    title: format!("part {i}"),
+                    description: None,
+                    acceptance_criteria: vec![],
+                    done: false,
+                })
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn a_plan_runs_each_subtask_through_the_loop_then_delivers_once() {
+        let d = apply(&WorkflowState::default(), Input::Start);
+        let d = report(&d, plan(2));
+        assert_eq!(key(&d), "s1/implement#1");
+        assert!(d.changes.contains(&Change::Planned(vec!["part 1".into(), "part 2".into()])));
+        let d = report(&d, Outcome::Done);
+        assert_eq!(key(&d), "s1/review#1");
+        // A finding inside a subtask: reasoning and the fix stay in that subtask.
+        let d = report(&d, Outcome::Review(ReviewResult::ChangesRequested));
+        assert_eq!(key(&d), "s1/investigate#2");
+        assert!(is_triage_step("s1/investigate#2") && !is_triage_step("s1/implement#2"));
+        assert_eq!(split_subtask("s1/investigate#2"), (Some(1), "investigate#2"));
+        let d = report(&d, Outcome::Triage(TriageDecision::Fix));
+        assert_eq!(key(&d), "s1/implement#2");
+        let d = report(&d, Outcome::Done);
+        let d = report(&d, Outcome::Review(ReviewResult::Approved));
+        // Subtask 1 is done; subtask 2 starts with its own rounds.
+        assert_eq!(key(&d), "s2/implement#1");
+        assert!(d.state.plan[0].done && !d.state.plan[1].done);
+        assert!(d.changes.contains(&Change::SubtaskDone(1, "part 1".into())));
+        let d = report(&d, Outcome::Done);
+        let d = report(&d, Outcome::Review(ReviewResult::Approved));
+        assert_eq!((d.state.stage, d.action.clone()), (Some(Stage::Delivery), Action::Prepare));
+        assert!(d.state.plan.iter().all(|s| s.done));
+    }
+
+    #[test]
+    fn small_or_oversized_plans() {
+        let d = apply(&WorkflowState::default(), Input::Start);
+        // One subtask is just the task.
+        assert_eq!(key(&report(&d, plan(1))), "implement#1");
+        // Too many: a person decides.
+        let w = report(&d, plan(MAX_SUBTASKS + 1));
+        assert_eq!(w.state.status, WorkflowStatus::Waiting);
+        assert!(w.state.plan.is_empty());
+        assert_eq!(key(&apply(&w.state, Input::Resume)), "implement#1");
+    }
+
+    #[test]
+    fn a_retried_task_brings_its_failed_workflow_back() {
+        let d = apply(&WorkflowState::default(), Input::Start);
+        let d = report(&d, Outcome::Done); // implement#1 running
+        let failed = apply(&d.state, Input::TaskClosed { status: "failed".into() });
+        assert_eq!(failed.state.status, WorkflowStatus::Failed);
+        let back = apply(&failed.state, Input::TaskReopened);
+        assert_eq!(back.state.status, WorkflowStatus::Waiting);
+        assert!(back.state.reason.as_deref().unwrap().contains("implement#1"));
+        assert_eq!(key(&apply(&back.state, Input::Resume)), "implement#1@2");
+        // Or the operator continues the failed workflow directly.
+        assert_eq!(key(&apply(&failed.state, Input::Resume)), "implement#1@2");
+        // Cancelled or delivered workflows stay ended; a running one is unaffected.
+        let cancelled = apply(&d.state, Input::Cancel { reason: "x".into() });
+        assert_eq!(apply(&cancelled.state, Input::TaskReopened).state, cancelled.state);
+        assert_eq!(apply(&d.state, Input::TaskReopened).state, d.state);
+    }
+
+    #[test]
+    fn the_test_gate_runs_before_every_review() {
+        let mut d = apply(&WorkflowState::default(), Input::Start);
+        assert!(d.state.test_gate);
+        d = report(&d, Outcome::Done); // implement#1
+        let t = reported_raw(&d, Outcome::Done);
+        assert_eq!(t.action, Action::RunTests { authorized: false });
+        assert_eq!((t.state.stage, t.state.status), (Some(Stage::Testing), WorkflowStatus::Running));
+        // Stale or foreign results change nothing.
+        let other =
+            apply(&t.state, Input::Tested { step: "implement#9".into(), result: Tested::Passed("x".into()) });
+        assert_eq!(other.action, Action::None);
+        // Failing tests go to reasoning, not to review.
+        let failed = apply(
+            &t.state,
+            Input::Tested { step: "implement#1".into(), result: Tested::Failed("unit failed".into()) },
+        );
+        assert_eq!(key(&failed), "investigate#2");
+        assert!(failed.changes.contains(&Change::Tests("failed", "unit failed".into())));
+        // Passing tests start the review.
+        let passed = apply(
+            &t.state,
+            Input::Tested { step: "implement#1".into(), result: Tested::Passed("3 passed".into()) },
+        );
+        assert_eq!(key(&passed), "review#1");
+        // Commands the policy asks about wait; resuming authorizes them.
+        let ask = apply(
+            &t.state,
+            Input::Tested {
+                step: "implement#1".into(),
+                result: Tested::NeedsAuthorization("npm test".into()),
+            },
+        );
+        assert_eq!(ask.state.status, WorkflowStatus::Waiting);
+        assert!(ask.state.reason.as_deref().unwrap().contains("npm test"));
+        let resumed = apply(&ask.state, Input::Resume);
+        assert_eq!(resumed.action, Action::RunTests { authorized: true });
+        // A restart while testing waits; resuming runs them again, unauthorized.
+        let restarted = apply(&t.state, Input::TestsInterrupted);
+        assert_eq!(restarted.state.status, WorkflowStatus::Waiting);
+        assert_eq!(apply(&restarted.state, Input::Resume).action, Action::RunTests { authorized: false });
+        // Paused: the tests wait for the resume.
+        let paused = apply(&d.state, Input::Pause);
+        let held = reported_raw(&paused, Outcome::Done);
+        assert_eq!((held.action.clone(), held.state.status), (Action::None, WorkflowStatus::Paused));
+        assert_eq!(apply(&held.state, Input::Resume).action, Action::RunTests { authorized: false });
+        // Workflows started before the gate review directly.
+        let mut old = apply(&WorkflowState::default(), Input::Start);
+        old.state.test_gate = false;
+        old = reported_raw(&old, Outcome::Done);
+        assert_eq!(key(&reported_raw(&old, Outcome::Done)), "review#1");
     }
 
     #[test]
@@ -820,9 +1284,15 @@ mod tests {
         let d = report(&d, Outcome::Done);
         assert_eq!(key(&d), "review#1");
         let d = report(&d, Outcome::Review(ReviewResult::ChangesRequested));
+        // Review triage (ADR 0038): reasoning decides first, with the investigation binding.
+        assert_eq!(key(&d), "investigate#2");
+        let Action::Start(s) = &d.action else { unreachable!() };
+        assert_eq!((s.binding, s.stage), (Binding::Investigate, Stage::Triage));
+        assert!(is_triage_step(&s.key()) && !is_triage_step("investigate#1"));
+        let d = report(&d, Outcome::Triage(TriageDecision::Fix));
         assert_eq!(key(&d), "implement#2");
         let Action::Start(s) = &d.action else { unreachable!() };
-        assert_eq!((s.binding, s.stage, s.corrections()), (Binding::Correct, Stage::Correction, 1));
+        assert_eq!((s.binding, s.stage, s.corrections()), (Binding::Implement, Stage::Implementation, 1));
         let d = report(&d, Outcome::Done);
         assert_eq!(key(&d), "review#2");
         let d = report(&d, Outcome::Review(ReviewResult::Approved));
@@ -917,9 +1387,17 @@ mod tests {
         assert_eq!(old.status, WorkflowStatus::Completed);
     }
 
+    /// A workflow started before review triage (no `review_triage` in its
+    /// stored state) keeps the direct review → correction routing.
+    fn without_triage() -> Decision {
+        let mut d = apply(&WorkflowState::default(), Input::Start);
+        d.state.review_triage = false;
+        d
+    }
+
     #[test]
     fn correction_rounds_are_bounded_then_the_operator_decides() {
-        let mut d = apply(&WorkflowState::default(), Input::Start);
+        let mut d = without_triage();
         d = report(&d, Outcome::Done); // implement#1
         d = report(&d, Outcome::Done); // review#1
         for expected in ["implement#2", "implement#3"] {
@@ -936,6 +1414,43 @@ mod tests {
         let resumed = apply(&waiting.state, Input::Resume);
         assert_eq!(key(&resumed), "implement#4");
         assert_eq!(resumed.changes[0], Change::Resumed);
+        // A stored state from before triage deserializes without it.
+        let old: WorkflowState = serde_json::from_str(r#"{"status":"running","stage":"review"}"#).unwrap();
+        assert!(!old.review_triage);
+    }
+
+    #[test]
+    fn reasoning_can_dispute_findings_and_skip_implementation() {
+        let mut d = apply(&WorkflowState::default(), Input::Start);
+        d = report(&d, Outcome::Done); // implement#1
+        d = report(&d, Outcome::Done); // review#1
+        d = report(&d, Outcome::Review(ReviewResult::ChangesRequested));
+        assert_eq!(key(&d), "investigate#2");
+        // Dispute: straight back to review, no implementation in between.
+        d = report(&d, Outcome::Triage(TriageDecision::Dispute));
+        assert_eq!(key(&d), "review#2");
+        assert_eq!(d.state.stage, Some(Stage::Review));
+        // The reviewer still disagrees; reasoning now agrees and implementation fixes it.
+        d = report(&d, Outcome::Review(ReviewResult::ChangesRequested));
+        assert_eq!(key(&d), "investigate#3");
+        d = report(&d, Outcome::Triage(TriageDecision::Fix));
+        assert_eq!(key(&d), "implement#3");
+        d = report(&d, Outcome::Done);
+        assert_eq!(key(&d), "review#3");
+        // Two rounds used: a person breaks the tie.
+        let waiting = report(&d, Outcome::Review(ReviewResult::ChangesRequested));
+        assert_eq!(waiting.state.status, WorkflowStatus::Waiting);
+        assert!(waiting.state.reason.as_deref().unwrap().contains("rounds of fixes or reasoning"));
+        assert_eq!(key(&apply(&waiting.state, Input::Resume)), "investigate#4");
+        // A reasoning report without a decision is treated as a fix.
+        let mut e = apply(&WorkflowState::default(), Input::Start);
+        e = report(&e, Outcome::Done);
+        e = report(&e, Outcome::Done);
+        e = report(&e, Outcome::Review(ReviewResult::ChangesRequested));
+        assert_eq!(key(&report(&e, Outcome::Done)), "implement#2");
+        // The first investigation is never a triage, whatever it reports.
+        let s = apply(&WorkflowState::default(), Input::Start);
+        assert_eq!(key(&report(&s, Outcome::Triage(TriageDecision::Dispute))), "implement#1");
     }
 
     #[test]
@@ -944,6 +1459,7 @@ mod tests {
         d = report(&d, Outcome::Done);
         d = report(&d, Outcome::Done);
         let rejected = report(&d, Outcome::Review(ReviewResult::Rejected));
+        // A rejection waits for a person, with or without triage.
         assert_eq!(rejected.state.status, WorkflowStatus::Waiting);
         assert_eq!(key(&apply(&rejected.state, Input::Resume)), "implement#2");
         let blocked = report(&d, Outcome::Review(ReviewResult::Blocked));
@@ -1050,6 +1566,11 @@ mod tests {
         );
         assert_eq!(Outcome::from_assignment("blocker", Some("x")), Some(Outcome::Blocker("x".into())));
         assert_eq!(Outcome::from_assignment("session ended", None), None);
+        assert_eq!(Outcome::from_assignment("triage: fix", None), Some(Outcome::Triage(TriageDecision::Fix)));
+        assert_eq!(
+            Outcome::from_assignment("triage: dispute", None),
+            Some(Outcome::Triage(TriageDecision::Dispute))
+        );
     }
 
     #[test]

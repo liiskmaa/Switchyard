@@ -40,6 +40,9 @@ pub fn run() -> ExitCode {
             commands::core_environment,
             commands::core_request,
             commands::core_reconnect,
+            commands::core_stop,
+            commands::core_start,
+            commands::core_restart,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

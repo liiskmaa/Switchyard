@@ -100,11 +100,11 @@ Allowed types per role:
 
 | Role | Allowed types |
 |---|---|
-| investigate | `findings`, `proposal` (with `proposed_subtasks`), `blocker`, `question` |
-| implement | `implementation` (with `changed_files`, `acceptance`), `proposal`, `blocker`, `question` |
+| investigate | `findings`, `proposal` (with `proposed_subtasks`), `triage` (with `decision: fix\|dispute`, ADR 0038), `blocker`, `question` |
+| implement | `implementation` (with `changed_files`, `acceptance`, `tests`: the test commands Core runs before review, ADR 0039), `proposal`, `blocker`, `question` |
 | review | `review` (with `result`), `blocker`, `question` |
 
-Limits: 6 KiB of JSON, a 2000-character summary, 50 findings, 10 proposed subtasks. Unknown fields
+Limits: 6 KiB of JSON, a 2000-character summary, 50 findings, 10 proposed subtasks, 20 test commands. Unknown fields
 are kept in `unexpected_fields` and ignored. Journaled agent text is capped at 8 KiB per message, so
 the context asks for a short final message, and a report lost to truncation is recorded as such.
 

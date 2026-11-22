@@ -13,7 +13,9 @@ export interface CoreInfo {
 export type ConnectionState =
   | { state: "connecting"; attempt: number }
   | { state: "connected"; core: CoreInfo; protocol_version: number }
-  | { state: "disconnected"; error: string; retry_in_ms: number; launched_core: boolean }
+  | { state: "disconnected"; error: string; retry_in_ms: number; launched_core: boolean; incompatible?: boolean }
+  /** Stopped from the app: nothing starts it until "Start Core". */
+  | { state: "stopped" }
   /** The page is not running inside the Switchyard desktop runtime. */
   | { state: "unavailable"; error: string };
 
@@ -82,6 +84,8 @@ export interface CoreEnvironment {
   socket_path: string;
   database_path: string;
   core_binary: string | null;
+  /** When the Core executable on disk was built (Unix ms). */
+  core_binary_modified_ms: number | null;
   core_log: string;
   auto_launch: boolean;
   desktop_version: string;
@@ -657,7 +661,17 @@ export interface WorkflowInfo {
   version: number;
   status: WorkflowStatus;
   /** `organization`: an agent organization works on the objective (M8.3). */
-  stage: "investigation" | "implementation" | "review" | "correction" | "delivery" | "organization" | null;
+  /** `triage`: reasoning decides whether review findings are fixed or disputed (ADR 0038). */
+  stage:
+    | "investigation"
+    | "implementation"
+    | "review"
+    | "correction"
+    | "triage"
+    | "testing"
+    | "delivery"
+    | "organization"
+    | null;
   step_key: string | null;
   reason: string | null;
   resume_action: string | null;
@@ -672,6 +686,10 @@ export interface WorkflowInfo {
   ended_at_ms: number | null;
   integration_id: Uuid | null;
   delivery: DeliveryPhase | null;
+  /** Reasoning's plan when it split the task, in order (ADR 0040). */
+  plan?: { title: string; description?: string; done: boolean }[];
+  /** The subtask being worked on, 1-based. */
+  subtask?: number | null;
 }
 
 // --- agent organizations (M8.3) ---------------------------------------------------
@@ -913,6 +931,39 @@ export interface TaskDetail {
   findings: TaskFinding[];
   proposals: TaskProposal[];
   workflow: WorkflowInfo | null;
+  /** The workflow's test gate runs, oldest first (ADR 0039). */
+  test_runs?: TestRunInfo[];
+}
+
+export type TestKind = "unit" | "integration" | "regression" | "browser";
+
+/** One command of a test gate run. */
+export interface TestResult {
+  kind: TestKind;
+  name?: string | null;
+  command: string;
+  /** The policy's decision: allow, ask or deny. */
+  policy: string;
+  /** passed, failed, timed_out, error, refused, skipped, cancelled. */
+  status: string;
+  exit_code?: number | null;
+  duration_ms?: number;
+  stdout_tail?: string;
+  stderr_tail?: string;
+  detail?: string | null;
+}
+
+/** One run of the workflow's test gate (ADR 0039). */
+export interface TestRunInfo {
+  id: Uuid;
+  step_key: string;
+  status: "passed" | "failed" | "needs_authorization";
+  summary: string;
+  results: TestResult[];
+  ui_change: boolean;
+  authorized_by?: string;
+  started_at_ms: number;
+  ended_at_ms: number;
 }
 
 type TaskResult = { task: Task };

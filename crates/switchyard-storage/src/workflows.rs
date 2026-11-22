@@ -305,3 +305,83 @@ mod tests {
             .unwrap();
     }
 }
+
+/// One test run of the workflow's test gate (ADR 0039).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TestRunRecord {
+    pub id: Uuid,
+    pub task_id: Uuid,
+    pub step_key: String,
+    /// `passed`, `failed` or `needs_authorization`.
+    pub status: String,
+    pub summary: String,
+    pub results: Value,
+    pub ui_change: bool,
+    pub authorized_by: Option<String>,
+    pub started_at_ms: i64,
+    pub ended_at_ms: i64,
+}
+
+pub fn insert_test_run(conn: &Connection, r: &TestRunRecord) -> Result<(), StorageError> {
+    conn.execute(
+        "INSERT INTO workflow_test_runs (id, task_id, step_key, status, summary, results, ui_change, authorized_by, \
+         started_at, ended_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            r.id.to_string(),
+            r.task_id.to_string(),
+            r.step_key,
+            r.status,
+            r.summary,
+            r.results.to_string(),
+            i64::from(r.ui_change),
+            r.authorized_by,
+            r.started_at_ms,
+            r.ended_at_ms,
+        ],
+    )?;
+    Ok(())
+}
+
+type TestRunRow = (String, String, String, String, String, String, i64, Option<String>, i64, i64);
+
+fn test_run_of(row: &Row<'_>) -> rusqlite::Result<TestRunRow> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+        row.get(8)?,
+        row.get(9)?,
+    ))
+}
+
+/// The task's test runs, oldest first.
+pub fn test_runs_for_task(conn: &Connection, task: Uuid) -> Result<Vec<TestRunRecord>, StorageError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT id, task_id, step_key, status, summary, results, ui_change, authorized_by, started_at, ended_at \
+         FROM workflow_test_runs WHERE task_id = ?1 ORDER BY ended_at, rowid",
+    )?;
+    let rows = stmt.query_map([task.to_string()], test_run_of)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, task_id, step_key, status, summary, results, ui, authorized_by, started, ended) = row?;
+        out.push(TestRunRecord {
+            id: parse_uuid(&id, "workflow_test_runs.id")?,
+            task_id: parse_uuid(&task_id, "workflow_test_runs.task_id")?,
+            step_key,
+            status,
+            summary,
+            results: serde_json::from_str(&results)
+                .map_err(|e| StorageError::Corrupt(format!("test run results: {e}")))?,
+            ui_change: ui != 0,
+            authorized_by,
+            started_at_ms: started,
+            ended_at_ms: ended,
+        });
+    }
+    Ok(out)
+}

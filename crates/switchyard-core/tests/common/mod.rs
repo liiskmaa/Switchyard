@@ -265,3 +265,34 @@ pub fn read_jsonl(path: &Path) -> Vec<serde_json::Value> {
         }
     }
 }
+
+/// The test command fake implementers name for every required kind (ADR 0039).
+pub const PASSING_TEST: &str = "/usr/bin/true";
+
+/// `"tests"` for an implementation report: every required kind, passing.
+pub fn passing_tests() -> serde_json::Value {
+    serde_json::json!([
+        { "kind": "unit", "command": [PASSING_TEST] },
+        { "kind": "integration", "command": [PASSING_TEST] },
+        { "kind": "regression", "command": [PASSING_TEST] }
+    ])
+}
+
+/// Lets the workflow's test gate run [`PASSING_TEST`] without asking, the
+/// way a project allows its own test command.
+pub async fn allow_test_command(client: &CoreClient, project_id: uuid::Uuid, command: &str) {
+    use switchyard_protocol::methods::{PoliciesCreate, PoliciesCreateParams};
+    use switchyard_protocol::model::{OperationCategory, PolicyConditions, PolicyDecision};
+    client
+        .call::<PoliciesCreate>(PoliciesCreateParams {
+            project_id,
+            workspace_id: None,
+            category: OperationCategory::Shell,
+            decision: PolicyDecision::Allow,
+            conditions: PolicyConditions { path_prefix: None, command: Some(command.into()) },
+            description: format!("test command {command}"),
+            enabled: None,
+        })
+        .await
+        .unwrap();
+}

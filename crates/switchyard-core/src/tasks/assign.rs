@@ -366,7 +366,16 @@ impl TaskService {
                             .map(|s| super::bounded(s, 2000)),
                     });
                 }
-                let review_findings = if a.role == Role::Implement {
+                // Review triage (ADR 0038): the reasoning step sees the review's
+                // findings; the next implementation or review sees its answer.
+                let review_triage = a.role == Role::Investigate
+                    && a.step_key.as_deref().is_some_and(switchyard_tasks::workflow::is_triage_step);
+                let reasoning = if matches!(a.role, Role::Implement | Role::Review) {
+                    latest_reasoning(c, t.id)?
+                } else {
+                    None
+                };
+                let review_findings = if a.role == Role::Implement || review_triage {
                     store::findings_for_task(c, t.id)?
                         .into_iter()
                         .filter(|f| f.status == "open")
@@ -404,6 +413,16 @@ impl TaskService {
                         .collect(),
                     restrictions: TaskContext::standard_restrictions(a.role),
                     organization: super::organization::brief_for(c, &t)?,
+                    review_triage,
+                    reasoning,
+                    subtask: subtask_of(c, t.id, a.step_key.as_deref())?,
+                    test_results: if matches!(a.role, Role::Review | Role::Investigate | Role::Implement)
+                        && a.origin == "workflow"
+                    {
+                        super::tests::latest_for_context(c, t.id)?
+                    } else {
+                        None
+                    },
                 };
                 // Continue the conversation of this task's previous session for
                 // the same role, provider and workspace, when it can be resumed.
@@ -686,4 +705,52 @@ impl TaskService {
             .map_err(errors::storage)?;
         Ok(TasksNoteResult { message: convert::message(message), delivered })
     }
+}
+
+/// Reasoning's latest triage report on the task, unless a review came after
+/// it (ADR 0038). Read from Core's own record of the report.
+fn latest_reasoning(
+    c: &switchyard_storage::Connection,
+    task: Uuid,
+) -> Result<Option<switchyard_tasks::context::ContextReasoning>, StorageError> {
+    for m in store::messages_for_task(c, task)?.into_iter().rev() {
+        let report = &m.payload["report"];
+        match report["type"].as_str() {
+            Some("review") => return Ok(None),
+            Some("triage") => {
+                let Ok(decision) = serde_json::from_value(report["decision"].clone()) else {
+                    return Ok(None);
+                };
+                return Ok(Some(switchyard_tasks::context::ContextReasoning {
+                    decision,
+                    summary: report["summary"].as_str().map(|s| super::bounded(s, 2000)).unwrap_or_default(),
+                    details: report["details"].as_str().map(|s| super::bounded(s, 4000)),
+                }));
+            }
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
+/// The planned subtask a workflow step works on (ADR 0040), from the
+/// workflow's own state.
+fn subtask_of(
+    c: &switchyard_storage::Connection,
+    task: Uuid,
+    step_key: Option<&str>,
+) -> Result<Option<switchyard_tasks::context::ContextSubtask>, StorageError> {
+    let Some((Some(n), _)) = step_key.map(switchyard_tasks::workflow::split_subtask) else { return Ok(None) };
+    let Some(w) = switchyard_storage::workflows::find_workflow(c, task)? else { return Ok(None) };
+    let state: switchyard_tasks::workflow::WorkflowState =
+        serde_json::from_value(w.state).map_err(|e| StorageError::Corrupt(format!("workflow state: {e}")))?;
+    let Some(s) = state.plan.get(n.saturating_sub(1) as usize) else { return Ok(None) };
+    Ok(Some(switchyard_tasks::context::ContextSubtask {
+        number: n,
+        of: u32::try_from(state.plan.len()).unwrap_or(u32::MAX),
+        title: s.title.clone(),
+        description: s.description.clone(),
+        acceptance_criteria: s.acceptance_criteria.clone(),
+        done: state.plan.iter().filter(|p| p.done).map(|p| p.title.clone()).collect(),
+    }))
 }

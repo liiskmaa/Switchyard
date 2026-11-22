@@ -1,4 +1,4 @@
-import { reconnectNow } from "../lib/core";
+import { reconnectNow, startCore } from "../lib/core";
 import { useConnection } from "../stores/core";
 import { Icon } from "./Icon";
 import { Button } from "./ui";
@@ -11,6 +11,19 @@ export function ConnectionNotice() {
     return (
       <div className="banner banner-warn" role="status">
         <Icon name="refresh" /> Connecting to Switchyard Core…
+      </div>
+    );
+  }
+  if (state.state === "stopped") {
+    return (
+      <div className="banner banner-warn" role="status">
+        <Icon name="alert" />
+        <span className="banner-text">
+          Switchyard Core is stopped. Agents are not running; nothing changes until you start it.
+        </span>
+        <Button variant="ghost" icon="refresh" onClick={() => void startCore()}>
+          Start Core
+        </Button>
       </div>
     );
   }

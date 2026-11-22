@@ -633,6 +633,29 @@ pub struct TaskDetail {
     /// The task's workflow run, if it has one (M8.1).
     #[serde(default)]
     pub workflow: Option<WorkflowInfo>,
+    /// The workflow's test gate runs, oldest first (ADR 0039).
+    #[serde(default)]
+    pub test_runs: Vec<TestRunInfo>,
+}
+
+/// One run of the workflow's test gate (ADR 0039): what Core ran, what the
+/// policy decided for each command, and every result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TestRunInfo {
+    pub id: Uuid,
+    /// The implementation step tested, e.g. `implement#2`.
+    pub step_key: String,
+    /// `passed`, `failed` or `needs_authorization`.
+    pub status: String,
+    pub summary: String,
+    /// `[{kind, name?, command, policy, status, exit_code?, duration_ms?, stdout_tail?, stderr_tail?, detail?}]`.
+    pub results: serde_json::Value,
+    /// The change touched UI files, so browser tests were required.
+    pub ui_change: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorized_by: Option<String>,
+    pub started_at_ms: i64,
+    pub ended_at_ms: i64,
 }
 
 method!(TasksGet, "tasks.get", TaskIdParams, TaskDetail);

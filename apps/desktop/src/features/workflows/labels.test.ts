@@ -37,7 +37,10 @@ describe("plain step names", () => {
   it("names steps and rounds", () => {
     expect(stepName("investigate#1")).toBe("Investigation");
     expect(stepName("implement#1")).toBe("Implementation");
-    expect(stepName("implement#2")).toBe("Correction 1");
+    expect(stepName("implement#2")).toBe("Implementation 2");
+    expect(stepName("investigate#2")).toBe("Reasoning on review 1");
+    expect(stepName("s2/implement#1")).toBe("Subtask 2 · Implementation");
+    expect(stepName("s1/investigate#2")).toBe("Subtask 1 · Reasoning (round 1)");
     expect(stepName("review#1")).toBe("Review");
     expect(stepName("review#2")).toBe("Re-review");
     expect(stepName("review#3@2")).toBe("Re-review 2 (attempt 2)");

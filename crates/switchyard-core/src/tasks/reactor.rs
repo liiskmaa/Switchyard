@@ -327,12 +327,16 @@ impl TaskService {
             if workspace_changed {
                 store::insert_finding(tx, &workspace_changed_finding(&t, m.id, a.id, now))?;
             }
+            // A workflow step's early end is the workflow's to handle (retry,
+            // or wait after a Core shutdown); only an operator's assignment
+            // fails its task.
+            let fail_task = a.origin != "workflow";
             check!(super::assign::abandon_assignment(
                 tx,
                 a.id,
                 AssignmentStatus::Failed,
                 &why,
-                true,
+                fail_task,
                 now,
                 &mut drafts
             )?);
@@ -350,6 +354,8 @@ fn message_kind(kind: ReportKind) -> MessageKind {
         ReportKind::Review => MessageKind::ReviewResult,
         ReportKind::Blocker => MessageKind::Blocker,
         ReportKind::Question => MessageKind::InfoRequest,
+        // Reasoning's decision on review findings: an investigation result.
+        ReportKind::Triage => MessageKind::Findings,
     }
 }
 
@@ -422,7 +428,10 @@ fn apply_report(
     for f in &findings {
         store::insert_finding(tx, f)?;
     }
-    for (i, s) in report.proposed_subtasks.iter().enumerate() {
+    // An automatic workflow's first investigation plans its own subtasks
+    // (ADR 0040): they become the workflow's plan, not proposals to decide.
+    let workflow_plan = a.origin == "workflow" && a.step_key.as_deref() == Some("investigate#1");
+    for (i, s) in report.proposed_subtasks.iter().enumerate().filter(|_| !workflow_plan) {
         store::insert_proposal(
             tx,
             &ProposalRecord {
@@ -469,6 +478,10 @@ fn apply_report(
         }
         (ReportKind::Blocker, _) => {
             ("blocker".to_owned(), TaskStatus::Blocked, format!("agent: {}", report.summary))
+        }
+        (ReportKind::Triage, _) => {
+            let decision = report.decision.map(|d| d.as_str()).unwrap_or("fix");
+            (format!("triage: {decision}"), TaskStatus::AwaitingReview, format!("reasoning: {decision}"))
         }
         (kind, _) => {
             let k = serde_json::to_value(kind)

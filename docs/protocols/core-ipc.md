@@ -147,7 +147,7 @@ client detect a restart. `seq` stays continuous across restarts because it lives
 | `policies.set_auto_mode` | `{project_id, enabled, expected_revision}` | `{settings, policy_revision}` (ADR 0037). `stale_revision` (`data.current_revision`), `invalid_params` when already in that state, `project_not_found`. Pending approvals are not answered by the change. |
 | `policies.evaluations` | `{project_id?, workspace_id?, session_id?, rule_id?, decision?, limit?}` | `{evaluations: [PolicyEvaluation]}`, newest first. `rule_id` matches evaluations the rule decided or matched. |
 | `tasks.list` | `{project_id?, include_closed?, limit?}` | `{tasks: [Task]}`, newest first; completed and cancelled tasks only with `include_closed` |
-| `tasks.get` | `{task_id}` | `TaskDetail`: `{task, dependencies: [TaskRef], dependents: [TaskRef], readiness: satisfied\|waiting\|broken, assignments, messages, findings, proposals}` |
+| `tasks.get` | `{task_id}` | `TaskDetail`: `{task, dependencies: [TaskRef], dependents: [TaskRef], readiness: satisfied\|waiting\|broken, assignments, messages, findings, proposals, workflow?, test_runs}`. `test_runs` (ADR 0039, oldest first): `{id, step_key, status: passed\|failed\|needs_authorization, summary, results: [{kind, name?, command, policy, status, exit_code?, duration_ms?, stdout_tail?, stderr_tail?, detail?}], ui_change, authorized_by?, started_at_ms, ended_at_ms}`. `workflow` also carries `plan: [{title, description?, done}]` and `subtask?` (ADR 0040); its `stage` may be `triage` or `testing` (engineering@2). |
 | `tasks.create` | `{project_id, title, description?, kind?, priority?, acceptance_criteria?, depends_on?: [task_id], parent_task_id?, publish?}` | `{task}`: a `draft`, or with `publish` `ready`/`blocked`. Dependencies must be in the project; `invalid_params` for a cycle. `project_not_found`. |
 | `tasks.update` | `{task_id, expected_revision, title?, description?, kind?, priority?, acceptance_criteria?}` | `{task}`. `conflict` on a stale revision; `invalid_state` while an agent works on it or once it is closed. |
 | `tasks.publish` | `{task_id}` | `{task}`: `draft` → `ready` (or `blocked` while dependencies are open) |
@@ -361,6 +361,9 @@ the registration is kept and `projects.git_status` returns `repository_unavailab
 | `workflow.waiting` | `{step_key?, reason}`: needs the operator |
 | `workflow.paused` / `workflow.resumed` | `{by}` |
 | `workflow.completed` | `{reason}`: M8.1 runs only (stopped at the delivery gate) |
+| `workflow.tests_changed` | `{phase: running\|passed\|failed\|needs_authorization, reason, step_key?}`: the test gate (ADR 0039) |
+| `workflow.planned` | `{subtasks: [title]}`: reasoning split the task; the subtasks run in order (ADR 0040) |
+| `workflow.subtask_completed` | `{number, title}`: a subtask's review approved (ADR 0040) |
 | `workflow.delivery_changed` | `{phase, reason, integration_id?}`: delivery progressed (M8.2) |
 | `workflow.delivered` | `{reason, integration_id?}`: the integration landed; the task is completed |
 | `workflow.failed` / `workflow.cancelled` | `{reason}` |

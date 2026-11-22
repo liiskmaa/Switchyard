@@ -30,6 +30,7 @@ use switchyard_protocol::methods::{
 use switchyard_protocol::methods::{
     OrganizationsAnswer, OrganizationsGet, OrganizationsSetSettings, OrganizationsSettings,
 };
+use switchyard_protocol::methods::{ShutdownParams, SystemShutdown};
 use switchyard_protocol::methods::{
     TasksAddDependency, TasksAssign, TasksCancel, TasksCancelAssignment, TasksComplete, TasksCreate,
     TasksDecideProposal, TasksFail, TasksGet, TasksList, TasksNote, TasksPublish, TasksRemoveDependency,
@@ -171,6 +172,9 @@ pub struct CoreEnvironment {
     pub socket_path: String,
     pub database_path: String,
     pub core_binary: Option<String>,
+    /// When the Core executable on disk was last built (Unix ms): newer than
+    /// the running Core's start means a restart picks up a new build.
+    pub core_binary_modified_ms: Option<i64>,
     pub core_log: String,
     pub auto_launch: bool,
     pub desktop_version: &'static str,
@@ -183,6 +187,14 @@ pub fn core_environment(bridge: State<'_, Arc<Bridge>>) -> CoreEnvironment {
         socket_path: bridge.paths.socket.display().to_string(),
         database_path: bridge.paths.database.display().to_string(),
         core_binary: bridge.launcher.binary.as_ref().map(|p| p.display().to_string()),
+        core_binary_modified_ms: bridge
+            .launcher
+            .binary
+            .as_ref()
+            .and_then(|p| std::fs::metadata(p).ok())
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .and_then(|d| i64::try_from(d.as_millis()).ok()),
         core_log: bridge.launcher.log_file().display().to_string(),
         auto_launch: bridge.launcher.auto_launch,
         desktop_version: env!("CARGO_PKG_VERSION"),
@@ -208,4 +220,48 @@ pub async fn core_request(
 #[tauri::command]
 pub fn core_reconnect(bridge: State<'_, Arc<Bridge>>) {
     bridge.reconnect_now();
+}
+
+/// How long a graceful shutdown may take (Core waits up to 60 s for running
+/// integration steps before stopping them).
+const STOP_WAIT: std::time::Duration = std::time::Duration::from_secs(75);
+
+/// Stops Core gracefully (`system.shutdown`) and holds auto-launch until
+/// [`core_start`]. Agents' sessions stop with it; they can be resumed later.
+#[tauri::command]
+pub async fn core_stop(bridge: State<'_, Arc<Bridge>>) -> Result<(), CommandError> {
+    bridge.set_held(true);
+    if let Some(client) = bridge.client().await {
+        let params = ShutdownParams { reason: Some("stopped from the desktop app".into()) };
+        // The connection may close before the answer arrives; that is a stop too.
+        let _ = client.call::<SystemShutdown>(params).await;
+    }
+    let deadline = std::time::Instant::now() + STOP_WAIT;
+    while tokio::net::UnixStream::connect(&bridge.paths.socket).await.is_ok() {
+        if std::time::Instant::now() >= deadline {
+            return Err(CommandError::new("core_still_running", "Core did not stop within 75 seconds"));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    bridge.reconnect_now();
+    Ok(())
+}
+
+/// Starts Core (releasing a stop) and connects to it.
+#[tauri::command]
+pub async fn core_start(bridge: State<'_, Arc<Bridge>>) -> Result<(), CommandError> {
+    bridge.set_held(false);
+    if tokio::net::UnixStream::connect(&bridge.paths.socket).await.is_err() {
+        bridge.launch().map_err(|e| CommandError::new("core_start_failed", e))?;
+    }
+    bridge.reconnect_now();
+    Ok(())
+}
+
+/// Stops Core gracefully, then starts the executable on disk again: the way
+/// to pick up a new build.
+#[tauri::command]
+pub async fn core_restart(bridge: State<'_, Arc<Bridge>>) -> Result<(), CommandError> {
+    core_stop(bridge.clone()).await?;
+    core_start(bridge).await
 }

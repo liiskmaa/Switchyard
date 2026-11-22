@@ -7,6 +7,7 @@
 //! sequence number seen, so the UI's activity feed has no gaps.
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -33,9 +34,24 @@ const LAUNCH_COOLDOWN: Duration = Duration::from_secs(10);
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ConnectionState {
-    Connecting { attempt: u32 },
-    Connected { core: CoreInfo, protocol_version: u32 },
-    Disconnected { error: String, retry_in_ms: u64, launched_core: bool },
+    Connecting {
+        attempt: u32,
+    },
+    Connected {
+        core: CoreInfo,
+        protocol_version: u32,
+    },
+    Disconnected {
+        error: String,
+        retry_in_ms: u64,
+        launched_core: bool,
+        /// The running Core speaks a protocol this app does not: restarting
+        /// it starts the matching build (ADR 0015).
+        incompatible: bool,
+    },
+    /// The operator stopped Core from the app: nothing restarts it until
+    /// they start it again (a Core started elsewhere is still connected to).
+    Stopped,
 }
 
 pub struct Bridge {
@@ -44,6 +60,10 @@ pub struct Bridge {
     client: RwLock<Option<CoreClient>>,
     state: Mutex<ConnectionState>,
     reconnect: tokio::sync::Notify,
+    /// Set by "Stop Core": auto-launch is held until "Start".
+    held: AtomicBool,
+    /// When Core was last launched by the app (shared with the commands).
+    last_launch: Mutex<Option<Instant>>,
 }
 
 impl Bridge {
@@ -54,6 +74,38 @@ impl Bridge {
             client: RwLock::new(None),
             state: Mutex::new(ConnectionState::Connecting { attempt: 0 }),
             reconnect: tokio::sync::Notify::new(),
+            held: AtomicBool::new(false),
+            last_launch: Mutex::new(None),
+        }
+    }
+
+    pub fn set_held(&self, held: bool) {
+        self.held.store(held, Ordering::SeqCst);
+    }
+
+    pub fn held(&self) -> bool {
+        self.held.load(Ordering::SeqCst)
+    }
+
+    /// Starts Core now (the operator's "Start"), whatever the auto-launch
+    /// setting; records the launch so the supervisor does not start a second one.
+    pub fn launch(&self) -> Result<u32, String> {
+        if let Ok(mut l) = self.last_launch.lock() {
+            *l = Some(Instant::now());
+        }
+        self.launcher.spawn()
+    }
+
+    fn may_auto_launch(&self) -> bool {
+        if self.held() || !self.launcher.auto_launch {
+            return false;
+        }
+        match self.last_launch.lock() {
+            Ok(mut l) if l.is_none_or(|t| t.elapsed() >= LAUNCH_COOLDOWN) => {
+                *l = Some(Instant::now());
+                true
+            }
+            _ => false,
         }
     }
 
@@ -62,6 +114,7 @@ impl Bridge {
             error: "connection state unavailable".into(),
             retry_in_ms: 0,
             launched_core: false,
+            incompatible: false,
         })
     }
 
@@ -88,7 +141,6 @@ pub async fn supervise(app: AppHandle, bridge: std::sync::Arc<Bridge>) {
     let mut last_seq: Option<i64> = None;
     let mut attempt: u32 = 0;
     let mut backoff = BACKOFF_MIN;
-    let mut last_launch: Option<Instant> = None;
 
     loop {
         attempt += 1;
@@ -105,11 +157,17 @@ pub async fn supervise(app: AppHandle, bridge: std::sync::Arc<Bridge>) {
         };
 
         let mut launched_core = false;
-        if matches!(error, ClientError::Connect { .. })
-            && bridge.launcher.auto_launch
-            && last_launch.is_none_or(|t| t.elapsed() >= LAUNCH_COOLDOWN)
-        {
-            last_launch = Some(Instant::now());
+        if bridge.held() {
+            // Stopped by the operator: wait for "Start" (or poll for a Core started elsewhere).
+            bridge.set_state(&app, ConnectionState::Stopped);
+            tokio::select! {
+                () = tokio::time::sleep(BACKOFF_MAX) => {}
+                () = bridge.reconnect.notified() => {}
+            }
+            backoff = BACKOFF_MIN;
+            continue;
+        }
+        if matches!(error, ClientError::Connect { .. }) && bridge.may_auto_launch() {
             match bridge.launcher.spawn() {
                 Ok(_) => {
                     launched_core = true;
@@ -126,6 +184,10 @@ pub async fn supervise(app: AppHandle, bridge: std::sync::Arc<Bridge>) {
                 error: error.to_string(),
                 retry_in_ms: u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX),
                 launched_core,
+                incompatible: matches!(
+                    error,
+                    ClientError::IncompatibleCore { .. } | ClientError::IncompatibleProtocol(_)
+                ),
             },
         );
         tokio::select! {

@@ -21,6 +21,7 @@ pub const MIGRATIONS: &[(u32, &str)] = &[
     (9, include_str!("../../../migrations/0009_workflow_delivery.sql")),
     (10, include_str!("../../../migrations/0010_organizations.sql")),
     (11, include_str!("../../../migrations/0011_policy_auto_mode.sql")),
+    (12, include_str!("../../../migrations/0012_workflow_tests.sql")),
 ];
 
 pub const LATEST_SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -104,6 +105,7 @@ mod tests {
                 "validation_runs",
                 "validation_steps",
                 "workflow_settings",
+                "workflow_test_runs",
                 "workspaces"
             ]
         );

@@ -17,10 +17,11 @@ import {
   humanizeSteps,
   modelLabel,
   overridesOf,
-  stageOrder,
   stepName,
   workflowTone,
 } from "./labels";
+import { TaskFlow } from "./TaskFlow";
+import { TestResults } from "./TestResults";
 import { OrganizationPanel } from "./OrganizationPanel";
 import { RoleBindingsEditor } from "./RoleBindingsEditor";
 
@@ -76,7 +77,7 @@ function StartWorkflow({ detail, onDone }: { detail: TaskDetail; onDone: () => v
           <input type="radio" name="start-mode" checked={mode === "engineering"} onChange={() => setMode("engineering")} />
           <span>
             <strong>Fixed sequence</strong>
-            <span className="muted small">Investigate, implement, review, correct, with the project&apos;s roles and models.</span>
+            <span className="muted small">Investigate, implement, review; findings go back to reasoning and round again, with the project&apos;s roles and models.</span>
           </span>
         </label>
       </fieldset>
@@ -142,8 +143,9 @@ function StartSequence({ detail, onDone }: { detail: TaskDetail; onDone: () => v
   return (
     <div>
       <p className="small">
-        Switchyard runs <strong>engineering@1</strong>: investigation, implementation, an independent review and up to two
-        correction rounds, then stops for your delivery decision. It creates every assignment itself.
+        Switchyard runs <strong>engineering@2</strong>: investigation, implementation and an independent review. When the
+        review finds something, reasoning decides whether it gets fixed or disputed, for up to two rounds; then it stops for your
+        delivery decision. It creates every assignment itself.
       </p>
       {bindings ? (
         <ul className="mini-list">
@@ -228,13 +230,26 @@ export function WorkflowPanel({ detail, onChanged }: { detail: TaskDetail; onCha
       title="Progress"
       actions={<Badge tone={workflowTone(w.status)}>{WORKFLOW_STATUS_LABEL[w.status]}</Badge>}
     >
-      <ol className="workflow-stages" aria-label="Workflow stages">
-        {stageOrder(w).map((s) => (
-          <li key={s.key} className={`workflow-stage ${s.state}`}>
-            {s.label}
-          </li>
-        ))}
-      </ol>
+      <TaskFlow detail={detail} />
+      {w.plan && w.plan.length > 0 ? (
+        <section aria-label="Work plan">
+          <h3 className="policy-section">Work plan</h3>
+          <ol className="plan-list small">
+            {w.plan.map((p, i) => (
+              <li key={`${i}-${p.title}`} className={p.done ? "done" : w.subtask === i + 1 ? "current" : ""}>
+                <span className="plan-mark" aria-hidden="true">
+                  {p.done ? "✓" : w.subtask === i + 1 ? "▸" : "·"}
+                </span>
+                <span>
+                  {p.title}
+                  <span className="sr-only">{p.done ? " (done)" : w.subtask === i + 1 ? " (in progress)" : " (to do)"}</span>
+                </span>
+              </li>
+            ))}
+          </ol>
+        </section>
+      ) : null}
+      <TestResults detail={detail} now={now} />
       <p className="small">
         {w.status === "running" ? (
           <>
@@ -265,6 +280,18 @@ export function WorkflowPanel({ detail, onChanged }: { detail: TaskDetail; onCha
           ) : null}
           <Button variant="ghost" disabled={busy} onClick={() => act(() => cancelWorkflow(w.task_id))}>
             Cancel workflow
+          </Button>
+        </div>
+      ) : null}
+      {w.status === "failed" && w.step_key ? (
+        <div className="form-actions start">
+          <p className="small">
+            The workflow stopped: {humanizeSteps(w.reason ?? "it failed")}. Continuing runs{" "}
+            {stepName(w.step_key).toLowerCase()} again
+            {detail.task.status === "failed" ? " (the task is retried first)" : ""}; everything done before it is kept.
+          </p>
+          <Button variant="primary" disabled={busy} onClick={() => act(() => resumeWorkflow(w.task_id))}>
+            Continue the workflow
           </Button>
         </div>
       ) : null}

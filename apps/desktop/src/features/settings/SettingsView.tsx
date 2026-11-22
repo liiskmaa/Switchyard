@@ -6,16 +6,21 @@ import { formatTimestamp } from "../../lib/format";
 import { useConnection } from "../../stores/core";
 import type { CoreEnvironment } from "../../types/protocol";
 import { connectionSummary } from "../../components/StatusIndicator";
+import { CoreControls } from "../../components/CoreControls";
 
 export function SettingsView() {
   const connection = useConnection();
   const [env, setEnv] = useState<CoreEnvironment | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const loadEnv = () => {
     if (!runtimeAvailable()) return;
     getEnvironment().then(setEnv, (e: unknown) => setError(toCoreError(e).message));
-  }, []);
+  };
+  useEffect(loadEnv, []);
+  // The build on disk changes while the app runs; read it again on every (re)connect.
+  const instance = connection.state === "connected" ? connection.core.instance_id : null;
+  useEffect(loadEnv, [instance]);
 
   const summary = connectionSummary(connection);
   const path = (p: string | null | undefined) => (p ? <code className="path">{p}</code> : <span className="muted">not found</span>);
@@ -23,7 +28,7 @@ export function SettingsView() {
   return (
     <div className="page">
       <PageHeader title="Settings" subtitle="Local runtime configuration. Values are read from the running system." />
-      {error ? <ErrorNotice title="Cannot read environment" message={error} /> : null}
+      {error ? <ErrorNotice title="Cannot read the environment" message={error} /> : null}
       <Panel
         title="Switchyard Core"
         actions={
@@ -43,9 +48,16 @@ export function SettingsView() {
                   ["Started", formatTimestamp(connection.core.started_at_ms)],
                   ["Instance", <code>{connection.core.instance_id}</code>],
                 ] as [string, ReactNode][])
-              : ([["Last error", connection.state === "connecting" ? "—" : connection.error]] as [string, ReactNode][])),
+              : ([
+                  [
+                    "Last error",
+                    connection.state === "connecting" || connection.state === "stopped" ? "—" : connection.error,
+                  ],
+                ] as [string, ReactNode][])),
+            ["Executable built", env?.core_binary_modified_ms ? formatTimestamp(env.core_binary_modified_ms) : "—"],
           ]}
         />
+        <CoreControls />
       </Panel>
       <Panel title="Paths">
         <KeyValue

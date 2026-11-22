@@ -2,10 +2,14 @@ import type { DeliveryPhase, RoleBinding, RoleBindings, RoleBindingsPatch, Workf
 
 export type BindingKey = keyof RoleBindings;
 
-export const BINDING_KEYS: BindingKey[] = ["investigate", "implement", "review", "correct"];
+/**
+ * The roles a person chooses agents for. There is no separate correction role
+ * (ADR 0038): fixes are implementation rounds with the implementation agent.
+ */
+export const BINDING_KEYS: BindingKey[] = ["investigate", "implement", "review"];
 
 export const BINDING_LABEL: Record<BindingKey, string> = {
-  investigate: "Investigation",
+  investigate: "Investigation & reasoning",
   implement: "Implementation",
   review: "Review",
   correct: "Correction",
@@ -48,7 +52,7 @@ export function modelLabel(model: string | null): string {
   return model ?? "CLI default";
 }
 
-/** The stages of `engineering@1` shown in order, with where the workflow is. */
+/** The stages of `engineering@2` shown in order, with where the workflow is. */
 export function stageOrder(w: WorkflowInfo): { key: string; label: string; state: "done" | "current" | "todo" }[] {
   const stages = ["investigation", "implementation", "review", "delivery"] as const;
   const labels: Record<(typeof stages)[number], string> = {
@@ -57,7 +61,12 @@ export function stageOrder(w: WorkflowInfo): { key: string; label: string; state
     review: "Review & correct",
     delivery: "Deliver",
   };
-  const current = w.stage === "correction" ? "review" : w.stage === "organization" ? null : w.stage;
+  const current =
+    w.stage === "correction" || w.stage === "triage" || w.stage === "testing"
+      ? "review"
+      : w.stage === "organization"
+        ? null
+        : w.stage;
   const at = current ? stages.indexOf(current) : -1;
   return stages.map((s, i) => ({
     key: s,
@@ -104,11 +113,15 @@ export function workflowStageText(w: WorkflowInfo): string {
     case "investigation":
       return "Investigating";
     case "implementation":
-      return "Implementing";
+      return round > 1 ? `Implementing (round ${round})` : "Implementing";
     case "review":
       return round > 1 ? "Reviewing the correction" : "Reviewing";
     case "correction":
-      return `Correcting (round ${round - 1})`;
+      return `Implementing (round ${round})`;
+    case "triage":
+      return "Reasoning about the findings";
+    case "testing":
+      return w.status === "waiting" ? "Tests need your authorization" : "Running the tests";
     case "organization":
       return w.status === "waiting" ? "Needs you" : "The team is working";
     default:
@@ -116,26 +129,28 @@ export function workflowStageText(w: WorkflowInfo): string {
   }
 }
 
-const STEP_KEY = /\b(investigate|implement|review)#(\d+)(?:@(\d+))?/g;
+const STEP_KEY = /\b(?:s(\d+)\/)?(investigate|implement|review)#(\d+)(?:@(\d+))?/g;
 
 /** A workflow step in plain words: `implement#2` → "Correction 1", `review#2@2` → "Re-review (attempt 2)". */
 export function stepName(key: string): string {
-  return key.replace(STEP_KEY, (_m, role: string, roundText: string, attemptText?: string) => {
+  return key.replace(STEP_KEY, (_m, subtaskText: string | undefined, role: string, roundText: string, attemptText?: string) => {
     const round = Number(roundText);
     const n = round > 2 ? ` ${round - 1}` : "";
     const base =
       role === "investigate"
         ? round > 1
-          ? `Investigation ${round}`
+          ? `Reasoning on review ${round - 1}`
           : "Investigation"
         : role === "implement"
           ? round > 1
-            ? `Correction ${round - 1}`
+            ? `Implementation ${round}`
             : "Implementation"
           : round > 1
             ? `Re-review${n}`
             : "Review";
-    return attemptText ? `${base} (attempt ${attemptText})` : base;
+    const named = subtaskText && role === "investigate" ? `Reasoning (round ${round - 1})` : base;
+    const withAttempt = attemptText ? `${named} (attempt ${attemptText})` : named;
+    return subtaskText ? `Subtask ${subtaskText} · ${withAttempt}` : withAttempt;
   });
 }
 

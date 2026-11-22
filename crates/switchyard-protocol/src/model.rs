@@ -933,4 +933,20 @@ pub struct WorkflowInfo {
     /// `delivery_failed`, `cancelled`.
     #[serde(default)]
     pub delivery: Option<String>,
+    /// Reasoning's plan when it split the task, in order (ADR 0040).
+    #[serde(default)]
+    pub plan: Vec<WorkflowPlanItem>,
+    /// The subtask being worked on, 1-based.
+    #[serde(default)]
+    pub subtask: Option<u32>,
+}
+
+/// One planned subtask of a workflow (ADR 0040).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowPlanItem {
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Its review approved.
+    pub done: bool,
 }

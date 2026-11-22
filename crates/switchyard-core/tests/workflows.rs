@@ -45,6 +45,7 @@ async fn fixture() -> Fixture {
         .await
         .unwrap()
         .project;
+    common::allow_test_command(&client, project.id, common::PASSING_TEST).await;
     Fixture { core, client, project_id: project.id }
 }
 
@@ -53,8 +54,14 @@ fn script(spec: &Value) -> String {
     format!("[fake:report:{hex}]")
 }
 
+/// An agent report; an implementation names passing tests for every required
+/// kind (ADR 0039), which the fixture's policy allows.
 fn report(kind: &str, summary: &str) -> Value {
-    json!({ "type": kind, "summary": summary })
+    let mut r = json!({ "type": kind, "summary": summary });
+    if kind == "implementation" {
+        r["tests"] = common::passing_tests();
+    }
+    r
 }
 
 fn review(result: &str) -> Value {
@@ -224,15 +231,19 @@ async fn workflow_events(f: &Fixture, task: Uuid) -> Vec<String> {
 }
 
 /// One task: investigation, implementation (with a write the operator
-/// approves), a review that requests changes, a correction with the
-/// findings, a re-review that approves: the delivery gate, with no
+/// approves), a review that requests changes, reasoning that agrees with
+/// the findings (ADR 0038), a correction with the findings and the
+/// reasoning, a re-review that approves: the delivery gate, with no
 /// `tasks.assign` call at all.
 #[tokio::test]
 async fn one_task_reaches_the_delivery_gate_through_a_correction_round() {
     let f = fixture().await;
     let spec = json!({
-        "investigate": { "report": { "type": "findings", "summary": "One new file is needed.",
-            "findings": [{ "severity": "info", "title": "No feature file", "path": "feature.txt" }] } },
+        "investigate": [
+            { "report": { "type": "findings", "summary": "One new file is needed.",
+                "findings": [{ "severity": "info", "title": "No feature file", "path": "feature.txt" }] } },
+            { "report": { "type": "triage", "decision": "fix", "summary": "Add the line the reviewer asks for." } }
+        ],
         "implement": [
             { "tool": "write:feature.txt", "report": report("implementation", "Added feature.txt.") },
             { "report": report("implementation", "Addressed the review.") }
@@ -241,13 +252,16 @@ async fn one_task_reaches_the_delivery_gate_through_a_correction_round() {
     });
     let task = create_task(&f, &spec).await;
     let wf = start(&f, task, RoleBindingsPatch::default()).await.unwrap();
-    assert_eq!((wf.definition.as_str(), wf.version), ("engineering", 1));
+    assert_eq!((wf.definition.as_str(), wf.version), ("engineering", 2));
     assert_eq!(wf.bindings.implement.provider, "codex", "Switchyard's default bindings");
 
     // Codex asks before writing: the normal approval path still applies.
     approve_step(&f, task, "implement#1").await;
     let d = wait_delivery(&f, task).await;
-    assert_eq!(keys(&d), ["investigate#1", "implement#1", "review#1", "implement#2", "review#2"]);
+    assert_eq!(
+        keys(&d),
+        ["investigate#1", "implement#1", "review#1", "investigate#2", "implement#2", "review#2"]
+    );
     assert!(d.assignments.iter().all(|a| a.origin == "workflow" && a.status.to_string() == "reported"));
     let w = d.workflow.as_ref().unwrap();
     assert_eq!((w.stage.as_deref(), w.corrections), (Some("delivery"), 1));
@@ -256,8 +270,16 @@ async fn one_task_reaches_the_delivery_gate_through_a_correction_round() {
 
     // The correction got the review's findings in its context.
     let correction = d.assignments.iter().find(|a| a.step_key.as_deref() == Some("implement#2")).unwrap();
-    let findings = &correction.context.as_ref().unwrap()["review_findings"];
+    let ctx = correction.context.as_ref().unwrap();
+    let findings = &ctx["review_findings"];
     assert!(findings.to_string().contains("Needs another line"), "{findings}");
+    assert_eq!(ctx["reasoning"]["decision"], "fix", "the correction got reasoning's answer");
+    // The reasoning step saw the findings, as a triage, read in Core's own records.
+    let triage = d.assignments.iter().find(|a| a.step_key.as_deref() == Some("investigate#2")).unwrap();
+    let tctx = triage.context.as_ref().unwrap();
+    assert_eq!(tctx["review_triage"], true);
+    assert!(tctx["review_findings"].to_string().contains("Needs another line"));
+    assert_eq!(triage.outcome.as_deref(), Some("triage: fix"));
 
     // Reviews ran read-only; implementation could write.
     for a in &d.assignments {
@@ -281,7 +303,7 @@ async fn one_task_reaches_the_delivery_gate_through_a_correction_round() {
     assert_eq!(d.workflow.as_ref().unwrap().integration_id, Some(integrations.integrations[0].id));
     let events = workflow_events(&f, task).await;
     assert_eq!(events.first().map(String::as_str), Some("workflow.started"));
-    assert_eq!(events.iter().filter(|e| *e == "workflow.stage_changed").count(), 5);
+    assert_eq!(events.iter().filter(|e| *e == "workflow.stage_changed").count(), 6);
     assert!(events.contains(&"workflow.delivery_changed".to_owned()), "{events:?}");
     assert_eq!(events.last().map(String::as_str), Some("workflow.waiting"));
     // The approved write really happened in the workflow's workspace.
@@ -302,8 +324,9 @@ async fn correction_rounds_are_bounded_then_the_operator_decides() {
     let f = fixture().await;
     let implement: Vec<Value> =
         (0..4).map(|i| json!({ "report": report("implementation", &format!("try {i}")) })).collect();
+    let fix = json!({ "report": { "type": "triage", "decision": "fix", "summary": "Agreed." } });
     let spec = json!({
-        "investigate": { "report": report("findings", "found") },
+        "investigate": [ { "report": report("findings", "found") }, fix, fix, fix ],
         "implement": implement,
         "review": [ { "report": review("changes_requested") }, { "report": review("changes_requested") },
                     { "report": review("changes_requested") }, { "report": review("approved") } ]
@@ -313,14 +336,49 @@ async fn correction_rounds_are_bounded_then_the_operator_decides() {
     let d = wait_status(&f, task, "waiting").await;
     assert_eq!(
         keys(&d),
-        ["investigate#1", "implement#1", "review#1", "implement#2", "review#2", "implement#3", "review#3"]
+        [
+            "investigate#1",
+            "implement#1",
+            "review#1",
+            "investigate#2",
+            "implement#2",
+            "review#2",
+            "investigate#3",
+            "implement#3",
+            "review#3"
+        ]
     );
     let w = d.workflow.as_ref().unwrap();
-    assert!(w.reason.as_deref().unwrap().contains("2 correction rounds"), "{:?}", w.reason);
-    assert_eq!(w.resume_action.as_deref(), Some("start implement#4"));
+    assert!(w.reason.as_deref().unwrap().contains("rounds of fixes or reasoning"), "{:?}", w.reason);
+    assert_eq!(w.resume_action.as_deref(), Some("start investigate#4"));
     f.client.call::<WorkflowsResume>(TaskIdParams { task_id: task }).await.unwrap();
     let d = wait_delivery(&f, task).await;
     assert_eq!(keys(&d).last().map(String::as_str), Some("review#4"));
+}
+
+/// Reasoning disputes the review's findings (ADR 0038): implementation is
+/// skipped, the reviewer gets the reasoning and approves.
+#[tokio::test]
+async fn reasoning_can_dispute_review_findings_and_skip_implementation() {
+    let f = fixture().await;
+    let spec = json!({
+        "investigate": [
+            { "report": report("findings", "found") },
+            { "report": { "type": "triage", "decision": "dispute",
+                "summary": "The input is already validated by the caller.", "details": "See parse()." } }
+        ],
+        "implement": { "report": report("implementation", "done") },
+        "review": [ { "report": review("changes_requested") }, { "report": review("approved") } ]
+    });
+    let task = create_task(&f, &spec).await;
+    start(&f, task, claude_everywhere()).await.unwrap();
+    let d = wait_delivery(&f, task).await;
+    assert_eq!(keys(&d), ["investigate#1", "implement#1", "review#1", "investigate#2", "review#2"]);
+    let rereview = d.assignments.iter().find(|a| a.step_key.as_deref() == Some("review#2")).unwrap();
+    let reasoning = &rereview.context.as_ref().unwrap()["reasoning"];
+    assert_eq!(reasoning["decision"], "dispute");
+    assert_eq!(reasoning["summary"], "The input is already validated by the caller.");
+    assert_eq!(reasoning["details"], "See parse().");
 }
 
 fn claude_everywhere() -> RoleBindingsPatch {
@@ -428,6 +486,7 @@ async fn a_restart_interrupts_without_duplicating_steps() {
     let d = wait_status(&f, task, "waiting").await;
     assert!(d.workflow.as_ref().unwrap().reason.as_deref().unwrap().contains("Core restarted"));
     assert_eq!(keys(&d), ["investigate#1", "implement#1"], "nothing restarted automatically");
+    assert_ne!(d.task.status, TaskStatus::Failed, "a Core shutdown never fails the workflow's task");
     // A second restart replays the same events: still nothing new.
     f.core.restart().await;
     let (client, _rx) = f.core.connect().await;
@@ -706,4 +765,195 @@ async fn pause_cancel_and_takeover() {
     .await;
     assert_eq!(status(&d), "cancelled");
     assert!(workflow_events(&f, task).await.contains(&"workflow.cancelled".to_owned()));
+}
+
+// --- the test gate (ADR 0039) -------------------------------------------------------
+
+fn test_runs(f: &Fixture, task: Uuid) -> Vec<(String, String, String)> {
+    let path = common::config_for(f.core.dir.path()).paths.database;
+    let c = rusqlite::Connection::open(path).unwrap();
+    c.busy_timeout(Duration::from_secs(5)).unwrap();
+    let mut stmt = c
+        .prepare(
+            "SELECT step_key, status, summary FROM workflow_test_runs WHERE task_id = ?1 ORDER BY ended_at",
+        )
+        .unwrap();
+    stmt.query_map([task.to_string()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+fn implementation_with_tests(summary: &str, tests: Value) -> Value {
+    json!({ "type": "implementation", "summary": summary, "tests": tests })
+}
+
+/// Core runs the named tests before the review: a failing test goes to
+/// reasoning with Core's results, the fixed work is tested again and only
+/// then reviewed.
+#[tokio::test]
+async fn failing_tests_go_to_reasoning_before_any_review() {
+    let f = fixture().await;
+    common::allow_test_command(&f.client, f.project_id, "/usr/bin/false").await;
+    let failing = json!([
+        { "kind": "unit", "command": ["/usr/bin/false"], "name": "unit" },
+        { "kind": "integration", "command": [common::PASSING_TEST] },
+        { "kind": "regression", "command": [common::PASSING_TEST] }
+    ]);
+    let spec = json!({
+        "investigate": [
+            { "report": report("findings", "found") },
+            { "report": { "type": "triage", "decision": "fix", "summary": "Fix the unit test." } }
+        ],
+        "implement": [
+            { "report": implementation_with_tests("first", failing) },
+            { "report": report("implementation", "fixed") }
+        ],
+        "review": { "report": review("approved") }
+    });
+    let task = create_task(&f, &spec).await;
+    start(&f, task, claude_everywhere()).await.unwrap();
+    let d = wait_delivery(&f, task).await;
+    assert_eq!(keys(&d), ["investigate#1", "implement#1", "investigate#2", "implement#2", "review#2"]);
+    let runs = test_runs(&f, task);
+    assert_eq!(runs.len(), 2);
+    assert_eq!((runs[0].0.as_str(), runs[0].1.as_str()), ("implement#1", "failed"));
+    assert!(runs[0].2.contains("/usr/bin/false"), "{}", runs[0].2);
+    assert_eq!((runs[1].0.as_str(), runs[1].1.as_str()), ("implement#2", "passed"));
+    // Reasoning saw Core's failing run; the reviewer saw the passing one.
+    let ctx = |k: &str| {
+        d.assignments.iter().find(|a| a.step_key.as_deref() == Some(k)).unwrap().context.clone().unwrap()
+    };
+    assert_eq!(ctx("investigate#2")["test_results"]["status"], "failed");
+    assert_eq!(ctx("review#2")["test_results"]["status"], "passed");
+}
+
+/// A change to UI files needs browser tests; missing kinds fail the gate
+/// without running anything.
+#[tokio::test]
+async fn a_ui_change_without_browser_tests_fails_the_gate() {
+    let f = fixture().await;
+    let spec = json!({
+        "investigate": [
+            { "report": report("findings", "found") },
+            { "report": { "type": "triage", "decision": "fix", "summary": "Add browser tests." } }
+        ],
+        "implement": { "tool": "write:app.tsx", "report": report("implementation", "UI done") },
+        "review": { "report": review("approved") }
+    });
+    let task = create_task(&f, &spec).await;
+    start(&f, task, claude_everywhere()).await.unwrap();
+    approve_step(&f, task, "implement#1").await;
+    wait_for(&f, task, "reasoning about the failed gate", |d| keys(d).contains(&"investigate#2".to_owned()))
+        .await;
+    let runs = test_runs(&f, task);
+    assert_eq!(runs[0].1, "failed");
+    assert!(runs[0].2.contains("no browser tests"), "{}", runs[0].2);
+}
+
+/// Test commands the policy asks about wait for the operator; resuming
+/// authorizes and runs them.
+#[tokio::test]
+async fn test_commands_the_policy_asks_about_wait_for_the_operator() {
+    let f = fixture().await;
+    let tests = json!([
+        { "kind": "unit", "command": ["/bin/echo", "unit"] },
+        { "kind": "integration", "command": [common::PASSING_TEST] },
+        { "kind": "regression", "command": [common::PASSING_TEST] }
+    ]);
+    let spec = json!({
+        "investigate": { "report": report("findings", "found") },
+        "implement": { "report": implementation_with_tests("done", tests) },
+        "review": { "report": review("approved") }
+    });
+    let task = create_task(&f, &spec).await;
+    start(&f, task, claude_everywhere()).await.unwrap();
+    let d = wait_status(&f, task, "waiting").await;
+    let w = d.workflow.as_ref().unwrap();
+    assert!(w.reason.as_deref().unwrap().contains("/bin/echo unit"), "{:?}", w.reason);
+    assert_eq!(w.resume_action.as_deref(), Some("authorize and run the tests"));
+    assert_eq!(keys(&d), ["investigate#1", "implement#1"], "no review before the tests ran");
+    f.client.call::<WorkflowsResume>(TaskIdParams { task_id: task }).await.unwrap();
+    let d = wait_delivery(&f, task).await;
+    assert_eq!(keys(&d).last().map(String::as_str), Some("review#1"));
+    let runs = test_runs(&f, task);
+    assert_eq!(runs.iter().map(|r| r.1.as_str()).collect::<Vec<_>>(), ["needs_authorization", "passed"]);
+}
+
+// --- subtasks (ADR 0040) ----------------------------------------------------------------
+
+/// Reasoning splits the task; each subtask runs the loop in turn (tests and
+/// review included) with its own context, and the task is delivered once.
+/// The plan is the workflow's, not a set of proposals waiting for a person.
+#[tokio::test]
+async fn a_large_task_is_split_and_each_subtask_runs_the_loop() {
+    let f = fixture().await;
+    let spec = json!({
+        "investigate": { "report": { "type": "proposal", "summary": "Two parts.", "proposed_subtasks": [
+            { "title": "Parser", "description": "Parse the input.", "acceptance_criteria": ["parses"] },
+            { "title": "Printer", "description": "Print the result." }
+        ] } },
+        "implement": [
+            { "report": report("implementation", "parser done") },
+            { "report": report("implementation", "printer done") }
+        ],
+        "review": [ { "report": review("approved") }, { "report": review("approved") } ]
+    });
+    let task = create_task(&f, &spec).await;
+    start(&f, task, claude_everywhere()).await.unwrap();
+    let d = wait_delivery(&f, task).await;
+    assert_eq!(keys(&d), ["investigate#1", "s1/implement#1", "s1/review#1", "s2/implement#1", "s2/review#1"]);
+    let w = d.workflow.as_ref().unwrap();
+    assert_eq!(
+        w.plan.iter().map(|p| (p.title.as_str(), p.done)).collect::<Vec<_>>(),
+        [("Parser", true), ("Printer", true)]
+    );
+    assert!(d.proposals.is_empty(), "the plan is not a set of proposals to decide");
+    let ctx = |k: &str| {
+        d.assignments.iter().find(|a| a.step_key.as_deref() == Some(k)).unwrap().context.clone().unwrap()
+    };
+    assert_eq!(ctx("s1/implement#1")["subtask"]["title"], "Parser");
+    assert_eq!(ctx("s2/review#1")["subtask"]["number"], 2);
+    assert_eq!(ctx("s2/review#1")["subtask"]["done"], json!(["Parser"]));
+    // Each subtask was tested before its review.
+    let runs: Vec<String> = test_runs(&f, task).into_iter().map(|r| r.0).collect();
+    assert_eq!(runs, ["s1/implement#1", "s2/implement#1"]);
+    let events = workflow_events(&f, task).await;
+    assert!(events.contains(&"workflow.planned".to_owned()));
+    assert_eq!(events.iter().filter(|e| *e == "workflow.subtask_completed").count(), 2);
+}
+
+/// A workflow that ended because its task failed can be continued: resuming
+/// retries the task and runs the step that stopped again; earlier work stays.
+#[tokio::test]
+async fn a_failed_workflow_can_be_continued() {
+    let f = fixture().await;
+    let spec = json!({
+        "investigate": { "report": report("findings", "found") },
+        "implement": [
+            { "tool": "write:feature.txt", "report": report("implementation", "first try") },
+            { "report": report("implementation", "done") }
+        ],
+        "review": { "report": review("approved") }
+    });
+    let task = create_task(&f, &spec).await;
+    start(&f, task, claude_everywhere()).await.unwrap();
+    // implement#1 waits for its write approval; the operator fails the task meanwhile.
+    wait_for(&f, task, "implement#1 to run", |d| {
+        keys(d).contains(&"implement#1".to_owned()) && d.task.status == TaskStatus::InProgress
+    })
+    .await;
+    f.client
+        .call::<switchyard_protocol::methods::TasksFail>(switchyard_protocol::methods::TaskDecisionParams {
+            task_id: task,
+            note: Some("not like this".into()),
+        })
+        .await
+        .unwrap();
+    let d = wait_status(&f, task, "failed").await;
+    assert_eq!(d.task.status, TaskStatus::Failed);
+    // One click continues it: the task is retried and the step runs again.
+    f.client.call::<WorkflowsResume>(TaskIdParams { task_id: task }).await.unwrap();
+    let d = wait_delivery(&f, task).await;
+    assert_eq!(keys(&d), ["investigate#1", "implement#1", "implement#1@2", "review#1"]);
 }

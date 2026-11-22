@@ -1,12 +1,11 @@
 import { useState } from "react";
 
-import { Button } from "../../components/ui";
 import { providerName } from "../../lib/agents";
 import { useCoreQuery } from "../../stores/useCoreQuery";
 import type { AgentProvider, ModelCatalog, RoleBinding, RoleBindings } from "../../types/protocol";
 import { listAgents } from "../agents/api";
 import { listModels } from "./api";
-import { BINDING_LABEL, modelLabel, type BindingKey } from "./labels";
+import { BINDING_LABEL, type BindingKey } from "./labels";
 
 const CUSTOM = "__custom__";
 const DEFAULT = "";
@@ -15,7 +14,7 @@ const ROLE_HINT: Record<BindingKey, string> = {
   investigate: "Reports findings",
   implement: "Changes the code",
   review: "Read-only verdict",
-  correct: "Fixes review findings",
+  correct: "Not used: fixes run as implementation",
 };
 
 /**
@@ -173,35 +172,6 @@ export function RoleBindingsEditor({
         <span>Model</span>
       </div>
       {rows.map((key) => row(key, value[key] as RoleBinding, (b) => onChange({ ...value, [key]: b })))}
-      {value.correct === null ? (
-        <div className="role-row">
-          <div className="role-name">
-            <span className="role-title">{BINDING_LABEL.correct}</span>
-            <span className="role-hint">{ROLE_HINT.correct}</span>
-          </div>
-          <div className="role-inherit">
-            <span>
-              Inherits Implementation · <strong>{providerName(value.implement.provider)}</strong> ·{" "}
-              <span className="mono">{modelLabel(value.implement.model)}</span>
-            </span>
-            <Button variant="ghost" onClick={() => onChange({ ...value, correct: { ...value.implement } })}>
-              Override
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <>
-          {row("correct", value.correct, (b) => onChange({ ...value, correct: b }))}
-          <div className="role-row role-row-tail">
-            <span />
-            <div>
-              <Button variant="ghost" onClick={() => onChange({ ...value, correct: null })}>
-                Inherit from Implementation
-              </Button>
-            </div>
-          </div>
-        </>
-      )}
     </div>
   );
 }

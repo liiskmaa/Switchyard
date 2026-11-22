@@ -621,6 +621,7 @@ impl TaskService {
                             action: switchyard_tasks::workflow::Action::Prepare,
                             assignment: None,
                             repair_error: None,
+                            by: None,
                         },
                     );
                 }

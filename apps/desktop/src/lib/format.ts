@@ -265,6 +265,18 @@ export function describeEvent(event: EventEnvelope): string {
       return `Workflow ready for delivery: ${str(p, "reason") ?? ""}`;
     case "workflow.delivery_changed":
       return `Delivery: ${str(p, "reason") ?? str(p, "phase") ?? "?"}`;
+    case "workflow.tests_changed": {
+      const phase = str(p, "phase");
+      const head =
+        phase === "passed" ? "Tests passed" : phase === "failed" ? "Tests failed" : phase === "needs_authorization" ? "Tests need your authorization" : "Running the tests";
+      return `${head}: ${str(p, "reason") ?? ""}`;
+    }
+    case "workflow.planned": {
+      const subtasks = Array.isArray(p["subtasks"]) ? (p["subtasks"] as unknown[]).map(String) : [];
+      return `Split into ${subtasks.length} subtasks: ${subtasks.join(", ")}`;
+    }
+    case "workflow.subtask_completed":
+      return `Subtask ${String(p["number"] ?? "?")} done: ${str(p, "title") ?? ""}`;
     case "workflow.delivered":
       return str(p, "reason") ?? "Delivered";
     case "workflow.failed":
