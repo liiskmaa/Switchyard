@@ -867,3 +867,7 @@ details.advanced > summary { cursor: pointer; color: var(--muted); font-size: 13
 .step-through { display: flex; align-items: center; gap: 6px; margin: 4px 0 8px; }
 .next-step .mini-list { margin: 4px 0 8px; }
 .prompt-preview { max-height: 420px; overflow: auto; white-space: pre-wrap; }
+
+/* The watchdog's finding on a task (ADR 0045). */
+.stuck-card { border-color: var(--warn); }
+.stuck-done { color: var(--ok); }

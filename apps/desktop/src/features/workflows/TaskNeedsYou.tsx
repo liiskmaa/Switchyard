@@ -10,6 +10,7 @@ import { ApprovalCard } from "../approvals/ApprovalCard";
 import { answerOrganization, cancelWorkflow, getOrganization, isOrganizationEvent, pendingApprovals, resumeWorkflow } from "./api";
 import { DeliveryPanel } from "./DeliveryPanel";
 import { NextStepPreview } from "./NextStepPreview";
+import { StuckCard, useStuck } from "./StuckCard";
 import { humanizeSteps, stepName } from "./labels";
 
 /** Whether the task's delivery step is waiting for the user (shown in "Needs you"). */
@@ -32,6 +33,8 @@ export function TaskNeedsYou({ detail, onChanged }: { detail: TaskDetail; onChan
   const org = useCoreQuery(`needs-org:${detail.task.id}:${organizing}`, () => (organizing ? getOrganization(detail.task.id) : Promise.resolve(null)), {
     refreshOn: isOrganizationEvent,
   });
+  const stuckAll = useStuck();
+  const stuck = (stuckAll.data ?? []).find((s) => s.task_id === detail.task.id) ?? null;
   const [answer, setAnswer] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<CoreRequestError | null>(null);
@@ -41,7 +44,7 @@ export function TaskNeedsYou({ detail, onChanged }: { detail: TaskDetail; onChan
   const pending = approvals.data ?? [];
   const delivery = deliveryNeedsYou(detail);
   const stopped = w?.status === "waiting" && !delivery;
-  if (pending.length === 0 && !stopped && !delivery) return null;
+  if (pending.length === 0 && !stopped && !delivery && !stuck) return null;
   const act = (f: () => Promise<unknown>) =>
     void (async () => {
       setBusy(true);
@@ -60,6 +63,7 @@ export function TaskNeedsYou({ detail, onChanged }: { detail: TaskDetail; onChan
       <h2 id="task-needs-you" className="home-heading">
         Needs you
       </h2>
+      {stuck ? <StuckCard item={stuck} onChanged={onChanged} /> : null}
       {pending.map((a) => (
         <ApprovalCard
           key={a.id}

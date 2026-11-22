@@ -281,6 +281,11 @@ export function describeEvent(event: EventEnvelope): string {
       return str(p, "reason") ?? "Delivered";
     case "workflow.failed":
       return `Workflow failed: ${str(p, "reason") ?? "?"}`;
+    case "task.stuck_changed": {
+      const title = str(p, "title");
+      const remedy = str(p, "remedy");
+      return title ? `Watchdog: ${title}${remedy ? `. ${remedy}` : ""}` : "Watchdog: no longer stuck";
+    }
     case "workflow.step_through_changed":
       return p["on"] ? "Step-through on: the workflow waits before each hand-off" : "Step-through off";
     case "workflow.directed":

@@ -17,6 +17,7 @@ mod organization;
 mod reactor;
 mod supervisor;
 mod tests;
+mod watchdog;
 mod workflow;
 
 use std::collections::HashMap;
@@ -44,6 +45,7 @@ use crate::workspaces::WorkspaceService;
 
 pub(crate) use organization::spawn_org_driver;
 pub(crate) use reactor::spawn_reactor;
+pub(crate) use watchdog::spawn_watchdog;
 pub(crate) use workflow::spawn_workflow_driver;
 
 /// A review's outcome, the content tree it saw, and its workspace.
@@ -378,6 +380,9 @@ pub(crate) struct TaskService {
     integrations: crate::integrations::IntegrationService,
     /// Serializes the workflow decisions of each task (M8.1).
     workflow_locks: Arc<Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>>,
+    /// What the stuck-work watchdog last found (ADR 0045).
+    findings: watchdog::SharedFindings,
+    watchdog_limits: switchyard_tasks::watchdog::Limits,
 }
 
 impl TaskService {
@@ -397,7 +402,15 @@ impl TaskService {
             stopping: Arc::default(),
             starting: Arc::default(),
             workflow_locks: Arc::default(),
+            findings: Arc::default(),
+            watchdog_limits: switchyard_tasks::watchdog::Limits::default(),
         }
+    }
+
+    /// When the watchdog counts work as stuck (tests shorten them).
+    pub fn with_watchdog_limits(mut self, limits: switchyard_tasks::watchdog::Limits) -> Self {
+        self.watchdog_limits = limits;
+        self
     }
 
     fn stopping(&self) -> std::sync::MutexGuard<'_, HashMap<Uuid, Uuid>> {

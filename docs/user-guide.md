@@ -255,6 +255,13 @@ It stops and waits for you ("Needs you") when:
 
 Other controls: **Pause**, **Cancel workflow**, and *Advanced* on the task to assign steps by hand.
 
+**When work is stuck**, Switchyard's watchdog notices within half a minute and says so under
+**Needs you** and on Home ("Stuck"): Resume keeps stopping at the same place, a step's agent is
+gone, an agent has been silent for 20 minutes, or an approval or question has waited long. It fixes
+what is safe by itself (it ends a step whose agent is gone so Resume reruns it; it hands a stuck team
+to its lead) and tells you what it did; for the rest it offers what actually helps: open the agent's
+session, ask the supervisor, or stop.
+
 **Step through** (a switch under *Progress*). When it is on, the workflow stops before every
 hand-off: under **Needs you** you see which role is next, what it will receive (the investigation's
 summary and the files it read, open findings, the latest test run, your notes) and the full prompt.

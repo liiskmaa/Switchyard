@@ -460,6 +460,10 @@ pub enum DomainEvent {
     /// (`reasoning`, `coding`, `review` or `tests`; ADR 0041).
     #[serde(rename = "workflow.directed")]
     WorkflowDirected { to: String, by: String },
+    /// The watchdog's finding for the task changed (ADR 0045): what is stuck
+    /// now (`code`, `title`), or nothing (`None`), and what Switchyard did.
+    #[serde(rename = "task.stuck_changed")]
+    TaskStuckChanged { code: Option<String>, title: Option<String>, remedy: Option<String> },
     /// Step-through mode turned on or off (ADR 0043).
     #[serde(rename = "workflow.step_through_changed")]
     WorkflowStepThroughChanged { on: bool, by: String },
@@ -629,6 +633,7 @@ impl DomainEvent {
             Self::WorkflowFailed { .. } => "workflow.failed",
             Self::WorkflowDirected { .. } => "workflow.directed",
             Self::WorkflowStepThroughChanged { .. } => "workflow.step_through_changed",
+            Self::TaskStuckChanged { .. } => "task.stuck_changed",
             Self::SupervisorAsked { .. } => "supervisor.asked",
             Self::SupervisorAnswered { .. } => "supervisor.answered",
             Self::WorkflowCancelled { .. } => "workflow.cancelled",
@@ -860,6 +865,11 @@ mod tests {
             DomainEvent::WorkflowFailed { reason: "x".into() },
             DomainEvent::WorkflowDirected { to: "coding".into(), by: "desktop".into() },
             DomainEvent::WorkflowStepThroughChanged { on: true, by: "desktop".into() },
+            DomainEvent::TaskStuckChanged {
+                code: Some("silent_agent".into()),
+                title: Some("x".into()),
+                remedy: None,
+            },
             DomainEvent::SupervisorAsked { message_id: new_id(), by: "desktop".into() },
             DomainEvent::SupervisorAnswered {
                 message_id: new_id(),

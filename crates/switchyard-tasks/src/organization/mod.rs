@@ -544,6 +544,12 @@ pub enum Input {
         status: String,
         now_ms: i64,
     },
+    /// Switchyard's watchdog (ADR 0045) found the team stuck (its resumes
+    /// keep stopping at the same place): the lead decides how to continue.
+    Nudge {
+        text: String,
+        now_ms: i64,
+    },
 }
 
 /// What Core must do after committing the decision.
@@ -915,6 +921,33 @@ pub fn decide(state: &OrgState, input: &Input) -> Result<Decision, OrgError> {
             // A wait that was not a question to the user (a step that could not
             // start, for example on this very task) is over: the supervisor decides.
             if state.status == OrgStatus::Waiting && state.question_from.is_none() {
+                d.state.status = OrgStatus::Running;
+                d.state.reason = None;
+                d.changes.push(Change::Resumed);
+            }
+            if d.state.status == OrgStatus::Running {
+                schedule(&mut d, *now_ms);
+            }
+        }
+        Input::Nudge { text, now_ms } => {
+            if matches!(state.status, OrgStatus::Done | OrgStatus::Cancelled) || state.question_from.is_some()
+            {
+                return Ok(d);
+            }
+            let Some(lead) = state.agents.iter().find(|a| a.reports_to.is_none()).map(|a| a.key.clone())
+            else {
+                return Ok(d);
+            };
+            d.changes.push(Change::Observed { task: ROOT.into(), text: text.clone() });
+            d.context.push(ctx(
+                ContextKind::Observation,
+                ContextStatus::Verified,
+                text.clone(),
+                None,
+                "core",
+            ));
+            d.state.enqueue(&lead, ROOT, CheckpointItem::Observed { task: ROOT.into(), text: text.clone() });
+            if d.state.status == OrgStatus::Waiting {
                 d.state.status = OrgStatus::Running;
                 d.state.reason = None;
                 d.changes.push(Change::Resumed);

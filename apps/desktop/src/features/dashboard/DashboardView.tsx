@@ -11,6 +11,7 @@ import type { Approval, EventEnvelope, HealthReport, Project, Task, WorkflowInfo
 import { ApprovalCard } from "../approvals/ApprovalCard";
 import { listTasks } from "../tasks/api";
 import { humanizeSteps, workflowStageText } from "../workflows/labels";
+import { useStuck } from "../workflows/StuckCard";
 
 const fetchHealth = () => coreRequest("system.health", {});
 
@@ -60,6 +61,7 @@ export function DashboardView({ onOpenProjects }: { onOpenProjects: () => void }
   const running = (d?.items ?? []).filter(
     (i) => i.workflow?.status === "running" || i.workflow?.status === "paused" || (!i.workflow && i.task.open_assignment),
   );
+  const stuck = useStuck().data ?? [];
   const needs = (d?.approvals.length ?? 0) + waiting.length;
   const h = health.data;
 
@@ -75,6 +77,26 @@ export function DashboardView({ onOpenProjects }: { onOpenProjects: () => void }
             Add a repository
           </Button>
         </EmptyState>
+      ) : null}
+
+      {stuck.length > 0 ? (
+        <section className="home-section" aria-labelledby="home-stuck">
+          <h2 id="home-stuck" className="home-heading">
+            Stuck ({stuck.length})
+          </h2>
+          {stuck.map((s) => (
+            <button
+              key={s.task_id}
+              type="button"
+              className="home-row home-row-needs"
+              onClick={() => navigate("tasks", { taskProjectId: s.project_id, taskId: s.task_id })}
+            >
+              <span className="home-row-title">{s.task_title}</span>
+              <span className="small">{s.title}</span>
+              {s.remedy_applied ? <span className="muted small">Switchyard did: {s.remedy_applied}</span> : null}
+            </button>
+          ))}
+        </section>
       ) : null}
 
       {d && d.projects.length > 0 ? (

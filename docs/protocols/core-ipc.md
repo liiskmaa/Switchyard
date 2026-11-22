@@ -158,6 +158,7 @@ client detect a restart. `seq` stays continuous across restarts because it lives
 | `tasks.note` | `{task_id, text}` | `{message, delivered}`: sent to the working agent now, otherwise kept for the next assignment |
 | `workflows.set_step_through` | `{task_id, on}` | `{workflow}` (ADR 0043): wait before each automatic hand-off; `WorkflowInfo.step_through`, and `next_step` while waiting to start a step |
 | `workflows.preview_next` | `{task_id}` | `{step_key, role, provider, model?, prompt, context}`: the waiting step's prompt exactly as it would be sent now (pending notes included); `invalid_state` when not waiting to start a step |
+| `watchdog.list` | `{}` | `{items: [{task_id, project_id, task_title, kind: workflow\|team, code, title, detail, since_ms, session_id?, remedy_applied?}]}` (ADR 0045): what the watchdog finds stuck now, newest first |
 | `supervisor.ask` | `{task_id, text}` | `SupervisorInfo` (ADR 0041): records the operator's message (max 8000 characters) and starts the answer in the background; `conflict` while the last one is unanswered. The answer arrives as `supervisor.answered`. |
 | `supervisor.get` | `{task_id}` | `SupervisorInfo`: `{task_id, thinking, messages: [{id, sender: operator\|supervisor\|core, text, route?: none\|reasoning\|coding\|review\|tests, instruction?, outcome?, follow_up_task_id?, by?, created_at_ms}], workspace_id?}` |
 | `tasks.complete` | `{task_id, note?}` | `{task}`: `awaiting_review` → `completed`, operator only; the last report becomes `result` |
@@ -368,6 +369,7 @@ the registration is kept and `projects.git_status` returns `repository_unavailab
 | `workflow.tests_changed` | `{phase: running\|passed\|failed\|needs_authorization, reason, step_key?}`: the test gate (ADR 0039) |
 | `workflow.planned` | `{subtasks: [title]}`: reasoning split the task; the subtasks run in order (ADR 0040) |
 | `workflow.subtask_completed` | `{number, title}`: a subtask's review approved (ADR 0040) |
+| `task.stuck_changed` | `{code?, title?, remedy?}`: the watchdog's finding for the task changed; no `code` means no longer stuck (ADR 0045) |
 | `workflow.step_through_changed` | `{on, by}`: step-through mode turned on or off (ADR 0043) |
 | `workflow.directed` | `{to, by}`: the operator, through the task's supervisor, sent the work to `reasoning`, `coding`, `review` or `tests` (ADR 0041) |
 | `supervisor.asked` | `{message_id, by}`: the operator asked the task's supervisor (ADR 0041) |

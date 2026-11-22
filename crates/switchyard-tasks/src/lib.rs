@@ -9,6 +9,7 @@
 //! * [`context`]: the versioned task context Core gives an agent.
 //! * [`workflow`]: the built-in `engineering@1` workflow as a pure decision function.
 //! * [`organization`]: dynamic agent organizations (`organization@1`) as a pure decision function.
+//! * [`watchdog`]: decides whether a workflow or team is stuck, and the safe remedy (ADR 0045).
 //! * [`supervisor`]: the task supervisor's prompt and reply parser (ADR 0041).
 //!
 //! Nothing here knows about Claude, Codex or any wire protocol.
@@ -19,6 +20,7 @@ pub mod model;
 pub mod organization;
 pub mod report;
 pub mod supervisor;
+pub mod watchdog;
 pub mod workflow;
 
 pub use context::{CONTEXT_VERSION, ContextDependency, ContextFinding, TaskContext, render};

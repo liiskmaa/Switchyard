@@ -30,6 +30,10 @@ pub struct CoreConfig {
     /// Run a Gemini CLI version other than the verified one (ADR 0044).
     /// `SWITCHYARD_ALLOW_UNTESTED_GEMINI=1`.
     pub allow_untested_gemini: bool,
+    /// How often the stuck-work watchdog looks (ADR 0045).
+    pub watchdog_interval: Duration,
+    /// When the watchdog counts work as stuck.
+    pub watchdog_limits: switchyard_tasks::watchdog::Limits,
     /// Run a Codex version other than the one the adapter was verified against.
     /// Off by default: the app-server protocol is experimental and changes per
     /// release (ADR 0021). `SWITCHYARD_ALLOW_UNTESTED_CODEX=1`.
@@ -72,6 +76,8 @@ impl CoreConfig {
             codex_executable: None,
             gemini_executable: None,
             allow_untested_gemini: false,
+            watchdog_interval: Duration::from_secs(30),
+            watchdog_limits: switchyard_tasks::watchdog::Limits::default(),
             allow_untested_codex: false,
             agent_ready_timeout: Duration::from_secs(60),
             approval_timeout: Duration::from_secs(15 * 60),

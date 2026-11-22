@@ -570,3 +570,24 @@ fn work_waiting_on_cancelled_work_goes_to_its_supervisor_once() {
     assert_eq!(d.state.status, OrgStatus::Waiting);
     assert!(d.state.reason.unwrap().contains("Tell the lead how to continue"));
 }
+
+#[test]
+fn the_watchdog_hands_a_stuck_team_to_its_lead() {
+    let mut s = supervise(&started(), LEAD, PLAN).state;
+    s.activity = Activity::Idle;
+    s.queue.clear();
+    s.status = OrgStatus::Waiting;
+    s.reason = Some("Nothing can run.".into());
+    let d = decide(&s, &Input::Nudge { text: "Resuming keeps stopping.".into(), now_ms: T0 + 9 }).unwrap();
+    let Action::Supervise { checkpoint } = &d.action else { panic!("{:?}", d.action) };
+    assert_eq!(checkpoint.supervisor, LEAD);
+    assert!(
+        checkpoint
+            .items
+            .iter()
+            .any(|i| matches!(i, CheckpointItem::Observed { text, .. } if text.contains("keeps stopping")))
+    );
+    // Not while the team waits for the user's answer.
+    s.question_from = Some(LEAD.into());
+    assert_eq!(decide(&s, &Input::Nudge { text: "x".into(), now_ms: T0 }).unwrap().state, s);
+}

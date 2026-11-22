@@ -33,6 +33,8 @@ const ORG_EVENTS = [
   "organization.escalated",
   "organization.status_changed",
 ];
+export const listStuck = async () => (await coreRequest("watchdog.list", {})).items;
+export const isStuckEvent = (e: EventEnvelope): boolean => e.event_type === "task.stuck_changed";
 export const isSupervisorEvent = (e: EventEnvelope): boolean => e.event_type.startsWith("supervisor.");
 
 // --- agent organizations (M8.3) ---------------------------------------------------

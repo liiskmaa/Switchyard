@@ -952,6 +952,27 @@ pub struct WorkflowInfo {
     pub next_step: Option<String>,
 }
 
+/// Work the watchdog finds stuck (ADR 0045).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StuckItem {
+    pub task_id: Uuid,
+    pub project_id: Uuid,
+    pub task_title: String,
+    /// `workflow` or `team`.
+    pub kind: String,
+    /// `resume_bounces`, `orphaned_step`, `silent_agent`, `approval_waiting`, `question_waiting`.
+    pub code: String,
+    pub title: String,
+    pub detail: String,
+    pub since_ms: i64,
+    /// The open step's session, to open it.
+    #[serde(default)]
+    pub session_id: Option<Uuid>,
+    /// What Switchyard did by itself, if anything.
+    #[serde(default)]
+    pub remedy_applied: Option<String>,
+}
+
 /// One message of a task's supervisor conversation (ADR 0041).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SupervisorMessage {

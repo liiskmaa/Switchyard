@@ -18,7 +18,7 @@ use switchyard_protocol::methods::{
     WorkspacesRestore, WorkspacesVerify,
 };
 use switchyard_protocol::methods::{
-    AgentsModels, SupervisorAsk, SupervisorGet, WorkflowsCancel, WorkflowsGet, WorkflowsPause,
+    AgentsModels, SupervisorAsk, SupervisorGet, WatchdogList, WorkflowsCancel, WorkflowsGet, WorkflowsPause,
     WorkflowsPreviewNext, WorkflowsRequestCorrection, WorkflowsResume, WorkflowsSetSettings,
     WorkflowsSetStepThrough, WorkflowsSettings, WorkflowsStart,
 };
@@ -123,6 +123,7 @@ const ALLOWED_METHODS: &[&str] = &[
     WorkflowsPause::NAME,
     WorkflowsResume::NAME,
     SupervisorAsk::NAME,
+    WatchdogList::NAME,
     WorkflowsSetStepThrough::NAME,
     WorkflowsPreviewNext::NAME,
     SupervisorGet::NAME,

@@ -132,7 +132,8 @@ pub async fn start(config: CoreConfig) -> Result<RunningCore, CoreError> {
         agents.clone(),
         workspaces.clone(),
         integrations.clone(),
-    );
+    )
+    .with_watchdog_limits(config.watchdog_limits);
     // After workspace reconciliation: settles integrations and validation
     // runs a previous Core left in progress.
     if let Err(err) = integrations.recover_on_startup().await {
@@ -168,7 +169,9 @@ pub async fn start(config: CoreConfig) -> Result<RunningCore, CoreError> {
     // Workflows follow task events the same way, after the reactor (M8.1).
     crate::tasks::spawn_workflow_driver(tasks.clone(), state.shutdown.subscribe());
     // Agent organizations follow agents and tasks the same way (M8.3).
-    crate::tasks::spawn_org_driver(tasks, state.shutdown.subscribe());
+    crate::tasks::spawn_org_driver(tasks.clone(), state.shutdown.subscribe());
+    // The stuck-work watchdog looks at every active workflow and team (ADR 0045).
+    crate::tasks::spawn_watchdog(tasks, state.config.watchdog_interval, state.shutdown.subscribe());
     let server = tokio::spawn(server::run(listener, owner_uid, state.clone()));
     Ok(RunningCore { info, state, server, _lock: lock })
 }

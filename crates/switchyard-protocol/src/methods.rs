@@ -791,6 +791,17 @@ pub struct SupervisorInfo {
 }
 
 method!(SupervisorAsk, "supervisor.ask", SupervisorAskParams, SupervisorInfo);
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchdogListParams {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchdogListResult {
+    /// Newest first.
+    pub items: Vec<crate::model::StuckItem>,
+}
+
+method!(WatchdogList, "watchdog.list", WatchdogListParams, WatchdogListResult);
 method!(SupervisorGet, "supervisor.get", TaskIdParams, SupervisorInfo);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1017,6 +1017,7 @@ export interface TaskMethods {
   "tasks.note": { params: { task_id: Uuid; text: string }; result: { message: TaskMessage; delivered: boolean } };
   "supervisor.ask": { params: { task_id: Uuid; text: string }; result: SupervisorInfo };
   "supervisor.get": { params: { task_id: Uuid }; result: SupervisorInfo };
+  "watchdog.list": { params: Record<string, never>; result: { items: StuckItem[] } };
   "tasks.complete": { params: TaskDecision; result: TaskResult };
   "tasks.fail": { params: TaskDecision; result: TaskResult };
   "tasks.cancel": { params: TaskDecision; result: TaskResult };
@@ -1325,4 +1326,19 @@ export interface SupervisorInfo {
   thinking: boolean;
   messages: SupervisorMessage[];
   workspace_id?: Uuid | null;
+}
+
+/** Work the watchdog finds stuck (ADR 0045). */
+export interface StuckItem {
+  task_id: Uuid;
+  project_id: Uuid;
+  task_title: string;
+  kind: "workflow" | "team";
+  code: "resume_bounces" | "orphaned_step" | "silent_agent" | "approval_waiting" | "question_waiting";
+  title: string;
+  detail: string;
+  since_ms: number;
+  session_id?: Uuid | null;
+  /** What Switchyard did by itself. */
+  remedy_applied?: string | null;
 }

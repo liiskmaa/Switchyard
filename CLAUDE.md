@@ -46,6 +46,10 @@ Rust process, **Switchyard Core**. The Tauri desktop app is only a client.
 - ADR 0043: context v4 `investigation` (report + `files_read` from the journal) for coding and review;
   step-through mode (`WorkflowState.step_through`, `workflows.set_step_through`, `workflows.preview_next`
   built by `tasks/assign.rs::build_context`, the same code that starts a step).
+- Stuck-work watchdog (ADR 0045): pure `crates/switchyard-tasks/src/watchdog.rs` (`check`, `Limits`), Core loop
+  `crates/switchyard-core/src/tasks/watchdog.rs` (`watchdog.list`, `task.stuck_changed`), team input
+  `organization::Input::Nudge`, UI `features/workflows/StuckCard.tsx`. Its only automatic remedies: end an orphaned
+  workflow step, hand a bouncing team to its lead; never stop a session or approve anything.
 - Gemini CLI over ACP (ADR 0044): `crates/switchyard-agents/src/acp/` (pure `protocol.rs`, `launch.rs` with the admin
   policy, `classify.rs`, `models.rs`), provider `gemini`, `migrations/0014_gemini_provider.sql` (the runner's
   `-- switchyard: foreign_keys=off` marker for table rebuilds), `src/bin/fake_gemini.rs`. See
@@ -82,6 +86,7 @@ cargo test -p switchyard-core --test workflows          # engineering@1 workflow
 cargo test -p switchyard-core --test delivery           # M8.2: workflow → M7 integration → delivered (commit, validation, approval)
 cargo test -p switchyard-core --test organizations      # M8.3: dynamic organization via both fakes (supervision, interruption, limits, restart)
 cargo test -p switchyard-core --test supervisor         # ADR 0041: task supervisor answers, routes, follow-ups via the fakes
+cargo test -p switchyard-core --test watchdog           # ADR 0045: stuck-work watchdog with short limits
 cargo test -p switchyard-core --test gemini             # ADR 0044: Gemini over ACP via the fake (asks, answers, cancel, resume)
 SWITCHYARD_REAL_GEMINI=1 cargo test -p switchyard-core --test real_gemini -- --ignored   # real Gemini CLI 0.70.0, API key
 cargo test -p switchyard-git --test integrate           # Git integration primitives on temp repos

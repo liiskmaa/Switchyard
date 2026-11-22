@@ -83,6 +83,13 @@ pub(super) async fn ask_supervisor(
     conn.state.tasks.ask_supervisor(p.task_id, p.text, actor(conn)).await
 }
 
+pub(super) async fn watchdog(
+    conn: &Connection,
+    _p: switchyard_protocol::methods::WatchdogListParams,
+) -> Result<switchyard_protocol::methods::WatchdogListResult, ProtocolError> {
+    Ok(switchyard_protocol::methods::WatchdogListResult { items: conn.state.tasks.stuck() })
+}
+
 pub(super) async fn supervisor(conn: &Connection, p: TaskIdParams) -> Result<SupervisorInfo, ProtocolError> {
     conn.state.tasks.supervisor(p.task_id).await
 }
