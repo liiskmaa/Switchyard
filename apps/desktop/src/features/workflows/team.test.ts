@@ -141,3 +141,25 @@ describe("team picture", () => {
     expect(asking.times["ui"]?.runningSinceMs).toBeUndefined();
   });
 });
+
+import { initials, wrapName } from "./TeamFlow";
+
+describe("team node labels", () => {
+  it("shows full names on up to two lines and initials in the circle", () => {
+    expect(wrapName("Lead supervisor")).toEqual(["Lead supervisor"]);
+    expect(wrapName("Mailbox implementation specialist")).toEqual(["Mailbox implementation", "specialist"]);
+    expect(wrapName("A very long specialist title for database migrations")).toEqual(["A very long specialist", "title for database mi…"]);
+    expect(initials("Mailbox implementation specialist")).toBe("MI");
+    expect(initials("lead")).toBe("L");
+  });
+});
+
+import { routeLabel } from "./TeamFlow";
+
+describe("route labels", () => {
+  it("count only what repeats; mixed hand-offs name the latest", () => {
+    expect(routeLabel(["Delegated"])).toBe("Delegated");
+    expect(routeLabel(["Report", "Report"])).toBe("Report ×2");
+    expect(routeLabel(["Delegated", "Fix this", "Cancelled"])).toBe("last: Cancelled (3)");
+  });
+});

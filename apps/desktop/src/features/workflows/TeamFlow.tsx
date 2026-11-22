@@ -7,7 +7,7 @@ import { showLane } from "./WorkBoard";
 
 const R = 32;
 
-function curve(a: TeamNode, b: TeamNode): { d: string; mid: { x: number; y: number }; side: number } {
+function curve(a: TeamNode, b: TeamNode): { d: string; at: (t: number) => { x: number; y: number } } {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
   const len = Math.hypot(dx, dy) || 1;
@@ -22,13 +22,61 @@ function curve(a: TeamNode, b: TeamNode): { d: string; mid: { x: number; y: numb
   const ey = b.y - uy * (R + 8) + ny * 6;
   const cx = (a.x + b.x) / 2 + nx * 18;
   const cy = (a.y + b.y) / 2 + ny * 18;
-  const mid = { x: 0.25 * sx + 0.5 * cx + 0.25 * ex, y: 0.25 * sy + 0.5 * cy + 0.25 * ey };
-  // Labels sit beside the curve, on its outer side: a hand-off down and one up never overlap.
-  const side = nx >= 0 ? 1 : -1;
-  return { d: `M ${sx.toFixed(1)} ${sy.toFixed(1)} Q ${cx.toFixed(1)} ${cy.toFixed(1)} ${ex.toFixed(1)} ${ey.toFixed(1)}`, mid, side };
+  // A point on the quadratic curve.
+  const at = (t: number) => ({
+    x: (1 - t) ** 2 * sx + 2 * (1 - t) * t * cx + t ** 2 * ex,
+    y: (1 - t) ** 2 * sy + 2 * (1 - t) * t * cy + t ** 2 * ey,
+  });
+  return { d: `M ${sx.toFixed(1)} ${sy.toFixed(1)} Q ${cx.toFixed(1)} ${cy.toFixed(1)} ${ex.toFixed(1)} ${ey.toFixed(1)}`, at };
+}
+
+/**
+ * Where a route's label goes: outward from the parent (left for a child on
+ * the left, right for one on the right), a hand-off down nearer the parent
+ * and one up nearer the child, so the two labels of a pair never meet.
+ */
+function labelPlace(a: TeamNode, b: TeamNode, at: (t: number) => { x: number; y: number }) {
+  const down = b.depth > a.depth;
+  const [parent, child] = down ? [a, b] : [b, a];
+  const out = Math.sign(child.x - parent.x) || (down ? -1 : 1);
+  const p = at(down ? 0.35 : 0.65);
+  return { x: p.x + out * 12, y: p.y + 4, anchor: out > 0 ? "start" : "end" } as const;
+}
+
+/** A used route's label: "Delegated ×2" when every hand-off was the same, else the latest and the count. */
+export function routeLabel(labels: string[]): string {
+  const last = labels[labels.length - 1] ?? "";
+  if (labels.length <= 1) return last;
+  return labels.every((l) => l === last) ? `${last} ×${labels.length}` : `last: ${last} (${labels.length})`;
 }
 
 const short = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+/** "Mailbox implementation specialist" → "MI" (first letters of the first two words). */
+export function initials(title: string): string {
+  const words = title.split(/[\s_-]+/).filter(Boolean);
+  return words
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase() ?? "")
+    .join("");
+}
+
+/** The name on up to two lines of about `width` characters; only a third line is cut. */
+export function wrapName(title: string, width = 22): string[] {
+  const lines: string[] = [];
+  let line = "";
+  for (const word of title.split(/\s+/).filter(Boolean)) {
+    if (line && (line + " " + word).length > width) {
+      lines.push(line);
+      line = word;
+    } else {
+      line = line ? `${line} ${word}` : word;
+    }
+  }
+  if (line) lines.push(line);
+  if (lines.length > 2) return [lines[0] ?? "", short(lines.slice(1).join(" "), width)];
+  return lines;
+}
 const same = (a: Handoff | null, from: string, to: string) => a !== null && a.from === from && a.to === to;
 
 /**
@@ -46,7 +94,7 @@ export function TeamFlow({ org, events, now: caption }: { org: OrganizationInfo;
   for (const n of team.nodes) if (n.parent && !counts.has(`${n.key}>${n.parent}`)) routes.set(`${n.parent}>${n.key}`, [n.parent, n.key]);
   for (const k of counts.keys()) routes.set(k, k.split(">") as [string, string]);
   if (team.active) routes.set(`${team.active.from}>${team.active.to}`, [team.active.from, team.active.to]);
-  const lastLabel = (from: string, to: string) => [...team.handoffs].reverse().find((h) => h.from === from && h.to === to)?.label;
+  const labelsOf = (from: string, to: string) => team.handoffs.filter((h) => h.from === from && h.to === to).map((h) => h.label);
   // Room beside the outer nodes for their labels.
   const pad = 150;
   const vw = team.width + pad * 2;
@@ -71,22 +119,19 @@ export function TeamFlow({ org, events, now: caption }: { org: OrganizationInfo;
           const a = node.get(from);
           const b = node.get(to);
           if (!a || !b) return null;
-          const { d, mid, side } = curve(a, b);
+          const { d, at } = curve(a, b);
+          const place = labelPlace(a, b, at);
           const n = counts.get(`${from}>${to}`) ?? 0;
           const isActive = same(team.active, from, to);
           const cls = isActive ? "flow-route active" : n > 0 ? "flow-route used" : "flow-route";
-          const label = isActive ? team.active?.label : n > 0 ? `${lastLabel(from, to) ?? ""}${n > 1 ? ` ×${n}` : ""}` : null;
+          const label = isActive ? team.active?.label : n > 0 ? routeLabel(labelsOf(from, to)) : null;
           return (
             <g key={`${from}>${to}`} className={cls}>
               <path d={d} markerEnd={n > 0 || isActive ? `url(#${isActive ? "team-arrow-active" : "team-arrow"})` : undefined} />
               {label ? (
-                <text
-                  x={mid.x + side * 10}
-                  y={mid.y + 4}
-                  className={`flow-label${isActive ? " active" : ""}`}
-                  textAnchor={side > 0 ? "start" : "end"}
-                >
-                  {short(label, 26)}
+                <text x={place.x} y={place.y} className={`flow-label${isActive ? " active" : ""}`} textAnchor={place.anchor}>
+                  <title>{label}</title>
+                  {short(label, 20)}
                 </text>
               ) : null}
             </g>
@@ -108,7 +153,7 @@ export function TeamFlow({ org, events, now: caption }: { org: OrganizationInfo;
               ) : null}
               <circle cx={n.x} cy={n.y} r={R} className="flow-disc" />
               <text x={n.x} y={time ? n.y - 2 : n.y + 4} textAnchor="middle" className="flow-name">
-                {short(n.title, 13)}
+                {n.key === YOU ? "You" : initials(n.title)}
               </text>
               {time ? (
                 <text x={n.x} y={n.y + 13} textAnchor="middle" className={`flow-time${running ? " running" : ""}`}>
@@ -116,8 +161,20 @@ export function TeamFlow({ org, events, now: caption }: { org: OrganizationInfo;
                   {running ? formatDuration(nowMs - (time.runningSinceMs ?? nowMs)) : formatDuration(time.totalMs)}
                 </text>
               ) : null}
+              {n.key === YOU
+                ? null
+                : wrapName(n.title).map((line, i) => (
+                    <text key={i} x={n.x} y={n.y + R + 16 + i * 14} textAnchor="middle" className="flow-node-title">
+                      {line}
+                    </text>
+                  ))}
               {sub ? (
-                <text x={n.x} y={n.y + R + 16} textAnchor="middle" className="flow-sub">
+                <text
+                  x={n.x}
+                  y={n.y + R + 16 + (n.key === YOU ? 0 : wrapName(n.title).length) * 14}
+                  textAnchor="middle"
+                  className="flow-sub"
+                >
                   {sub}
                 </text>
               ) : null}

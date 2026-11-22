@@ -66,8 +66,8 @@ function layout(o: OrganizationInfo): { nodes: TeamNode[]; width: number; height
     for (const k of kids.get(key) ?? []) walk(k, depth + 1, key);
   };
   walk(YOU, 0, null);
-  const STEP_X = 150;
-  const STEP_Y = 150;
+  const STEP_X = 170;
+  const STEP_Y = 170;
   const xs = new Map<string, number>();
   let leaf = 0;
   const place = (key: string): number => {
@@ -101,7 +101,8 @@ function layout(o: OrganizationInfo): { nodes: TeamNode[]; width: number; height
       state: (a?.status === "done" ? "done" : "idle") as TeamNodeState,
     };
   });
-  return { nodes, width, height: 60 + maxDepth * STEP_Y + 70 };
+  // Below the lowest circle: two lines of name and the provider line.
+  return { nodes, width, height: 60 + maxDepth * STEP_Y + 110 };
 }
 
 /** The team picture from the organization and its `organization.*` events (oldest first). */
