@@ -460,6 +460,9 @@ pub enum DomainEvent {
     /// (`reasoning`, `coding`, `review` or `tests`; ADR 0041).
     #[serde(rename = "workflow.directed")]
     WorkflowDirected { to: String, by: String },
+    /// Step-through mode turned on or off (ADR 0043).
+    #[serde(rename = "workflow.step_through_changed")]
+    WorkflowStepThroughChanged { on: bool, by: String },
     /// The operator asked the task's supervisor something (ADR 0041).
     #[serde(rename = "supervisor.asked")]
     SupervisorAsked { message_id: Uuid, by: String },
@@ -625,6 +628,7 @@ impl DomainEvent {
             Self::WorkflowDelivered { .. } => "workflow.delivered",
             Self::WorkflowFailed { .. } => "workflow.failed",
             Self::WorkflowDirected { .. } => "workflow.directed",
+            Self::WorkflowStepThroughChanged { .. } => "workflow.step_through_changed",
             Self::SupervisorAsked { .. } => "supervisor.asked",
             Self::SupervisorAnswered { .. } => "supervisor.answered",
             Self::WorkflowCancelled { .. } => "workflow.cancelled",
@@ -855,6 +859,7 @@ mod tests {
             DomainEvent::WorkflowCompleted { reason: "approved".into() },
             DomainEvent::WorkflowFailed { reason: "x".into() },
             DomainEvent::WorkflowDirected { to: "coding".into(), by: "desktop".into() },
+            DomainEvent::WorkflowStepThroughChanged { on: true, by: "desktop".into() },
             DomainEvent::SupervisorAsked { message_id: new_id(), by: "desktop".into() },
             DomainEvent::SupervisorAnswered {
                 message_id: new_id(),

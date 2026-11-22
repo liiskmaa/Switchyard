@@ -18,6 +18,7 @@ nix.workspace = true
 tokio = { workspace = true, features = ["process", "io-util", "sync", "time", "rt", "macros", "fs"] }
 
 [dev-dependencies]
+tempfile.workspace = true
 tokio = { workspace = true, features = ["process", "io-util", "sync", "time", "rt", "macros", "rt-multi-thread"] }
 
 [lints]

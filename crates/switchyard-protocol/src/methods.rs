@@ -722,7 +722,7 @@ method!(TasksRemoveDependency, "tasks.remove_dependency", TaskDependencyParams, 
 pub struct TasksAssignParams {
     pub task_id: Uuid,
     pub role: Role,
-    /// `claude_code` or `codex`.
+    /// `claude_code`, `codex` or `gemini`.
     pub provider: String,
     pub workspace_id: Uuid,
     /// Start the session right away (default true).
@@ -1041,7 +1041,7 @@ method!(
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentsModelsParams {
-    /// `claude_code` or `codex`.
+    /// `claude_code`, `codex` or `gemini`.
     pub provider: String,
     /// Ask the CLI again instead of using the cached answer.
     #[serde(default)]
@@ -1108,6 +1108,32 @@ pub struct WorkflowsCancelParams {
 }
 
 method!(WorkflowsCancel, "workflows.cancel", WorkflowsCancelParams, WorkflowResult);
+
+/// Step-through mode (ADR 0043): wait before each hand-off to the next role.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowsSetStepThroughParams {
+    pub task_id: Uuid,
+    pub on: bool,
+}
+
+method!(WorkflowsSetStepThrough, "workflows.set_step_through", WorkflowsSetStepThroughParams, WorkflowResult);
+
+/// What the step the workflow waits to start would receive, built by the
+/// same code that starts it (pending notes included).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkflowsPreviewNextResult {
+    pub step_key: String,
+    pub role: String,
+    pub provider: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// The rendered prompt, exactly as it would be sent now.
+    pub prompt: String,
+    /// The structured context inside it.
+    pub context: serde_json::Value,
+}
+
+method!(WorkflowsPreviewNext, "workflows.preview_next", TaskIdParams, WorkflowsPreviewNextResult);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowsRequestCorrectionParams {

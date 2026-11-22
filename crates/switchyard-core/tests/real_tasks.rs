@@ -29,7 +29,7 @@ use uuid::Uuid;
 use common::{RealCli, TestCore, git_repo};
 
 async fn real_core() -> Option<TestCore> {
-    TestCore::start_real(RealCli { claude: true, codex: true }, |c| {
+    TestCore::start_real(RealCli { claude: true, codex: true, gemini: false }, |c| {
         c.agent_ready_timeout = Duration::from_secs(90);
     })
     .await

@@ -672,6 +672,7 @@ impl TaskService {
             .cloned()
             .ok_or_else(|| invalid_state("the supervisor is not in the organization"))?;
         self.wait_for_reported_stops(rec.workspace_id).await;
+        self.wait_for_free_workspace(rec.workspace_id).await;
         let project = rec.project_id;
         let (settings, _) =
             self.storage.call(move |c| settings_of(c, project)).await.map_err(errors::storage)?;
@@ -1128,12 +1129,15 @@ impl TaskService {
                     WorkerOutcome::Failed { reason: format!("no usable report: {text}") }
                 };
                 let evidence = self.evidence(&rec, &state, &t.key).await;
+                // The turn is over for the organization: free the workspace (and the
+                // task) first, so the next step never starts beside a session that is
+                // still stopping. The cancellation's own event comes later and finds
+                // the organization moved on.
+                let _ =
+                    self.cancel_assignment(a.id, Some("handed to its supervisor".into()), ACTOR.into()).await;
                 let input = Input::Worked { task: t.key.clone(), outcome, evidence, now_ms: now_ms() };
-                if self.apply_org(rec.task_id, input, Some(seq)).await.is_ok() {
-                    // The turn is over for the organization: free the workspace.
-                    let _ = self
-                        .cancel_assignment(a.id, Some("handed to its supervisor".into()), ACTOR.into())
-                        .await;
+                if let Err(err) = self.apply_org(rec.task_id, input, Some(seq)).await {
+                    tracing::error!(?err, "cannot apply a work turn");
                 }
             }
             DomainEvent::TaskStatusChanged { to, .. } if matches!(to.as_str(), "cancelled" | "failed") => {

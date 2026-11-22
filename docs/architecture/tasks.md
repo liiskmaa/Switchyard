@@ -57,7 +57,11 @@ A review verdict (`approved`, `changes_requested`, `rejected`, `blocked`) return
    The assignment row, a `task_assignment` message and `task.assigned` are written in one transaction.
 2. `tasks.start_assignment` builds the `TaskContext` (v1) from the task, its dependencies' accepted
    results, the open findings (for an implementation), pending operator notes and the standard
-   restrictions. For a review it also fingerprints the workspace. It then starts a session, or
+   restrictions. Since context v4, an implementation or review also gets `investigation`: the
+   task's latest investigation report (summary and details, a claim) and `files_read`, the
+   workspace files that investigation's session opened, read by Core from its tool calls in the
+   journal (at most 40, workspace-relative), so the role starts there instead of exploring the
+   repository again. For a review it also fingerprints the workspace. It then starts a session, or
    resumes the task's earlier session for the same role, provider and workspace, so the agent keeps
    its conversation. If Core is still stopping the session that just reported in this workspace,
    the start waits for that stop. Core never stops any other session: one the operator started or

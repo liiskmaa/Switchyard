@@ -43,6 +43,13 @@ Rust process, **Switchyard Core**. The Tauri desktop app is only a client.
   `migrations/0012_workflow_tests.sql`); reasoning's plan of 2–8 subtasks runs in turn (`s<n>/` step keys); the task
   page's flow display (`apps/desktop/src/features/workflows/flow.ts`, `TaskFlow.tsx`); Core start/stop/restart from
   Settings (`apps/desktop/src-tauri/src/commands.rs`: `core_stop`, `core_start`, `core_restart`).
+- ADR 0043: context v4 `investigation` (report + `files_read` from the journal) for coding and review;
+  step-through mode (`WorkflowState.step_through`, `workflows.set_step_through`, `workflows.preview_next`
+  built by `tasks/assign.rs::build_context`, the same code that starts a step).
+- Gemini CLI over ACP (ADR 0044): `crates/switchyard-agents/src/acp/` (pure `protocol.rs`, `launch.rs` with the admin
+  policy, `classify.rs`, `models.rs`), provider `gemini`, `migrations/0014_gemini_provider.sql` (the runner's
+  `-- switchyard: foreign_keys=off` marker for table rebuilds), `src/bin/fake_gemini.rs`. See
+  `docs/architecture/acp-integration.md`.
 - Task supervisor (ADR 0041): `crates/switchyard-tasks/src/supervisor.rs` (pure prompt + reply parser),
   `crates/switchyard-core/src/tasks/supervisor.rs`, `migrations/0013_task_supervisor.sql`, the pure
   `workflow::Input::Directed`, `apps/desktop/src/features/workflows/SupervisorBox.tsx`.
@@ -75,6 +82,8 @@ cargo test -p switchyard-core --test workflows          # engineering@1 workflow
 cargo test -p switchyard-core --test delivery           # M8.2: workflow → M7 integration → delivered (commit, validation, approval)
 cargo test -p switchyard-core --test organizations      # M8.3: dynamic organization via both fakes (supervision, interruption, limits, restart)
 cargo test -p switchyard-core --test supervisor         # ADR 0041: task supervisor answers, routes, follow-ups via the fakes
+cargo test -p switchyard-core --test gemini             # ADR 0044: Gemini over ACP via the fake (asks, answers, cancel, resume)
+SWITCHYARD_REAL_GEMINI=1 cargo test -p switchyard-core --test real_gemini -- --ignored   # real Gemini CLI 0.70.0, API key
 cargo test -p switchyard-git --test integrate           # Git integration primitives on temp repos
 SWITCHYARD_REAL_CLAUDE=1 cargo test -p switchyard-core --test real_claude -- --ignored   # real CLI, paid
 SWITCHYARD_REAL_CODEX=1 cargo test -p switchyard-core --test real_codex -- --ignored     # real CLI, paid
@@ -234,6 +243,11 @@ When running Core or the app manually, set `SWITCHYARD_DATA_DIR` (and, if that p
   - The test gate runs only commands the implementer's report names, each through `evaluate_command` (the
     validation policy path), never through a shell; `ask` needs the operator's resume; results and the decision are
     one transaction. Never let a review session run tests (it must stay read-only).
+- **Gemini (ACP).** Every Gemini action must ask Switchyard: keep the admin policy's shell rule with its
+  `argsPattern` (Gemini's "known safe command" heuristic turns a pattern-less ask into allow), stop the session on a
+  policy load error, accept only the `default` session mode, offer no fs/terminal capability, answer only
+  `allow_once` or reject. The API key is passed to the process only; never log or store it. Re-verify against a
+  new CLI version before raising `acp::TESTED_VERSION`.
 - **Task supervisor.** A read-only session in its own workspace (never the task's). Its
   `switchyard-supervisor` block only requests a route; Core sends an instruction to the working
   agent of the same role (`tasks.note`), refuses other routes while an agent works, and otherwise

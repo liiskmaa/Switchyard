@@ -296,7 +296,7 @@ async fn investigate_implement_review_loop_across_providers() {
     let a = d.assignments.iter().find(|a| a.id == inv).unwrap();
     assert_eq!(a.status, AssignmentStatus::Reported);
     let ctx = a.context.as_ref().unwrap();
-    assert_eq!((ctx["version"].as_u64(), ctx["role"].as_str()), (Some(3), Some("investigate")));
+    assert_eq!((ctx["version"].as_u64(), ctx["role"].as_str()), (Some(4), Some("investigate")));
     assert!(d.messages.iter().any(|m| m.kind == MessageKind::Findings && m.sender == "agent"));
     assert_eq!(d.findings.len(), 1);
 
@@ -626,7 +626,7 @@ async fn one_task_per_workspace_and_cancel_frees_it() {
         .call::<TasksAssign>(TasksAssignParams {
             task_id: second.id,
             role: Role::Implement,
-            provider: "gemini".into(),
+            provider: "copilot".into(),
             workspace_id: f.workspace_id,
             start: true,
             model: None,

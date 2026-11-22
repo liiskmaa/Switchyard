@@ -1,5 +1,5 @@
 import { coreRequest } from "../../lib/core";
-import type { CoreMethods, EventEnvelope, Task, TaskRole } from "../../types/protocol";
+import type { AgentProvider, CoreMethods, EventEnvelope, Task, TaskRole } from "../../types/protocol";
 
 export const listTasks = async (projectId: string, includeClosed: boolean) =>
   (await coreRequest("tasks.list", { project_id: projectId, include_closed: includeClosed, limit: 500 })).tasks;
@@ -12,7 +12,7 @@ export const addDependency = (taskId: string, dependsOn: string) =>
   coreRequest("tasks.add_dependency", { task_id: taskId, depends_on: dependsOn });
 export const removeDependency = (taskId: string, dependsOn: string) =>
   coreRequest("tasks.remove_dependency", { task_id: taskId, depends_on: dependsOn });
-export const assignTask = (taskId: string, role: TaskRole, provider: "claude_code" | "codex", workspaceId: string) =>
+export const assignTask = (taskId: string, role: TaskRole, provider: AgentProvider, workspaceId: string) =>
   coreRequest("tasks.assign", { task_id: taskId, role, provider, workspace_id: workspaceId, start: true });
 export const cancelAssignment = (assignmentId: string) => coreRequest("tasks.cancel_assignment", { assignment_id: assignmentId });
 export const sendNote = (taskId: string, text: string) => coreRequest("tasks.note", { task_id: taskId, text });

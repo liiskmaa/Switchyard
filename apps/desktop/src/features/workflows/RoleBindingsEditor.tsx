@@ -140,7 +140,12 @@ export function RoleBindingsEditor({
 }) {
   const claude = useCoreQuery("models:claude_code", () => listModels("claude_code"));
   const codex = useCoreQuery("models:codex", () => listModels("codex"));
-  const catalogs: Record<AgentProvider, ModelCatalog | null> = { claude_code: claude.data, codex: codex.data };
+  const gemini = useCoreQuery("models:gemini", () => listModels("gemini"));
+  const catalogs: Record<AgentProvider, ModelCatalog | null> = {
+    claude_code: claude.data,
+    codex: codex.data,
+    gemini: gemini.data,
+  };
   const rows: BindingKey[] = ["investigate", "implement", "review"];
   const row = (key: BindingKey, b: RoleBinding, set: (b: RoleBinding) => void) => {
     const catalog = catalogs[b.provider];

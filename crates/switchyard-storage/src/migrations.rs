@@ -23,7 +23,11 @@ pub const MIGRATIONS: &[(u32, &str)] = &[
     (11, include_str!("../../../migrations/0011_policy_auto_mode.sql")),
     (12, include_str!("../../../migrations/0012_workflow_tests.sql")),
     (13, include_str!("../../../migrations/0013_task_supervisor.sql")),
+    (14, include_str!("../../../migrations/0014_gemini_provider.sql")),
 ];
+
+/// First line of a migration that rebuilds tables other tables reference.
+const FOREIGN_KEYS_OFF: &str = "-- switchyard: foreign_keys=off";
 
 pub const LATEST_SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
 
@@ -37,11 +41,34 @@ pub(crate) fn apply(conn: &mut Connection) -> Result<(), StorageError> {
         return Err(StorageError::UnsupportedSchema { found: current, supported: LATEST_SCHEMA_VERSION });
     }
     for &(version, sql) in MIGRATIONS.iter().filter(|(v, _)| *v > current) {
-        let tx = conn.transaction()?;
-        tx.execute_batch(sql).map_err(|source| StorageError::Migration { version, source })?;
-        tx.pragma_update(None, "user_version", version)
-            .map_err(|source| StorageError::Migration { version, source })?;
-        tx.commit().map_err(|source| StorageError::Migration { version, source })?;
+        // A table rebuild (copy, drop, rename) must not fire foreign key actions:
+        // dropping a referenced table would cascade into its children. SQLite only
+        // switches this outside a transaction; it is switched back on below.
+        let fk_off = sql.starts_with(FOREIGN_KEYS_OFF);
+        if fk_off {
+            conn.pragma_update(None, "foreign_keys", false)?;
+        }
+        let result = (|| {
+            let tx = conn.transaction()?;
+            tx.execute_batch(sql).map_err(|source| StorageError::Migration { version, source })?;
+            if fk_off {
+                let broken: i64 = tx
+                    .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
+                    .map_err(|source| StorageError::Migration { version, source })?;
+                if broken > 0 {
+                    return Err(StorageError::Corrupt(format!(
+                        "migration {version} would leave {broken} broken references; nothing was changed"
+                    )));
+                }
+            }
+            tx.pragma_update(None, "user_version", version)
+                .map_err(|source| StorageError::Migration { version, source })?;
+            tx.commit().map_err(|source| StorageError::Migration { version, source })
+        })();
+        if fk_off {
+            conn.pragma_update(None, "foreign_keys", true)?;
+        }
+        result?;
         tracing::info!(version, "applied database migration");
     }
     Ok(())
@@ -114,6 +141,34 @@ mod tests {
         );
         let version = storage.with_conn(|c| current_version(c)).unwrap();
         assert_eq!(version, LATEST_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn rebuilding_migrations_keep_rows_and_switch_foreign_keys_back_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.db");
+        {
+            let mut c = Connection::open(&path).unwrap();
+            apply_up_to(&mut c, 13);
+            c.execute_batch(V3_FIXTURE).unwrap();
+        }
+        let storage = Storage::open(&path).unwrap();
+        storage
+            .with_conn(|c| {
+                let fk: bool = c.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+                assert!(fk, "foreign keys are on again");
+                let n: i64 = c.query_row("SELECT count(*) FROM sessions WHERE id = 's1'", [], |r| r.get(0))?;
+                assert_eq!(n, 1, "rows survive the rebuild");
+                let ap: i64 = c.query_row("SELECT count(*) FROM approvals WHERE session_id = 's1'", [], |r| r.get(0))?;
+                assert_eq!(ap, 2, "dropping the old sessions table cascaded into nothing");
+                c.execute(
+                    "INSERT INTO sessions (id, project_id, workspace_id, agent_id, provider, cwd, state, started_at, last_activity_at)
+                     VALUES ('g', 'p1', 'w1', 'a1', 'gemini', '/w', 'stopped', 0, 0)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
     }
 
     #[test]

@@ -33,6 +33,15 @@ import { TaskNeedsYou, deliveryNeedsYou } from "../workflows/TaskNeedsYou";
 import { DeliveryPanel } from "../workflows/DeliveryPanel";
 import { SupervisorBox } from "../workflows/SupervisorBox";
 
+/** A short label for an event type: `organization.status_changed` → `team · status changed`. */
+export function eventLabel(type: string): string {
+  const [area = "", ...rest] = type.split(".");
+  const what = rest.join(".").replace(/_/g, " ");
+  const name: Record<string, string> = { organization: "team", task: "", workflow: "workflow", agent: "agent", supervisor: "supervisor" };
+  const prefix = name[area] ?? area;
+  return prefix ? `${prefix} · ${what}` : what;
+}
+
 /** History events shown before "Show all". */
 const HISTORY_PREVIEW = 20;
 
@@ -612,7 +621,9 @@ export function TaskDetailView({
                     {shownHistory.map((e) => (
                       <li key={e.seq} className="tl">
                         <span className="tl-time">{formatClock(e.occurred_at_ms)}</span>
-                        <span className="muted small">{e.event_type.replace("task.", "")}</span>
+                        <span className="tl-type small" title={e.event_type}>
+                          {eventLabel(e.event_type)}
+                        </span>
                         <span className="tl-body">{describeEvent(e)}</span>
                       </li>
                     ))}

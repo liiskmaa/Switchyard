@@ -25,6 +25,11 @@ pub struct CoreConfig {
     pub claude_executable: Option<PathBuf>,
     /// Codex CLI to use; `None` = `SWITCHYARD_CODEX_BIN`, `PATH`, common locations.
     pub codex_executable: Option<PathBuf>,
+    /// Gemini CLI to use; `None` = `SWITCHYARD_GEMINI_BIN`, `PATH`, common locations.
+    pub gemini_executable: Option<PathBuf>,
+    /// Run a Gemini CLI version other than the verified one (ADR 0044).
+    /// `SWITCHYARD_ALLOW_UNTESTED_GEMINI=1`.
+    pub allow_untested_gemini: bool,
     /// Run a Codex version other than the one the adapter was verified against.
     /// Off by default: the app-server protocol is experimental and changes per
     /// release (ADR 0021). `SWITCHYARD_ALLOW_UNTESTED_CODEX=1`.
@@ -65,6 +70,8 @@ impl CoreConfig {
             shutdown_grace: Duration::from_secs(3),
             claude_executable: None,
             codex_executable: None,
+            gemini_executable: None,
+            allow_untested_gemini: false,
             allow_untested_codex: false,
             agent_ready_timeout: Duration::from_secs(60),
             approval_timeout: Duration::from_secs(15 * 60),
@@ -95,6 +102,8 @@ impl CoreConfig {
         }
         // Exactly "1"; anything else keeps the safe default.
         config.allow_untested_codex = std::env::var("SWITCHYARD_ALLOW_UNTESTED_CODEX").as_deref() == Ok("1");
+        config.allow_untested_gemini =
+            std::env::var("SWITCHYARD_ALLOW_UNTESTED_GEMINI").as_deref() == Ok("1");
         Ok(config)
     }
 }

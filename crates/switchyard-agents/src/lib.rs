@@ -13,7 +13,9 @@
 //!   private to that module; nothing outside it sees raw Claude JSON.
 //! * [`codex`] — the OpenAI Codex adapter (app-server JSON-RPC), likewise
 //!   self-contained.
+//! * [`acp`] — the Agent Client Protocol adapter (Gemini CLI first).
 
+pub mod acp;
 pub mod claude;
 pub mod codex;
 pub mod event;
@@ -36,6 +38,7 @@ pub fn classify(provider: AgentProvider, request: &PermissionRequest) -> switchy
     match provider {
         AgentProvider::ClaudeCode => claude::classify(request),
         AgentProvider::Codex => codex::classify(request),
+        AgentProvider::Gemini => acp::classify(request),
     }
 }
 
@@ -44,6 +47,7 @@ pub fn capabilities(provider: AgentProvider) -> Capabilities {
     match provider {
         AgentProvider::ClaudeCode => claude::capabilities(),
         AgentProvider::Codex => codex::capabilities(),
+        AgentProvider::Gemini => acp::capabilities(),
     }
 }
 
@@ -52,6 +56,7 @@ pub fn display_name(provider: AgentProvider) -> &'static str {
     match provider {
         AgentProvider::ClaudeCode => "Claude Code",
         AgentProvider::Codex => "Codex",
+        AgentProvider::Gemini => "Gemini",
     }
 }
 
@@ -60,5 +65,6 @@ pub fn tested_version(provider: AgentProvider) -> &'static str {
     match provider {
         AgentProvider::ClaudeCode => claude::TESTED_VERSION,
         AgentProvider::Codex => codex::TESTED_VERSION,
+        AgentProvider::Gemini => acp::TESTED_VERSION,
     }
 }

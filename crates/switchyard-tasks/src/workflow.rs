@@ -318,6 +318,9 @@ pub struct WorkflowState {
     pub test_gate: bool,
     /// Reasoning's plan, when it split the task (ADR 0040).
     pub plan: Vec<PlannedSubtask>,
+    /// Step-through mode (ADR 0043): before each hand-off to the next role,
+    /// wait for the operator to see what it will receive and continue.
+    pub step_through: bool,
 }
 
 /// Where the delivery of the reviewed work stands, read by Core from the
@@ -490,6 +493,10 @@ pub enum Input {
     /// The operator retried the task after it failed: a workflow that ended
     /// with it comes back and waits to continue where it stopped.
     TaskReopened,
+    /// The operator turns step-through mode on or off (ADR 0043).
+    SetStepThrough {
+        on: bool,
+    },
     /// The operator (through the task's supervisor) sends the work to
     /// `target` now: a new step of that role (a new round), or the test gate
     /// for the current implementation. Only while no agent of the workflow
@@ -574,6 +581,8 @@ pub enum Change {
     SubtaskDone(u32, String),
     /// The operator sent the work to this target (through the supervisor).
     Directed(Target),
+    /// Step-through mode was turned on or off.
+    StepThrough(bool),
     Delivered(String),
     Cancelled(String),
     Failed(String),
@@ -795,6 +804,15 @@ pub fn decide(state: &WorkflowState, input: &Input) -> Result<Decision, Workflow
             );
         }
         Input::Directed { target } => directed(&mut d, state, *target)?,
+        Input::SetStepThrough { on } => {
+            if status.is_final() {
+                return Err(WorkflowError::NotAllowed(status.as_str()));
+            }
+            if state.step_through != *on {
+                d.state.step_through = *on;
+                d.changes.push(Change::StepThrough(*on));
+            }
+        }
         Input::Answered { step } => {
             let asked = matches!(state.on_resume, Some(Resume::Answer { .. } | Resume::Continue));
             if status != WorkflowStatus::Waiting || !asked || current_for(state, step).is_none() {
@@ -1206,11 +1224,23 @@ fn delivery(d: &mut Decision, fact: &Delivery) {
     }
 }
 
-/// Starts `step` now, or (while paused) keeps it for the resume. `true` if started.
+/// Starts `step` now, or (while paused, or in step-through mode) keeps it
+/// for the resume. `true` if started.
 fn start_or_hold(d: &mut Decision, step: Step) -> bool {
     if d.state.status == WorkflowStatus::Paused {
         d.state.on_resume = Some(Resume::Start { step });
         d.state.reason = Some("paused by the operator; the next step starts when you resume".into());
+        return false;
+    }
+    if d.state.step_through {
+        let key = step.key();
+        wait(
+            d,
+            format!(
+                "Step-through: {key} is next. See what it will receive, add a note if you like, then continue."
+            ),
+            Resume::Start { step },
+        );
         return false;
     }
     begin(d, step);
@@ -1662,6 +1692,35 @@ mod tests {
         let held = report(&paused, Outcome::Done);
         assert_eq!((held.state.status, &held.action), (WorkflowStatus::Paused, &Action::None));
         assert_eq!(key(&apply(&held.state, Input::Resume)), "implement#1");
+    }
+
+    #[test]
+    fn step_through_waits_before_each_hand_off_and_resume_starts_the_step() {
+        let d = apply(&WorkflowState::default(), Input::Start);
+        let on = apply(&d.state, Input::SetStepThrough { on: true });
+        assert!(on.state.step_through);
+        assert_eq!(on.changes, vec![Change::StepThrough(true)]);
+        // investigate#1 reports: nothing starts; the workflow waits with implement#1 next.
+        let held = apply(&on.state, Input::Reported { step: "investigate#1".into(), outcome: Outcome::Done });
+        assert_eq!((held.state.status, &held.action), (WorkflowStatus::Waiting, &Action::None));
+        assert!(held.state.reason.as_deref().unwrap().starts_with("Step-through: implement#1 is next"));
+        let Some(Resume::Start { step }) = &held.state.on_resume else {
+            panic!("{:?}", held.state.on_resume)
+        };
+        assert_eq!(step.key(), "implement#1");
+        assert_eq!(
+            held.state.current.as_ref().unwrap().key(),
+            "investigate#1",
+            "the reported step stays current"
+        );
+        // Continue starts exactly that step.
+        assert_eq!(key(&apply(&held.state, Input::Resume)), "implement#1");
+        // Off again: the hand-offs run by themselves.
+        let off = apply(&held.state, Input::SetStepThrough { on: false });
+        assert_eq!(off.state.status, WorkflowStatus::Waiting, "turning it off does not continue by itself");
+        assert_eq!(key(&apply(&off.state, Input::Resume)), "implement#1");
+        let c = apply(&d.state, Input::Cancel { reason: "x".into() });
+        assert!(decide(&c.state, &Input::SetStepThrough { on: true }).is_err());
     }
 
     #[test]

@@ -40,7 +40,7 @@ pub struct UnknownValue {
 
 string_enum!(
     /// A native agent vendor. Stored as `agents.vendor` / `sessions.provider`.
-    AgentProvider { ClaudeCode => "claude_code", Codex => "codex" }
+    AgentProvider { ClaudeCode => "claude_code", Codex => "codex", Gemini => "gemini" }
 );
 
 string_enum!(

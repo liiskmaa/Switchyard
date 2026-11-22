@@ -82,7 +82,9 @@ async fn real_claude_session_end_to_end() {
         return;
     }
     let model = std::env::var("SWITCHYARD_REAL_CLAUDE_MODEL").unwrap_or_else(|_| "haiku".into());
-    let Some(core) = TestCore::start_real(RealCli { claude: true, codex: false }, |_| {}).await else {
+    let Some(core) =
+        TestCore::start_real(RealCli { claude: true, codex: false, gemini: false }, |_| {}).await
+    else {
         return;
     };
     let (client, mut rx) = core.connect().await;
@@ -214,7 +216,9 @@ async fn real_claude_two_workspaces_concurrently() {
         return;
     }
     let model = std::env::var("SWITCHYARD_REAL_CLAUDE_MODEL").unwrap_or_else(|_| "haiku".into());
-    let Some(core) = TestCore::start_real(RealCli { claude: true, codex: false }, |_| {}).await else {
+    let Some(core) =
+        TestCore::start_real(RealCli { claude: true, codex: false, gemini: false }, |_| {}).await
+    else {
         return;
     };
     let (client, _rx) = core.connect().await;
@@ -284,7 +288,9 @@ async fn real_claude_policy_decisions() {
     }
     use switchyard_protocol::model::{OperationCategory, PolicyConditions, PolicyDecision};
     let model = std::env::var("SWITCHYARD_REAL_CLAUDE_MODEL").unwrap_or_else(|_| "haiku".into());
-    let Some(core) = TestCore::start_real(RealCli { claude: true, codex: false }, |_| {}).await else {
+    let Some(core) =
+        TestCore::start_real(RealCli { claude: true, codex: false, gemini: false }, |_| {}).await
+    else {
         return;
     };
     let (client, _rx) = core.connect().await;
@@ -398,7 +404,9 @@ async fn real_claude_policy_decisions() {
 #[tokio::test]
 #[ignore = "real Claude CLI: SWITCHYARD_REAL_CLAUDE=1 (no session starts)"]
 async fn real_claude_names_its_model_aliases() {
-    let Some(core) = TestCore::start_real(RealCli { claude: true, codex: false }, |_| {}).await else {
+    let Some(core) =
+        TestCore::start_real(RealCli { claude: true, codex: false, gemini: false }, |_| {}).await
+    else {
         return;
     };
     let (client, _rx) = core.connect().await;

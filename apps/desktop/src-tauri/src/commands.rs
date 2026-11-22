@@ -19,7 +19,8 @@ use switchyard_protocol::methods::{
 };
 use switchyard_protocol::methods::{
     AgentsModels, SupervisorAsk, SupervisorGet, WorkflowsCancel, WorkflowsGet, WorkflowsPause,
-    WorkflowsRequestCorrection, WorkflowsResume, WorkflowsSetSettings, WorkflowsSettings, WorkflowsStart,
+    WorkflowsPreviewNext, WorkflowsRequestCorrection, WorkflowsResume, WorkflowsSetSettings,
+    WorkflowsSetStepThrough, WorkflowsSettings, WorkflowsStart,
 };
 use switchyard_protocol::methods::{
     IntegrationsAbortResolution, IntegrationsApprove, IntegrationsCancel, IntegrationsCancelValidation,
@@ -122,6 +123,8 @@ const ALLOWED_METHODS: &[&str] = &[
     WorkflowsPause::NAME,
     WorkflowsResume::NAME,
     SupervisorAsk::NAME,
+    WorkflowsSetStepThrough::NAME,
+    WorkflowsPreviewNext::NAME,
     SupervisorGet::NAME,
     WorkflowsCancel::NAME,
     WorkflowsRequestCorrection::NAME,

@@ -417,6 +417,31 @@ impl TaskService {
         }
     }
 
+    /// Waits (at most 30 s) until no live session uses the workspace: a session
+    /// Core just asked to stop takes a moment to go. After that the start
+    /// fails as before (`workspace_occupied`), never stopping anything itself.
+    pub(super) async fn wait_for_free_workspace(&self, workspace_id: Uuid) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let live = self
+                .storage
+                .call(move |c| {
+                    let filter = switchyard_storage::sessions::SessionFilter {
+                        workspace_id: Some(workspace_id),
+                        live_only: true,
+                        ..Default::default()
+                    };
+                    Ok(!switchyard_storage::sessions::list(c, filter, 1)?.is_empty())
+                })
+                .await
+                .unwrap_or(false);
+            if !live || tokio::time::Instant::now() >= deadline {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
     async fn wire(&self, id: Uuid) -> Result<Task, ProtocolError> {
         self.storage
             .call(move |c| {

@@ -350,80 +350,14 @@ impl TaskService {
                 if t.status != TaskStatus::Assigned {
                     return Ok(Err(invalid_state(format!("the task is {}, not assigned", t.status))));
                 }
-                let ws = switchyard_storage::workspaces::get(c, a.workspace_id)?;
-                let project = projects::get(c, t.project_id)?;
-                let mut dependencies = Vec::new();
-                for (id, _) in store::dependencies_of(c, t.id)? {
-                    let d = store::get_task(c, id)?;
-                    dependencies.push(ContextDependency {
-                        task_id: d.id,
-                        title: d.title.clone(),
-                        status: d.status,
-                        result_summary: d
-                            .result
-                            .as_ref()
-                            .and_then(|r| r["summary"].as_str())
-                            .map(|s| super::bounded(s, 2000)),
-                    });
-                }
-                // Review triage (ADR 0038): the reasoning step sees the review's
-                // findings; the next implementation or review sees its answer.
-                let review_triage = a.role == Role::Investigate
-                    && a.step_key.as_deref().is_some_and(switchyard_tasks::workflow::is_triage_step);
-                let reasoning = if matches!(a.role, Role::Implement | Role::Review) {
-                    latest_reasoning(c, t.id)?
-                } else {
-                    None
-                };
-                let review_findings = if a.role == Role::Implement || review_triage {
-                    store::findings_for_task(c, t.id)?
-                        .into_iter()
-                        .filter(|f| f.status == "open")
-                        .map(|f| ContextFinding {
-                            severity: f.severity,
-                            title: f.title,
-                            path: f.path,
-                            line: f.line,
-                            explanation: f.explanation,
-                            suggestion: f.suggestion,
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-                let notes = store::pending_notes(c, t.id)?;
-                let ctx = TaskContext {
-                    version: CONTEXT_VERSION,
-                    task_id: t.id,
+                let spec = ContextSpec {
                     assignment_id: a.id,
                     role: a.role,
-                    title: t.title.clone(),
-                    description: t.description.clone(),
-                    kind: t.kind,
-                    priority: t.priority,
-                    acceptance_criteria: t.acceptance_criteria.clone(),
-                    project_name: project.name,
-                    workspace_path: ws.path,
-                    workspace_branch: ws.branch,
-                    dependencies,
-                    review_findings,
-                    operator_notes: notes
-                        .iter()
-                        .filter_map(|m| m.payload["text"].as_str().map(str::to_owned))
-                        .collect(),
-                    restrictions: TaskContext::standard_restrictions(a.role),
-                    organization: super::organization::brief_for(c, &t)?,
-                    review_triage,
-                    reasoning,
-                    subtask: subtask_of(c, t.id, a.step_key.as_deref())?,
-                    test_results: if matches!(a.role, Role::Review | Role::Investigate | Role::Implement)
-                        && a.origin == "workflow"
-                    {
-                        super::tests::latest_for_context(c, t.id)?
-                    } else {
-                        None
-                    },
+                    step_key: a.step_key.clone(),
+                    origin: a.origin.clone(),
+                    workspace_id: a.workspace_id,
                 };
+                let (ctx, notes) = build_context(c, &t, &spec)?;
                 // Continue the conversation of this task's previous session for
                 // the same role, provider and workspace, when it can be resumed.
                 let reuse = store::assignments_for_task(c, t.id)?
@@ -714,6 +648,151 @@ impl TaskService {
             .map_err(errors::storage)?;
         Ok(TasksNoteResult { message: convert::message(message), delivered })
     }
+}
+
+/// What a step needs to build its task context.
+pub(super) struct ContextSpec {
+    pub(super) assignment_id: Uuid,
+    pub(super) role: Role,
+    pub(super) step_key: Option<String>,
+    pub(super) origin: String,
+    pub(super) workspace_id: Uuid,
+}
+
+/// The task context a step gets, from Core's records, and the pending notes
+/// it carries. Used to start an assignment, and to preview the next step.
+pub(super) fn build_context(
+    c: &switchyard_storage::Connection,
+    t: &TaskRecord,
+    spec: &ContextSpec,
+) -> Result<(TaskContext, Vec<switchyard_storage::tasks::MessageRecord>), StorageError> {
+    let ws = switchyard_storage::workspaces::get(c, spec.workspace_id)?;
+    let project = projects::get(c, t.project_id)?;
+    let mut dependencies = Vec::new();
+    for (id, _) in store::dependencies_of(c, t.id)? {
+        let d = store::get_task(c, id)?;
+        dependencies.push(ContextDependency {
+            task_id: d.id,
+            title: d.title.clone(),
+            status: d.status,
+            result_summary: d
+                .result
+                .as_ref()
+                .and_then(|r| r["summary"].as_str())
+                .map(|s| super::bounded(s, 2000)),
+        });
+    }
+    // Review triage (ADR 0038): the reasoning step sees the review's
+    // findings; the next implementation or review sees its answer.
+    let review_triage = spec.role == Role::Investigate
+        && spec.step_key.as_deref().is_some_and(switchyard_tasks::workflow::is_triage_step);
+    let reasoning =
+        if matches!(spec.role, Role::Implement | Role::Review) { latest_reasoning(c, t.id)? } else { None };
+    let review_findings = if spec.role == Role::Implement || review_triage {
+        store::findings_for_task(c, t.id)?
+            .into_iter()
+            .filter(|f| f.status == "open")
+            .map(|f| ContextFinding {
+                severity: f.severity,
+                title: f.title,
+                path: f.path,
+                line: f.line,
+                explanation: f.explanation,
+                suggestion: f.suggestion,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let notes = store::pending_notes(c, t.id)?;
+    let investigation = if matches!(spec.role, Role::Implement | Role::Review) {
+        investigation_of(c, t.id, &ws.path)?
+    } else {
+        None
+    };
+    let ctx = TaskContext {
+        version: CONTEXT_VERSION,
+        task_id: t.id,
+        assignment_id: spec.assignment_id,
+        role: spec.role,
+        title: t.title.clone(),
+        description: t.description.clone(),
+        kind: t.kind,
+        priority: t.priority,
+        acceptance_criteria: t.acceptance_criteria.clone(),
+        project_name: project.name,
+        workspace_path: ws.path,
+        workspace_branch: ws.branch,
+        dependencies,
+        review_findings,
+        operator_notes: notes.iter().filter_map(|m| m.payload["text"].as_str().map(str::to_owned)).collect(),
+        restrictions: TaskContext::standard_restrictions(spec.role),
+        organization: super::organization::brief_for(c, t)?,
+        review_triage,
+        reasoning,
+        subtask: subtask_of(c, t.id, spec.step_key.as_deref())?,
+        investigation,
+        test_results: if matches!(spec.role, Role::Review | Role::Investigate | Role::Implement)
+            && spec.origin == "workflow"
+        {
+            super::tests::latest_for_context(c, t.id)?
+        } else {
+            None
+        },
+    };
+    Ok((ctx, notes))
+}
+
+/// Most files listed from an investigation.
+const MAX_FILES_READ: usize = 40;
+
+/// The task's latest reported investigation (not a triage): its report from
+/// Core's record, and the files its session opened during that step, from
+/// the journal's tool calls (Claude's `file_path`/`path`, ACP `locations`).
+fn investigation_of(
+    c: &switchyard_storage::Connection,
+    task: Uuid,
+    workspace: &str,
+) -> Result<Option<switchyard_tasks::context::ContextInvestigation>, StorageError> {
+    let Some(a) = store::assignments_for_task(c, task)?.into_iter().rev().find(|a| {
+        a.role == Role::Investigate
+            && a.status == AssignmentStatus::Reported
+            && !a.step_key.as_deref().is_some_and(switchyard_tasks::workflow::is_triage_step)
+    }) else {
+        return Ok(None);
+    };
+    let report = store::messages_for_task(c, task)?
+        .into_iter()
+        .rev()
+        .find(|m| m.assignment_id == Some(a.id) && m.sender == "agent" && m.payload.get("report").is_some())
+        .map(|m| m.payload["report"].clone());
+    let Some(report) = report else { return Ok(None) };
+    let summary = report["summary"].as_str().map(|s| super::bounded(s, 2000)).unwrap_or_default();
+    let details = report["details"].as_str().map(|s| super::bounded(s, 6000));
+    let mut files: Vec<String> = Vec::new();
+    if let (Some(session), Some(from)) = (a.session_id, a.started_at_ms) {
+        let until = a.ended_at_ms.unwrap_or(i64::MAX);
+        let base = format!("{}/", workspace.trim_end_matches('/'));
+        for input in switchyard_storage::events::tool_inputs(c, session, from, until, 1000)? {
+            let input = &input;
+            let mut paths: Vec<&str> =
+                ["file_path", "path", "notebook_path"].iter().filter_map(|k| input[*k].as_str()).collect();
+            if let Some(locs) = input["locations"].as_array() {
+                paths.extend(locs.iter().filter_map(|l| l["path"].as_str()));
+            }
+            for p in paths {
+                let rel = p.strip_prefix(&base).unwrap_or(p);
+                // Only files inside the workspace, never `..` or absolute paths elsewhere.
+                if rel.starts_with('/') || rel.split('/').any(|c| c == "..") || rel.is_empty() {
+                    continue;
+                }
+                if files.len() < MAX_FILES_READ && !files.iter().any(|f| f == rel) {
+                    files.push(rel.to_owned());
+                }
+            }
+        }
+    }
+    Ok(Some(switchyard_tasks::context::ContextInvestigation { summary, details, files_read: files }))
 }
 
 /// Reasoning's latest triage report on the task, unless a review came after

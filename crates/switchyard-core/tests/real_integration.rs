@@ -32,7 +32,7 @@ use uuid::Uuid;
 use common::{RealCli, TestCore, git_repo};
 
 async fn real_core() -> Option<TestCore> {
-    TestCore::start_real(RealCli { claude: true, codex: true }, |c| {
+    TestCore::start_real(RealCli { claude: true, codex: true, gemini: false }, |c| {
         c.agent_ready_timeout = Duration::from_secs(90);
     })
     .await
@@ -2175,7 +2175,7 @@ const RUN_DEFECTIVE_FIXTURE: bool = false;
 async fn final_acceptance_review_fix_review_and_core_owned_operations() {
     let mut hooks = tempfile::Builder::new().prefix("syh").tempdir().unwrap();
     let wrapper = git_wrapper(hooks.path());
-    let Some(mut core) = TestCore::start_real(RealCli { claude: true, codex: true }, |cfg| {
+    let Some(mut core) = TestCore::start_real(RealCli { claude: true, codex: true, gemini: false }, |cfg| {
         cfg.agent_ready_timeout = Duration::from_secs(90);
         cfg.git.binary = wrapper;
     })
@@ -3403,7 +3403,7 @@ async fn replay_validate(
 #[tokio::test]
 #[ignore = "real CLIs (paid): SWITCHYARD_REAL_CLAUDE=1 SWITCHYARD_REAL_CODEX=1"]
 async fn replay_recovers_the_failed_runs_defective_implementation() {
-    let Some(core) = TestCore::start_real(RealCli { claude: true, codex: true }, |cfg| {
+    let Some(core) = TestCore::start_real(RealCli { claude: true, codex: true, gemini: false }, |cfg| {
         cfg.agent_ready_timeout = Duration::from_secs(90);
     })
     .await
@@ -3797,7 +3797,7 @@ fn usage_by_task(dir: &Path) -> serde_json::Value {
 #[tokio::test]
 #[ignore = "real CLIs (paid): SWITCHYARD_REAL_CLAUDE=1 SWITCHYARD_REAL_CODEX=1"]
 async fn correction_cycle_and_report_repair_with_real_agents() {
-    let Some(mut core) = TestCore::start_real(RealCli { claude: true, codex: true }, |cfg| {
+    let Some(mut core) = TestCore::start_real(RealCli { claude: true, codex: true, gemini: false }, |cfg| {
         cfg.agent_ready_timeout = Duration::from_secs(90);
     })
     .await

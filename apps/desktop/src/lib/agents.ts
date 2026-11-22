@@ -3,6 +3,12 @@ import type { AgentProvider, Capabilities, Support } from "../types/protocol";
 const NAMES: Record<string, { full: string; short: string; nativeId: string; login: string }> = {
   claude_code: { full: "Claude Code", short: "Claude", nativeId: "Claude session", login: "claude auth login" },
   codex: { full: "Codex", short: "Codex", nativeId: "Codex thread", login: "codex login" },
+  gemini: {
+    full: "Gemini CLI",
+    short: "Gemini",
+    nativeId: "Gemini session",
+    login: "put GEMINI_API_KEY=… in ~/.gemini/.env",
+  },
 };
 
 /** "Claude Code" / "Codex"; unknown providers are shown as reported. */
@@ -14,7 +20,7 @@ export const nativeIdLabel = (provider: string): string => NAMES[provider]?.nati
 /** The command that signs the CLI in. */
 export const loginCommand = (provider: string): string | null => NAMES[provider]?.login ?? null;
 
-export const PROVIDERS: AgentProvider[] = ["claude_code", "codex"];
+export const PROVIDERS: AgentProvider[] = ["claude_code", "codex", "gemini"];
 
 /** Only `supported` counts; `unknown` is treated as not available. */
 export const supported = (s: Support | undefined): boolean => s === "supported";

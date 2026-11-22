@@ -22,3 +22,13 @@ describe("task tree", () => {
     expect(rows[0]).toMatchObject({ depth: 0, orphan: true });
   });
 });
+
+import { eventLabel } from "./TaskDetailView";
+
+describe("history labels", () => {
+  it("shortens event types so they fit their column", () => {
+    expect(eventLabel("organization.status_changed")).toBe("team · status changed");
+    expect(eventLabel("task.status_changed")).toBe("status changed");
+    expect(eventLabel("workflow.step_through_changed")).toBe("workflow · step through changed");
+  });
+});

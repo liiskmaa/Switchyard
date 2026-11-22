@@ -36,7 +36,7 @@ fn enabled() -> bool {
 
 /// `None` unless `SWITCHYARD_REAL_CODEX=1` (checked before anything starts).
 async fn real_core() -> Option<TestCore> {
-    TestCore::start_real(RealCli { claude: false, codex: true }, |c| {
+    TestCore::start_real(RealCli { claude: false, codex: true, gemini: false }, |c| {
         c.agent_ready_timeout = Duration::from_secs(90);
     })
     .await

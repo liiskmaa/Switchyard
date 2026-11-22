@@ -19,9 +19,9 @@ use switchyard_protocol::methods::{
     ApprovalsList, ApprovalsListParams, EventsList, EventsListParams, IntegrationsList,
     IntegrationsListParams, ProjectIdParams, ProjectsAdd, ProjectsAddParams, SessionIdParams, SessionsGet,
     TaskDetail, TaskIdParams, TasksAssign, TasksAssignParams, TasksCreate, TasksCreateParams, TasksGet,
-    TasksNote, TasksNoteParams, WorkflowsCancel, WorkflowsCancelParams, WorkflowsPause, WorkflowsResume,
-    WorkflowsSetSettings, WorkflowsSetSettingsParams, WorkflowsSettings, WorkflowsStart,
-    WorkflowsStartParams,
+    TasksNote, TasksNoteParams, WorkflowsCancel, WorkflowsCancelParams, WorkflowsPause, WorkflowsPreviewNext,
+    WorkflowsResume, WorkflowsSetSettings, WorkflowsSetSettingsParams, WorkflowsSetStepThrough,
+    WorkflowsSetStepThroughParams, WorkflowsSettings, WorkflowsStart, WorkflowsStartParams,
 };
 use switchyard_protocol::model::{
     ApprovalStatus, Role, RoleBinding, RoleBindings, RoleBindingsPatch, SessionAccess, TaskKind, TaskStatus,
@@ -416,6 +416,134 @@ async fn unusable_reports_get_two_repair_notes_then_wait() {
     assert_eq!(keys(&d), ["investigate#1", "implement#1", "review#1"]);
 }
 
+/// Gemini CLI (ADR 0044) runs any role through ACP, next to the others.
+#[tokio::test]
+async fn gemini_can_take_every_role_and_mix_with_the_others() {
+    let f = fixture().await;
+    let spec = json!({
+        "investigate": { "report": report("findings", "found by gemini") },
+        "implement": { "tool": "write:feature.txt", "report": report("implementation", "done by gemini") },
+        "review": { "report": review("approved") }
+    });
+    let task = create_task(&f, &spec).await;
+    let all_gemini = RoleBindingsPatch {
+        investigate: Some(binding("gemini", None)),
+        implement: Some(binding("gemini", Some("gemini-fake-flash"))),
+        review: Some(binding("gemini", None)),
+        correct: None,
+    };
+    start(&f, task, all_gemini).await.unwrap();
+    // The write asks; the fixture's policy leaves it to a person.
+    approve_step(&f, task, "implement#1").await;
+    let d = wait_delivery(&f, task).await;
+    assert_eq!(keys(&d), ["investigate#1", "implement#1", "review#1"]);
+    assert!(d.assignments.iter().all(|a| a.provider == "gemini"));
+    let imp = d.assignments.iter().find(|a| a.step_key.as_deref() == Some("implement#1")).unwrap();
+    assert_eq!(imp.model.as_deref(), Some("gemini-fake-flash"));
+
+    // Mixed: Gemini reviews Claude's work.
+    let mixed = RoleBindingsPatch {
+        investigate: Some(binding("claude_code", None)),
+        implement: Some(binding("claude_code", None)),
+        review: Some(binding("gemini", None)),
+        correct: None,
+    };
+    let spec_claude = json!({
+        "investigate": { "report": report("findings", "found") },
+        "implement": { "report": report("implementation", "done") },
+        "review": { "report": review("approved") }
+    });
+    let task2 = create_task(&f, &spec_claude).await;
+    start(&f, task2, mixed).await.unwrap();
+    let d = wait_delivery(&f, task2).await;
+    let providers: Vec<_> = d.assignments.iter().map(|a| a.provider.as_str()).collect();
+    assert_eq!(providers, ["claude_code", "claude_code", "gemini"]);
+}
+
+/// Step-through (ADR 0043): the workflow waits before each hand-off, the
+/// preview is exactly what the next step then receives (a note added while
+/// waiting included), and turning it off lets the rest run.
+#[tokio::test]
+async fn step_through_holds_each_hand_off_and_previews_it() {
+    let f = fixture().await;
+    let spec = json!({
+        "investigate": { "report": report("findings", "found") },
+        "implement": { "report": report("implementation", "done") },
+        "review": { "report": review("approved") }
+    });
+    let task = create_task(&f, &spec).await;
+    start(&f, task, claude_everywhere()).await.unwrap();
+    let on = f
+        .client
+        .call::<WorkflowsSetStepThrough>(WorkflowsSetStepThroughParams { task_id: task, on: true })
+        .await
+        .unwrap()
+        .workflow;
+    assert!(on.step_through);
+    let d = wait_status(&f, task, "waiting").await;
+    let w = d.workflow.as_ref().unwrap();
+    assert_eq!(w.next_step.as_deref(), Some("implement#1"));
+    assert_eq!(keys(&d), ["investigate#1"], "nothing started yet");
+
+    f.client
+        .call::<TasksNote>(TasksNoteParams { task_id: task, text: "Keep the change small.".into() })
+        .await
+        .unwrap();
+    let preview = f.client.call::<WorkflowsPreviewNext>(TaskIdParams { task_id: task }).await.unwrap();
+    assert_eq!((preview.step_key.as_str(), preview.role.as_str()), ("implement#1", "implement"));
+    assert!(preview.prompt.starts_with("SWITCHYARD TASK CONTEXT v4"));
+    assert_eq!(preview.context["investigation"]["summary"], "found");
+    assert_eq!(preview.context["operator_notes"], json!(["Keep the change small."]));
+
+    f.client.call::<WorkflowsResume>(TaskIdParams { task_id: task }).await.unwrap();
+    let d = wait_for(&f, task, "held before the tests' review", |d| {
+        d.workflow.as_ref().is_some_and(|w| w.next_step.as_deref() == Some("review#1"))
+    })
+    .await;
+    let imp = d.assignments.iter().find(|a| a.step_key.as_deref() == Some("implement#1")).unwrap();
+    let mut sent = imp.context.clone().unwrap();
+    let mut shown = preview.context.clone();
+    for v in [&mut sent, &mut shown] {
+        v.as_object_mut().unwrap().remove("assignment_id");
+    }
+    assert_eq!(sent, shown, "the preview is what the step received");
+
+    f.client
+        .call::<WorkflowsSetStepThrough>(WorkflowsSetStepThroughParams { task_id: task, on: false })
+        .await
+        .unwrap();
+    f.client.call::<WorkflowsResume>(TaskIdParams { task_id: task }).await.unwrap();
+    let d = wait_delivery(&f, task).await;
+    assert_eq!(keys(&d), ["investigate#1", "implement#1", "review#1"]);
+    assert!(workflow_events(&f, task).await.iter().any(|e| e == "workflow.step_through_changed"));
+}
+
+/// The investigation's report and the files it opened go to the next roles
+/// (context v4), so coding and review start from there.
+#[tokio::test]
+async fn coding_and_review_start_from_what_the_investigation_read() {
+    let f = fixture().await;
+    let mut findings = report("findings", "The greeting lives in README.md.");
+    findings["details"] = json!("Change the first line only.");
+    let spec = json!({
+        "investigate": { "tool": "tool:Read|{\"file_path\":\"$CWD/README.md\"}", "report": findings },
+        "implement": { "report": report("implementation", "done") },
+        "review": { "report": review("approved") }
+    });
+    let task = create_task(&f, &spec).await;
+    start(&f, task, claude_everywhere()).await.unwrap();
+    let d = wait_delivery(&f, task).await;
+    for key in ["implement#1", "review#1"] {
+        let a = d.assignments.iter().find(|a| a.step_key.as_deref() == Some(key)).unwrap();
+        let inv = &a.context.as_ref().unwrap()["investigation"];
+        assert_eq!(inv["summary"], "The greeting lives in README.md.", "{key}");
+        assert_eq!(inv["details"], "Change the first line only.", "{key}");
+        assert_eq!(inv["files_read"], json!(["README.md"]), "{key}: workspace-relative, from the journal");
+    }
+    let inv = d.assignments.iter().find(|a| a.step_key.as_deref() == Some("investigate#1")).unwrap();
+    assert!(inv.context.as_ref().unwrap().get("investigation").is_none(), "not for the investigation itself");
+}
+
 /// An agent's question stops the workflow until the operator answers it:
 /// Resume alone is refused (the agent would wait forever behind a "running"
 /// workflow), and the delivered answer lets the same session continue.
@@ -649,7 +777,7 @@ async fn unsupported_models_and_providers_are_refused() {
         start(&f, task, bad(binding("codex", Some("nonexistent")))).await.unwrap_err(),
         ErrorCode::InvalidParams
     );
-    assert_eq!(start(&f, task, bad(binding("gemini", None))).await.unwrap_err(), ErrorCode::InvalidParams);
+    assert_eq!(start(&f, task, bad(binding("copilot", None))).await.unwrap_err(), ErrorCode::InvalidParams);
     let d = detail(&f, task).await;
     assert!(d.workflow.is_none() && d.assignments.is_empty(), "nothing was started");
     // A manual takeover assignment validates its model the same way.

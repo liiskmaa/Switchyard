@@ -110,7 +110,7 @@ export interface Capabilities {
   file_read_tool: Support;
 }
 
-export type AgentProvider = "claude_code" | "codex";
+export type AgentProvider = "claude_code" | "codex" | "gemini";
 
 export interface AgentAvailability {
   provider: string;
@@ -692,6 +692,10 @@ export interface WorkflowInfo {
   subtask?: number | null;
   /** The step's agent asked this and waits for the answer (sent with `tasks.note`); Resume is refused until then. */
   question?: string | null;
+  /** Step-through mode (ADR 0043): the workflow waits before each hand-off. */
+  step_through?: boolean;
+  /** The step that starts when you continue, while the workflow waits to start one. */
+  next_step?: string | null;
 }
 
 // --- agent organizations (M8.3) ---------------------------------------------------
@@ -1276,6 +1280,19 @@ export interface IntegrationMethods {
   "workflows.get": { params: { task_id: Uuid }; result: { workflow: WorkflowInfo | null } };
   "workflows.pause": { params: { task_id: Uuid }; result: { workflow: WorkflowInfo } };
   "workflows.resume": { params: { task_id: Uuid }; result: { workflow: WorkflowInfo } };
+  "workflows.set_step_through": { params: { task_id: Uuid; on: boolean }; result: { workflow: WorkflowInfo } };
+  "workflows.preview_next": {
+    params: { task_id: Uuid };
+    result: {
+      step_key: string;
+      role: string;
+      provider: string;
+      model?: string | null;
+      /** The prompt exactly as the step would receive it now. */
+      prompt: string;
+      context: Record<string, unknown>;
+    };
+  };
   "workflows.cancel": { params: { task_id: Uuid; reason?: string }; result: { workflow: WorkflowInfo } };
   "workflows.request_correction": { params: { task_id: Uuid; note?: string }; result: { workflow: WorkflowInfo } };
   "organizations.get": { params: { task_id: Uuid }; result: { organization: OrganizationInfo | null } };

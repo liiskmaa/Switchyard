@@ -281,6 +281,8 @@ export function describeEvent(event: EventEnvelope): string {
       return str(p, "reason") ?? "Delivered";
     case "workflow.failed":
       return `Workflow failed: ${str(p, "reason") ?? "?"}`;
+    case "workflow.step_through_changed":
+      return p["on"] ? "Step-through on: the workflow waits before each hand-off" : "Step-through off";
     case "workflow.directed":
       return `${str(p, "by") ?? "Operator"} sent the work to ${str(p, "to") ?? "?"} through the supervisor`;
     case "supervisor.asked":

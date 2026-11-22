@@ -151,6 +151,30 @@ impl EventJournal for Storage {
     }
 }
 
+/// Inputs of a session's `agent.tool_started` events within `[from, until]`
+/// (ms), oldest first, at most `limit`. Undecodable payloads are skipped.
+pub fn tool_inputs(
+    conn: &Connection,
+    session: uuid::Uuid,
+    from: i64,
+    until: i64,
+    limit: u32,
+) -> Result<Vec<serde_json::Value>, StorageError> {
+    let mut stmt = conn.prepare_cached(
+        "SELECT payload FROM events WHERE session_id = ?1 AND event_type = 'agent.tool_started' \
+         AND occurred_at >= ?2 AND occurred_at <= ?3 ORDER BY seq LIMIT ?4",
+    )?;
+    let rows = stmt
+        .query_map(rusqlite::params![session.to_string(), from, until, limit], |r| r.get::<_, String>(0))?;
+    let mut out = Vec::new();
+    for row in rows {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&row?) {
+            out.push(v["input"].clone());
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use switchyard_events::{DomainEvent, new_id};

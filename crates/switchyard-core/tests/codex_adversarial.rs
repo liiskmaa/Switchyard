@@ -483,7 +483,8 @@ async fn an_untested_codex_version_is_refused_unless_explicitly_allowed() {
             .await
             .unwrap()
             .agents
-            .pop()
+            .into_iter()
+            .find(|a| a.provider == "codex")
             .unwrap();
         assert_eq!(codex.version.as_deref(), Some(version));
         let err = codex.error.clone().unwrap_or_default();

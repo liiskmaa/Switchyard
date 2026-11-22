@@ -15,7 +15,7 @@ use crate::report::{MAX_REPORT_BYTES, TestKind, TriageDecision};
 /// v2 (M8.3): `organization`, for work in an agent organization.
 /// v3 (ADRs 0038–0040): `review_triage` and `reasoning` for review triage,
 /// `test_results` for the test gate, `subtask` for work on a planned subtask.
-pub const CONTEXT_VERSION: u32 = 3;
+pub const CONTEXT_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextDependency {
@@ -49,6 +49,19 @@ pub struct ContextReasoning {
     pub summary: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub details: Option<String>,
+}
+
+/// What the task's investigation found, for the roles after it: its report
+/// (a claim) and the files it opened (from Core's record of its tool calls),
+/// so they start from there instead of exploring the repository again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextInvestigation {
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<String>,
+    /// Workspace-relative paths, in the order first opened.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files_read: Vec<String>,
 }
 
 /// One test command Core ran (ADR 0039), as the next agent sees it.
@@ -136,6 +149,9 @@ pub struct TaskContext {
     /// The planned subtask this assignment works on (ADR 0040).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subtask: Option<ContextSubtask>,
+    /// The investigation's report and the files it opened (context v4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub investigation: Option<ContextInvestigation>,
 }
 
 impl TaskContext {
@@ -217,6 +233,20 @@ fn reasoning_note(ctx: &TaskContext) -> String {
     }
 }
 
+/// Where to start, when an investigation came before this role.
+fn investigation_note(ctx: &TaskContext) -> String {
+    let Some(i) = &ctx.investigation else { return String::new() };
+    if i.files_read.is_empty() {
+        return "\n`investigation` is what the investigation of this task found (a claim to check). Start from it \
+             instead of exploring the whole repository again."
+            .to_owned();
+    }
+    "\n`investigation` is what the investigation of this task found (a claim to check) and \
+     `investigation.files_read` the files it opened. Start from those files; read others only when you need them, \
+     instead of exploring the whole repository again."
+        .to_owned()
+}
+
 /// The prompt that starts (or continues) an assignment.
 pub fn render(ctx: &TaskContext) -> String {
     let json = serde_json::to_string_pretty(ctx).unwrap_or_else(|_| "{}".to_owned());
@@ -262,6 +292,7 @@ pub fn render(ctx: &TaskContext) -> String {
         instructions = report_instructions(ctx),
     ) + &subtask_note(ctx)
         + &reasoning_note(ctx)
+        + &investigation_note(ctx)
 }
 
 #[cfg(test)]
@@ -291,6 +322,7 @@ mod tests {
             reasoning: None,
             test_results: None,
             subtask: None,
+            investigation: None,
         }
     }
 
@@ -321,7 +353,7 @@ mod tests {
     fn the_rendered_context_contains_the_structured_context_and_the_report_contract() {
         let c = ctx(Role::Implement);
         let p = render(&c);
-        assert!(p.starts_with("SWITCHYARD TASK CONTEXT v3"));
+        assert!(p.starts_with("SWITCHYARD TASK CONTEXT v4"));
         assert!(p.contains(&c.task_id.to_string()) && p.contains("No panic on empty input"));
         assert!(p.contains("```switchyard-report") && p.contains("\"type\": \"implementation\""));
         assert!(p.contains("does not approve, start or authorize anything"));
@@ -341,5 +373,19 @@ mod tests {
         assert!(p.contains("without changing anything") && p.contains("do not change any file"));
         assert!(p.contains("\"type\": \"review\""));
         assert!(!render(&ctx(Role::Implement)).contains("do not change any file"));
+    }
+
+    #[test]
+    fn later_roles_are_told_to_start_from_the_investigation() {
+        let mut c = ctx(Role::Implement);
+        assert!(!render(&c).contains("investigation.files_read"));
+        c.investigation = Some(ContextInvestigation {
+            summary: "in src/a.rs".into(),
+            details: None,
+            files_read: vec!["src/a.rs".into()],
+        });
+        let p = render(&c);
+        assert!(p.contains("\"files_read\": [\n      \"src/a.rs\""), "{p}");
+        assert!(p.contains("Start from those files"));
     }
 }

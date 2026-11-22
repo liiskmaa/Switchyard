@@ -9,6 +9,7 @@ import { sendNote } from "../tasks/api";
 import { ApprovalCard } from "../approvals/ApprovalCard";
 import { answerOrganization, cancelWorkflow, getOrganization, isOrganizationEvent, pendingApprovals, resumeWorkflow } from "./api";
 import { DeliveryPanel } from "./DeliveryPanel";
+import { NextStepPreview } from "./NextStepPreview";
 import { humanizeSteps, stepName } from "./labels";
 
 /** Whether the task's delivery step is waiting for the user (shown in "Needs you"). */
@@ -136,7 +137,8 @@ export function TaskNeedsYou({ detail, onChanged }: { detail: TaskDetail; onChan
           </div>
         </div>
       ) : null}
-      {stopped && w && !question && !asked ? (
+      {stopped && w && !asked && w.step_through && w.next_step ? <NextStepPreview w={w} onChanged={onChanged} /> : null}
+      {stopped && w && !question && !asked && !(w.step_through && w.next_step) ? (
         <div className="needs-card">
           <p>{humanizeSteps(w.reason ?? "")}</p>
           {error ? <ErrorNotice title="Not done" message={error.message} code={error.code} /> : null}

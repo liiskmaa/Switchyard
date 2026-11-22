@@ -56,6 +56,20 @@ pub(super) async fn pause(conn: &Connection, p: TaskIdParams) -> Result<Workflow
     Ok(WorkflowResult { workflow: conn.state.tasks.pause_workflow(p.task_id, actor(conn)).await? })
 }
 
+pub(super) async fn set_step_through(
+    conn: &Connection,
+    p: switchyard_protocol::methods::WorkflowsSetStepThroughParams,
+) -> Result<WorkflowResult, ProtocolError> {
+    Ok(WorkflowResult { workflow: conn.state.tasks.set_step_through(p.task_id, p.on, actor(conn)).await? })
+}
+
+pub(super) async fn preview_next(
+    conn: &Connection,
+    p: TaskIdParams,
+) -> Result<switchyard_protocol::methods::WorkflowsPreviewNextResult, ProtocolError> {
+    conn.state.tasks.preview_next(p.task_id).await
+}
+
 pub(super) async fn resume(conn: &Connection, p: TaskIdParams) -> Result<WorkflowResult, ProtocolError> {
     Ok(WorkflowResult { workflow: conn.state.tasks.resume_workflow(p.task_id, actor(conn)).await? })
 }

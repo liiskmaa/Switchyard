@@ -124,6 +124,23 @@ Switchyard was verified against, and what each one supports. Verified versions: 
 
 ---
 
+### Gemini CLI (optional third agent)
+
+Gemini is good at reading a lot at once (very long context) and as an independent reviewer next to
+Claude and Codex. To use it:
+
+1. Install the tested version: `npm install -g @google/gemini-cli@0.70.0` (other versions are
+   refused unless you set `SWITCHYARD_ALLOW_UNTESTED_GEMINI=1`).
+2. Create an API key at aistudio.google.com/apikey (the personal Google login no longer works for
+   Gemini CLI) and put `GEMINI_API_KEY=your-key` in `~/.gemini/.env`. Switchyard passes it to Gemini
+   only and never shows or stores it.
+3. Choose Gemini for a role under **Workflow roles**, as a team member, or when starting a session.
+   The free tier has no Pro requests; Flash-Lite works.
+
+Switchyard runs Gemini with its own policy and settings (your personal Gemini settings and the
+repository's `.gemini` folder are not used), and every file change, read and command asks
+Switchyard first, like the other agents.
+
 ## 4. A tour of the app
 
 | Sidebar | What it is for |
@@ -237,6 +254,13 @@ It stops and waits for you ("Needs you") when:
 | Core was restarted mid-step | **Resume** (agents are never restarted on their own) |
 
 Other controls: **Pause**, **Cancel workflow**, and *Advanced* on the task to assign steps by hand.
+
+**Step through** (a switch under *Progress*). When it is on, the workflow stops before every
+hand-off: under **Needs you** you see which role is next, what it will receive (the investigation's
+summary and the files it read, open findings, the latest test run, your notes) and the full prompt.
+Add a note if you like (it goes into that prompt), then **Continue**, or **Continue without
+stopping** to turn it off. Coding and review always get what the investigation found and the files
+it opened, so they don't explore the whole repository again.
 
 **Ask the supervisor** (the box under *Progress* on every task page). Type a question or a request
 and press **Ask** (⌘↵):

@@ -1,6 +1,7 @@
 # ACP integration: Gemini CLI (Phase 0 findings)
 
-Status: **verification only**. Nothing here is implemented yet. Every fact below was observed on
+Status: **implemented** (ADR 0044, `crates/switchyard-agents/src/acp`). Phase 0 findings below; the
+real end-to-end test is `crates/switchyard-core/tests/real_gemini.rs` (opt-in). Every fact below was observed on
 2026-11-22 against **Gemini CLI 0.70.0** (`@google/gemini-cli`, installed in a scratch directory)
 with `gemini --acp`, a throwaway Git repository, the Gemini API key login and the
 `gemini-3.5-flash-lite` / `gemini-3-flash-preview` models, using a logging ACP client. Claims not
@@ -41,6 +42,8 @@ without asking.
   outputTokens, cachedReadTokens, thoughtTokens, totalTokens}}` plus `_meta.quota.model_usage`.
 - Updates: `agent_message_chunk`, `agent_thought_chunk`, `tool_call`, `tool_call_update`,
   `usage_update`, `available_commands_update`, and on load `user_message_chunk`.
+- For a new file, Gemini's `write_file` sends a diff with `oldText: ""` (not `null`); the tool name
+  is in the call id (`write_file__call_…`, `replace__call_…`), and Switchyard classifies by it.
 - **Tool calls carry no raw input.** A `tool_call` / permission request has `toolCallId, title,
   kind, status, locations, content`. Kinds seen: `read`, `edit`, `execute`, `think`. For `execute`
   the **title is the command line**; for `edit` the `locations` and `content` (diff) say what

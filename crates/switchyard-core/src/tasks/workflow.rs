@@ -258,6 +258,13 @@ fn wire(w: &WorkflowRecord) -> Result<WorkflowInfo, StorageError> {
             })
             .collect(),
         subtask: state.current.as_ref().and_then(|s| s.subtask),
+        step_through: state.step_through,
+        next_step: match (&state.status, &state.on_resume) {
+            (WorkflowStatus::Waiting | WorkflowStatus::Paused, Some(Resume::Start { step })) => {
+                Some(step.key())
+            }
+            _ => None,
+        },
         question: match (&state.status, &state.on_resume) {
             (WorkflowStatus::Waiting, Some(Resume::Answer { question })) => Some(question.clone()),
             _ => None,
@@ -545,6 +552,60 @@ impl TaskService {
             return Ok(());
         }
         self.apply_input(task_id, Input::Answered { step }, None, by).await
+    }
+
+    pub async fn set_step_through(
+        &self,
+        task_id: Uuid,
+        on: bool,
+        actor: String,
+    ) -> Result<WorkflowInfo, ProtocolError> {
+        if self.organizing(task_id).await? {
+            return Err(invalid_state(
+                "step-through is for engineering workflows; a team's lead decides its hand-offs",
+            ));
+        }
+        self.operator_input(task_id, Input::SetStepThrough { on }, actor).await
+    }
+
+    /// The prompt the waiting step would receive if it started now.
+    pub async fn preview_next(
+        &self,
+        task_id: Uuid,
+    ) -> Result<switchyard_protocol::methods::WorkflowsPreviewNextResult, ProtocolError> {
+        let (rec, t) = self
+            .storage
+            .call(move |c| Ok((wf_store::get_workflow(c, task_id)?, store::get_task(c, task_id)?)))
+            .await
+            .map_err(errors::storage)?;
+        let state = state_of(&rec).map_err(errors::storage)?;
+        let Some(Resume::Start { step }) = state.on_resume.clone() else {
+            return Err(invalid_state("the workflow is not waiting to start a step"));
+        };
+        let bindings = bindings_of(&rec).map_err(errors::storage)?;
+        let b = binding_for(&bindings, step.binding).clone();
+        let workspace = rec.workspace_id.ok_or_else(|| invalid_state("the workflow has no workspace"))?;
+        let spec = super::assign::ContextSpec {
+            assignment_id: Uuid::nil(),
+            role: step.role(),
+            step_key: Some(step.key()),
+            origin: "workflow".into(),
+            workspace_id: workspace,
+        };
+        let (ctx, _) = self
+            .storage
+            .call(move |c| super::assign::build_context(c, &t, &spec))
+            .await
+            .map_err(errors::storage)?;
+        Ok(switchyard_protocol::methods::WorkflowsPreviewNextResult {
+            step_key: step.key(),
+            role: step.role().as_str().into(),
+            provider: b.provider,
+            model: b.model,
+            prompt: switchyard_tasks::render(&ctx),
+            context: serde_json::to_value(&ctx)
+                .map_err(|e| errors::internal("cannot encode the context", e))?,
+        })
     }
 
     pub async fn cancel_workflow(
@@ -1237,6 +1298,7 @@ pub(super) fn decide_in_tx(
             Change::Directed(target) => {
                 DomainEvent::WorkflowDirected { to: target.as_str().into(), by: by.into() }
             }
+            Change::StepThrough(on) => DomainEvent::WorkflowStepThroughChanged { on: *on, by: by.into() },
             Change::Cancelled(reason) => DomainEvent::WorkflowCancelled { reason: reason.clone() },
         };
         drafts.push(draft(event, &ctx)?);

@@ -238,7 +238,7 @@ async fn codex_is_detected_next_to_claude_with_honest_capabilities() {
     let f = fixture().await;
     let agents = f.client.call::<AgentsList>(AgentsListParams { refresh: true }).await.unwrap().agents;
     let providers: Vec<&str> = agents.iter().map(|a| a.provider.as_str()).collect();
-    assert_eq!(providers, ["claude_code", "codex"]);
+    assert_eq!(providers, ["claude_code", "codex", "gemini"]);
     let codex = &agents[1];
     assert!(codex.installed && codex.error.is_none(), "{codex:?}");
     assert_eq!(codex.version.as_deref(), Some("0.166.0"));
@@ -290,7 +290,7 @@ async fn unknown_provider_is_rejected() {
     let err = f
         .client
         .call::<SessionsStart>(SessionsStartParams {
-            provider: Some("gemini".into()),
+            provider: Some("copilot".into()),
             ..codex_params(f.workspace_id)
         })
         .await

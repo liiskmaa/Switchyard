@@ -109,6 +109,13 @@ Constraints: a `worktree` row must have `branch` and `base_commit`. Indexes:
   the operator's.
 - Both cascade with `tasks`.
 
+### Gemini provider (v14)
+- Migration 0014 rebuilds `agents`, `sessions` and `task_assignments` so `vendor`/`provider` accept
+  `gemini` (ADR 0044); rows, indexes and triggers are unchanged. It starts with
+  `-- switchyard: foreign_keys=off`: the runner switches foreign keys off for it (dropping
+  `sessions` would otherwise cascade into `approvals`), requires `PRAGMA foreign_key_check` to be
+  empty before committing, and switches them back on.
+
 ### `agents`
 One row per detected executable and vendor.
 

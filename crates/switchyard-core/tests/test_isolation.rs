@@ -8,7 +8,9 @@ mod common;
 
 use std::path::PathBuf;
 
-use common::{ENV_REAL_CLAUDE, ENV_REAL_CODEX, FAKE_CLAUDE, FAKE_CODEX, RealCli, TestCore, real_cli_opt_in};
+use common::{
+    ENV_REAL_CLAUDE, ENV_REAL_CODEX, FAKE_CLAUDE, FAKE_CODEX, FAKE_GEMINI, RealCli, TestCore, real_cli_opt_in,
+};
 use switchyard_protocol::methods::{AgentsList, AgentsListParams};
 
 #[test]
@@ -48,10 +50,18 @@ async fn a_restart_cannot_switch_to_a_real_cli() {
 async fn real_clis_need_the_explicit_opt_in() {
     // Only meaningful when the opt-in is not set for this run.
     if !real_cli_opt_in(std::env::var(ENV_REAL_CLAUDE).ok().as_deref()) {
-        assert!(TestCore::start_real(RealCli { claude: true, codex: false }, |_| {}).await.is_none());
+        assert!(
+            TestCore::start_real(RealCli { claude: true, codex: false, gemini: false }, |_| {})
+                .await
+                .is_none()
+        );
     }
     if !real_cli_opt_in(std::env::var(ENV_REAL_CODEX).ok().as_deref()) {
-        assert!(TestCore::start_real(RealCli { claude: false, codex: true }, |_| {}).await.is_none());
+        assert!(
+            TestCore::start_real(RealCli { claude: false, codex: true, gemini: false }, |_| {})
+                .await
+                .is_none()
+        );
     }
     assert!(
         TestCore::start_real(RealCli::default(), |_| {}).await.is_none(),
@@ -65,5 +75,8 @@ async fn the_default_core_detects_only_the_fakes() {
     let (client, _rx) = core.connect().await;
     let agents = client.call::<AgentsList>(AgentsListParams { refresh: true }).await.unwrap().agents;
     let exes: Vec<_> = agents.iter().map(|a| (a.provider.as_str(), a.executable.as_deref())).collect();
-    assert_eq!(exes, [("claude_code", Some(FAKE_CLAUDE)), ("codex", Some(FAKE_CODEX))]);
+    assert_eq!(
+        exes,
+        [("claude_code", Some(FAKE_CLAUDE)), ("codex", Some(FAKE_CODEX)), ("gemini", Some(FAKE_GEMINI))]
+    );
 }

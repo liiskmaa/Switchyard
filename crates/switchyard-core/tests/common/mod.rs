@@ -20,12 +20,14 @@ pub struct TestCore {
 
 pub const ENV_REAL_CLAUDE: &str = "SWITCHYARD_REAL_CLAUDE";
 pub const ENV_REAL_CODEX: &str = "SWITCHYARD_REAL_CODEX";
+pub const ENV_REAL_GEMINI: &str = "SWITCHYARD_REAL_GEMINI";
 
 /// Which real agent CLIs a test Core may run.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RealCli {
     pub claude: bool,
     pub codex: bool,
+    pub gemini: bool,
 }
 
 /// The opt-in is exactly `1`. Anything else (unset, empty, `true`, ` 1`) is no.
@@ -56,6 +58,7 @@ pub fn guard(config: &CoreConfig, test_dir: &Path, real: RealCli) {
     }
     check("Claude Code", config.claude_executable.as_deref(), FAKE_CLAUDE, test_dir, real.claude);
     check("Codex", config.codex_executable.as_deref(), FAKE_CODEX, test_dir, real.codex);
+    check("Gemini", config.gemini_executable.as_deref(), FAKE_GEMINI, test_dir, real.gemini);
 }
 
 /// Starts Core after [`guard`].
@@ -75,17 +78,20 @@ pub fn config_for(dir: &Path) -> CoreConfig {
     // these explicitly.
     config.claude_executable = Some(PathBuf::from(FAKE_CLAUDE));
     config.codex_executable = Some(PathBuf::from(FAKE_CODEX));
+    config.gemini_executable = Some(PathBuf::from(FAKE_GEMINI));
     config
 }
 
 pub const FAKE_CLAUDE: &str = env!("CARGO_BIN_EXE_switchyard-fake-claude");
 pub const FAKE_CODEX: &str = env!("CARGO_BIN_EXE_switchyard-fake-codex");
+pub const FAKE_GEMINI: &str = env!("CARGO_BIN_EXE_switchyard-fake-gemini");
 
 /// Core configured to run the fake agent instead of a real `claude`.
 pub fn agent_config(dir: &Path) -> CoreConfig {
     let mut config = config_for(dir);
     config.claude_executable = Some(PathBuf::from(FAKE_CLAUDE));
     config.codex_executable = Some(PathBuf::from(FAKE_CODEX));
+    config.gemini_executable = Some(PathBuf::from(FAKE_GEMINI));
     config.agent_stop_grace = Duration::from_secs(2);
     config.agent_term_grace = Duration::from_secs(2);
     config.file_debounce = Duration::from_millis(200);
@@ -111,11 +117,12 @@ impl TestCore {
     /// explicitly opted into (`SWITCHYARD_REAL_CLAUDE=1`, `SWITCHYARD_REAL_CODEX=1`).
     /// Returns `None` (the test is skipped) otherwise, before anything starts.
     pub async fn start_real(real: RealCli, configure: impl FnOnce(&mut CoreConfig)) -> Option<Self> {
-        let missing: Vec<&str> = [(real.claude, ENV_REAL_CLAUDE), (real.codex, ENV_REAL_CODEX)]
-            .into_iter()
-            .filter(|(wanted, var)| *wanted && !opted_in(var))
-            .map(|(_, var)| var)
-            .collect();
+        let missing: Vec<&str> =
+            [(real.claude, ENV_REAL_CLAUDE), (real.codex, ENV_REAL_CODEX), (real.gemini, ENV_REAL_GEMINI)]
+                .into_iter()
+                .filter(|(wanted, var)| *wanted && !opted_in(var))
+                .map(|(_, var)| var)
+                .collect();
         if !missing.is_empty() || real == RealCli::default() {
             eprintln!("skipped: set {} to exactly 1 to run real CLIs (paid)", missing.join(" and "));
             return None;
@@ -127,6 +134,9 @@ impl TestCore {
         }
         if real.codex {
             config.codex_executable = None;
+        }
+        if real.gemini {
+            config.gemini_executable = None;
         }
         configure(&mut config);
         let core = start_core(config, dir.path(), real).await;

@@ -6,9 +6,17 @@ import { toCoreError, type CoreRequestError } from "../../lib/core";
 import { formatRelative } from "../../lib/format";
 import { useNow } from "../../lib/useNow";
 import { useCoreQuery } from "../../stores/useCoreQuery";
-import type { RoleBindings, TaskAssignment, TaskDetail } from "../../types/protocol";
+import type { AgentProvider, RoleBindings, TaskAssignment, TaskDetail } from "../../types/protocol";
 import { ROLE_LABEL } from "../tasks/labels";
-import { cancelWorkflow, pauseWorkflow, resumeWorkflow, startOrganization, startWorkflow, workflowSettings } from "./api";
+import {
+  cancelWorkflow,
+  pauseWorkflow,
+  resumeWorkflow,
+  setStepThrough,
+  startOrganization,
+  startWorkflow,
+  workflowSettings,
+} from "./api";
 import {
   BINDING_KEYS,
   BINDING_LABEL,
@@ -90,7 +98,7 @@ function StartWorkflow({ detail, onDone }: { detail: TaskDetail; onDone: () => v
 }
 
 function StartOrganization({ detail, onDone }: { detail: TaskDetail; onDone: () => void }) {
-  const [lead, setLead] = useState<"" | "claude_code" | "codex">("");
+  const [lead, setLead] = useState<"" | AgentProvider>("");
   const [error, setError] = useState<CoreRequestError | null>(null);
   const [busy, setBusy] = useState(false);
   return (
@@ -101,6 +109,7 @@ function StartOrganization({ detail, onDone }: { detail: TaskDetail; onDone: () 
           <option value="">Let Switchyard choose</option>
           <option value="claude_code">Claude Code</option>
           <option value="codex">Codex</option>
+          <option value="gemini">Gemini CLI</option>
         </select>
       </label>
       {error ? <ErrorNotice title="Cannot start the team" message={error.message} code={error.code} /> : null}
@@ -271,6 +280,17 @@ export function WorkflowPanel({ detail, onChanged }: { detail: TaskDetail; onCha
         </p>
       ))}
       {error ? <ErrorNotice title="Workflow action failed" message={error.message} code={error.code} /> : null}
+      {!final && w.definition === "engineering" ? (
+        <label className="check small step-through">
+          <input
+            type="checkbox"
+            checked={w.step_through === true}
+            disabled={busy}
+            onChange={(e) => act(() => setStepThrough(w.task_id, e.target.checked))}
+          />{" "}
+          Step through: stop before each hand-off so I can see what the next role receives
+        </label>
+      ) : null}
       {!final ? (
         <div className="form-actions start">
           {w.status === "paused" ? (

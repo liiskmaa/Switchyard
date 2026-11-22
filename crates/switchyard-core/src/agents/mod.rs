@@ -71,6 +71,7 @@ pub(crate) struct Attached {
 enum Installation {
     Claude(ClaudeInstallation),
     Codex(CodexInstallation),
+    Gemini(switchyard_agents::acp::GeminiInstallation),
 }
 
 impl Installation {
@@ -78,12 +79,14 @@ impl Installation {
         match self {
             Self::Claude(i) => &i.executable,
             Self::Codex(i) => &i.executable,
+            Self::Gemini(i) => &i.executable,
         }
     }
     fn version(&self) -> &str {
         match self {
             Self::Claude(i) => &i.version,
             Self::Codex(i) => &i.version,
+            Self::Gemini(i) => &i.version,
         }
     }
 }
@@ -97,6 +100,7 @@ struct Detection {
 enum Launch {
     Claude(NativeSession),
     Codex { resume_thread: Option<String> },
+    Gemini { resume_session: Option<String> },
 }
 
 #[derive(Clone)]
@@ -364,10 +368,52 @@ impl AgentService {
                     Err(err) => Err((!matches!(err, codex::DetectError::NotFound), err.to_string())),
                 }
             }
+            AgentProvider::Gemini => {
+                match switchyard_agents::acp::detect(self.inner.config.gemini_executable.as_deref()).await {
+                    Ok(installation) => {
+                        // Only whether a key is configured; the key itself is never read out.
+                        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+                        let has_key = std::env::var(switchyard_agents::acp::API_KEY_VAR)
+                            .is_ok_and(|k| !k.is_empty())
+                            || home
+                                .as_deref()
+                                .and_then(switchyard_agents::acp::api_key_from_dotenv)
+                                .is_some();
+                        let auth = Some(AgentAuth {
+                            logged_in: has_key,
+                            method: has_key.then(|| "api_key".to_owned()),
+                            provider: None,
+                        });
+                        Ok((Installation::Gemini(installation), auth))
+                    }
+                    Err(err) => {
+                        Err((!matches!(err, switchyard_agents::acp::DetectError::NotFound), err.to_string()))
+                    }
+                }
+            }
         };
         // Codex's app-server protocol is experimental and changes per release:
         // an untested version is not trusted like the verified one.
         let found = match found {
+            Ok((installation, _))
+                if provider == AgentProvider::Gemini
+                    && installation.version() != switchyard_agents::acp::TESTED_VERSION
+                    && !self.inner.config.allow_untested_gemini =>
+            {
+                Err((
+                    true,
+                    format!(
+                        "Gemini CLI {} is untested: Switchyard was verified with {} only, and how it asks for \
+                         permission changes between releases. Install {} or set SWITCHYARD_ALLOW_UNTESTED_GEMINI=1 \
+                         to use it anyway.",
+                        installation.version(),
+                        switchyard_agents::acp::TESTED_VERSION,
+                        switchyard_agents::acp::TESTED_VERSION
+                    ),
+                    Some(installation.version().to_owned()),
+                    Some(installation.executable().display().to_string()),
+                ))
+            }
             Ok((installation, _))
                 if provider == AgentProvider::Codex
                     && installation.version() != codex::TESTED_VERSION
@@ -435,6 +481,9 @@ impl AgentService {
                 switchyard_agents::models::claude_catalog(&i.model_aliases, &i.version)
             }
             Ok(Installation::Codex(i)) => codex::list_models(&i.executable, &i.version).await,
+            Ok(Installation::Gemini(i)) => {
+                switchyard_agents::acp::list_models(&i.executable, &i.version, &self.gemini_dir()).await
+            }
             Err(e) => switchyard_agents::ModelCatalog {
                 provider,
                 models: Vec::new(),
@@ -500,6 +549,18 @@ impl AgentService {
                 config.term_grace = term_grace;
                 claude::spawn_session(&config, &claude::LaunchSpec { session, cwd, model })
             }
+            (Installation::Gemini(i), Launch::Gemini { resume_session }) => {
+                let mut config = switchyard_agents::acp::GeminiConfig::new(i.executable.clone());
+                config.stop_grace = stop_grace;
+                config.term_grace = term_grace;
+                let spec = switchyard_agents::acp::LaunchSpec {
+                    cwd,
+                    model,
+                    resume_session,
+                    state_dir: self.gemini_dir(),
+                };
+                switchyard_agents::acp::spawn_session(&config, &spec)
+            }
             (Installation::Codex(i), Launch::Codex { resume_thread }) => {
                 let mut config = CodexConfig::new(i.executable.clone());
                 config.stop_grace = stop_grace;
@@ -508,6 +569,11 @@ impl AgentService {
             }
             _ => Err(switchyard_agents::SessionError::Write("provider and launch mismatch".into())),
         }
+    }
+
+    /// Switchyard's directory for Gemini: its isolated home and admin policy.
+    fn gemini_dir(&self) -> std::path::PathBuf {
+        self.inner.config.paths.data_dir.join("gemini")
     }
 
     // --- lifecycle operations -------------------------------------------------
@@ -536,7 +602,7 @@ impl AgentService {
         // Claude takes a caller-chosen id; Codex assigns its thread id.
         let native = match provider {
             AgentProvider::ClaudeCode => Some(new_id()),
-            AgentProvider::Codex => None,
+            AgentProvider::Codex | AgentProvider::Gemini => None,
         };
         let now = now_ms();
         let cwd = workspace.path.clone();
@@ -585,9 +651,12 @@ impl AgentService {
             })
             .await?
         };
-        let launch = match native {
-            Some(id) => Launch::Claude(NativeSession::New(id)),
-            None => Launch::Codex { resume_thread: None },
+        // By provider (exhaustive), never inferred from the id's presence.
+        let launch = match (provider, native) {
+            (AgentProvider::ClaudeCode, Some(id)) => Launch::Claude(NativeSession::New(id)),
+            (AgentProvider::ClaudeCode, None) => Launch::Claude(NativeSession::New(new_id())),
+            (AgentProvider::Codex, _) => Launch::Codex { resume_thread: None },
+            (AgentProvider::Gemini, _) => Launch::Gemini { resume_session: None },
         };
         self.launch(record, &installation, launch, cwd.into(), model, false).await?;
         drop(_guard);
@@ -685,6 +754,7 @@ impl AgentService {
         let launch = match record.provider {
             AgentProvider::ClaudeCode => Launch::Claude(NativeSession::Resume(native)),
             AgentProvider::Codex => Launch::Codex { resume_thread: Some(native) },
+            AgentProvider::Gemini => Launch::Gemini { resume_session: Some(native) },
         };
         let model = record.model.clone();
         self.launch(record, &installation, launch, workspace.path.into(), model, true).await?;

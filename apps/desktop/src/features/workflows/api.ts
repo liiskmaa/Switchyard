@@ -10,6 +10,8 @@ export const startWorkflow = (taskId: string, overrides?: RoleBindingsPatch) =>
   coreRequest("workflows.start", overrides ? { task_id: taskId, overrides } : { task_id: taskId });
 export const pauseWorkflow = (taskId: string) => coreRequest("workflows.pause", { task_id: taskId });
 export const resumeWorkflow = (taskId: string) => coreRequest("workflows.resume", { task_id: taskId });
+export const setStepThrough = (taskId: string, on: boolean) => coreRequest("workflows.set_step_through", { task_id: taskId, on });
+export const previewNext = (taskId: string) => coreRequest("workflows.preview_next", { task_id: taskId });
 export const cancelWorkflow = (taskId: string) => coreRequest("workflows.cancel", { task_id: taskId });
 export const requestCorrection = (taskId: string, note?: string) =>
   coreRequest("workflows.request_correction", note ? { task_id: taskId, note } : { task_id: taskId });

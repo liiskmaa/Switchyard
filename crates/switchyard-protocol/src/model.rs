@@ -944,6 +944,12 @@ pub struct WorkflowInfo {
     /// an answer is refused.
     #[serde(default)]
     pub question: Option<String>,
+    /// Step-through mode is on (ADR 0043).
+    #[serde(default)]
+    pub step_through: bool,
+    /// The step that starts when the operator continues, while waiting to start one.
+    #[serde(default)]
+    pub next_step: Option<String>,
 }
 
 /// One message of a task's supervisor conversation (ADR 0041).

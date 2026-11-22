@@ -21,6 +21,10 @@ path = "src/bin/fake_claude.rs"
 name = "switchyard-fake-codex"
 path = "src/bin/fake_codex.rs"
 
+[[bin]]
+name = "switchyard-fake-gemini"
+path = "src/bin/fake_gemini.rs"
+
 [dependencies]
 switchyard-protocol.workspace = true
 switchyard-events.workspace = true
