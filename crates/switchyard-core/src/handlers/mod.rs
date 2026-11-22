@@ -228,6 +228,12 @@ pub(crate) async fn dispatch(conn: &Connection, method: &str, params: Value) -> 
         methods::WorkflowsPause::NAME => {
             typed::<methods::WorkflowsPause, _, _>(params, |p| workflows::pause(conn, p)).await
         }
+        methods::SupervisorAsk::NAME => {
+            typed::<methods::SupervisorAsk, _, _>(params, |p| tasks::ask_supervisor(conn, p)).await
+        }
+        methods::SupervisorGet::NAME => {
+            typed::<methods::SupervisorGet, _, _>(params, |p| tasks::supervisor(conn, p)).await
+        }
         methods::WorkflowsResume::NAME => {
             typed::<methods::WorkflowsResume, _, _>(params, |p| workflows::resume(conn, p)).await
         }

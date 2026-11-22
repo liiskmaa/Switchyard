@@ -749,7 +749,7 @@ impl TaskService {
     }
 
     /// The assistant text of a supervision turn.
-    async fn supervision_text(
+    pub(super) async fn supervision_text(
         &self,
         session_id: Uuid,
         after: i64,

@@ -198,11 +198,11 @@ fn corrupt(e: serde_json::Error) -> StorageError {
     StorageError::Corrupt(format!("workflow state: {e}"))
 }
 
-fn state_of(w: &WorkflowRecord) -> Result<WorkflowState, StorageError> {
+pub(super) fn state_of(w: &WorkflowRecord) -> Result<WorkflowState, StorageError> {
     serde_json::from_value(w.state.clone()).map_err(corrupt)
 }
 
-fn bindings_of(w: &WorkflowRecord) -> Result<RoleBindings, StorageError> {
+pub(super) fn bindings_of(w: &WorkflowRecord) -> Result<RoleBindings, StorageError> {
     serde_json::from_value(w.config["bindings"].clone()).map_err(corrupt)
 }
 
@@ -576,7 +576,7 @@ impl TaskService {
 
     /// Decides on `input` and commits the result (with `seq` marked processed),
     /// then performs the follow-up. Serialized per task.
-    async fn apply_input(
+    pub(super) async fn apply_input(
         &self,
         task_id: Uuid,
         input: Input,
@@ -1224,6 +1224,9 @@ pub(super) fn decide_in_tx(
                 DomainEvent::WorkflowDelivered { reason: reason.clone(), integration_id: w.integration_id }
             }
             Change::Failed(reason) => DomainEvent::WorkflowFailed { reason: reason.clone() },
+            Change::Directed(target) => {
+                DomainEvent::WorkflowDirected { to: target.as_str().into(), by: by.into() }
+            }
             Change::Cancelled(reason) => DomainEvent::WorkflowCancelled { reason: reason.clone() },
         };
         drafts.push(draft(event, &ctx)?);
@@ -1274,6 +1277,7 @@ pub(crate) fn spawn_workflow_driver(
             }
         };
         svc.recover_workflows().await;
+        svc.recover_supervisors().await;
         let filter = EventFilter { event_types: WATCHED.map(str::to_owned).to_vec(), ..Default::default() };
         let mut sub = svc.bus.subscribe(Some(start), filter);
         loop {

@@ -22,6 +22,7 @@ pub const MIGRATIONS: &[(u32, &str)] = &[
     (10, include_str!("../../../migrations/0010_organizations.sql")),
     (11, include_str!("../../../migrations/0011_policy_auto_mode.sql")),
     (12, include_str!("../../../migrations/0012_workflow_tests.sql")),
+    (13, include_str!("../../../migrations/0013_task_supervisor.sql")),
 ];
 
 pub const LATEST_SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -96,9 +97,11 @@ mod tests {
                 "policy_settings_revisions",
                 "projects",
                 "sessions",
+                "supervisor_messages",
                 "task_assignments",
                 "task_dependencies",
                 "task_proposals",
+                "task_supervisors",
                 "task_workflows",
                 "tasks",
                 "validation_commands",

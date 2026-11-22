@@ -281,6 +281,14 @@ export function describeEvent(event: EventEnvelope): string {
       return str(p, "reason") ?? "Delivered";
     case "workflow.failed":
       return `Workflow failed: ${str(p, "reason") ?? "?"}`;
+    case "workflow.directed":
+      return `${str(p, "by") ?? "Operator"} sent the work to ${str(p, "to") ?? "?"} through the supervisor`;
+    case "supervisor.asked":
+      return `${str(p, "by") ?? "Operator"} asked the task's supervisor`;
+    case "supervisor.answered": {
+      const outcome = str(p, "outcome");
+      return outcome ? `The supervisor answered: ${outcome}` : "The supervisor answered";
+    }
     case "workflow.cancelled":
       return `Workflow cancelled: ${str(p, "reason") ?? "?"}`;
     case "workflow.settings_changed":

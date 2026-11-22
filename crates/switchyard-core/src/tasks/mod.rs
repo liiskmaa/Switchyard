@@ -15,6 +15,7 @@ mod assign;
 mod convert;
 mod organization;
 mod reactor;
+mod supervisor;
 mod tests;
 mod workflow;
 

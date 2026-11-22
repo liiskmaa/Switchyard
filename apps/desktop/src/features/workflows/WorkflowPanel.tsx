@@ -21,6 +21,9 @@ import {
   workflowTone,
 } from "./labels";
 import { TaskFlow } from "./TaskFlow";
+import { WorkBoard } from "./WorkBoard";
+import { roleLanes } from "./board";
+import { buildFlow } from "./flow";
 import { TestResults } from "./TestResults";
 import { OrganizationPanel } from "./OrganizationPanel";
 import { RoleBindingsEditor } from "./RoleBindingsEditor";
@@ -197,6 +200,7 @@ function StartSequence({ detail, onDone }: { detail: TaskDetail; onDone: () => v
 /** The workflow is the primary view of a task: stages, who runs each with which model, and what needs you. */
 export function WorkflowPanel({ detail, onChanged }: { detail: TaskDetail; onChanged: () => void }) {
   const now = useNow();
+  const flow = detail.workflow ? buildFlow(detail, now) : null;
   const w = detail.workflow;
   const [error, setError] = useState<CoreRequestError | null>(null);
   const [busy, setBusy] = useState(false);
@@ -231,6 +235,7 @@ export function WorkflowPanel({ detail, onChanged }: { detail: TaskDetail; onCha
       actions={<Badge tone={workflowTone(w.status)}>{WORKFLOW_STATUS_LABEL[w.status]}</Badge>}
     >
       <TaskFlow detail={detail} />
+      {flow ? <WorkBoard lanes={roleLanes(detail, flow, now)} /> : null}
       {w.plan && w.plan.length > 0 ? (
         <section aria-label="Work plan">
           <h3 className="policy-section">Work plan</h3>

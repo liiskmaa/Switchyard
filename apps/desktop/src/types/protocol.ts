@@ -1011,6 +1011,8 @@ export interface TaskMethods {
   "tasks.start_assignment": { params: { assignment_id: Uuid }; result: TaskAssignmentResult };
   "tasks.cancel_assignment": { params: { assignment_id: Uuid; reason?: string }; result: TaskAssignmentResult };
   "tasks.note": { params: { task_id: Uuid; text: string }; result: { message: TaskMessage; delivered: boolean } };
+  "supervisor.ask": { params: { task_id: Uuid; text: string }; result: SupervisorInfo };
+  "supervisor.get": { params: { task_id: Uuid }; result: SupervisorInfo };
   "tasks.complete": { params: TaskDecision; result: TaskResult };
   "tasks.fail": { params: TaskDecision; result: TaskResult };
   "tasks.cancel": { params: TaskDecision; result: TaskResult };
@@ -1283,4 +1285,27 @@ export interface IntegrationMethods {
     params: { project_id: Uuid; limits?: Partial<OrgLimits>; estimates?: OrgEstimate[]; overrides?: OrgSettingsInfo["overrides"] };
     result: OrgSettingsInfo;
   };
+}
+
+/** One message of a task's supervisor conversation (ADR 0041). */
+export interface SupervisorMessage {
+  id: Uuid;
+  sender: "operator" | "supervisor" | "core";
+  text: string;
+  /** Where the supervisor sent the work. */
+  route?: "none" | "reasoning" | "coding" | "review" | "tests" | null;
+  instruction?: string | null;
+  /** What Core did with the route. */
+  outcome?: string | null;
+  follow_up_task_id?: Uuid | null;
+  by?: string | null;
+  created_at_ms: number;
+}
+
+export interface SupervisorInfo {
+  task_id: Uuid;
+  /** The supervisor is answering the last message. */
+  thinking: boolean;
+  messages: SupervisorMessage[];
+  workspace_id?: Uuid | null;
 }

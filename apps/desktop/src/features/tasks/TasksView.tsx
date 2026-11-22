@@ -57,7 +57,7 @@ export function TasksView() {
   // The selected task stays open after it is completed or cancelled, even though the list hides it.
   const selected = taskId;
   return (
-    <div className="page">
+    <div className="page page-wide">
       <PageHeader
         title="Tasks"
         subtitle="Durable work that agents investigate, implement and review. Agents report back; you decide what happens next."

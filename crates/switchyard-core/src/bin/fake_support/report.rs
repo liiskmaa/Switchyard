@@ -11,7 +11,8 @@
 //! before the final message. The role and task id are read from the task
 //! context in the prompt, exactly as Core rendered it. The turn count per task
 //! and role is kept in a file, so a resumed session (a new process) continues
-//! with the next step.
+//! with the next step. The task supervisor's turns (ADR 0041) use the role
+//! `supervisor`.
 
 use serde_json::Value;
 
@@ -60,6 +61,13 @@ impl TaskScript {
     pub fn start(&mut self, prompt: &str, arg: Option<&str>) {
         let spec = arg.and_then(decode_hex).and_then(|b| serde_json::from_slice::<Value>(&b).ok());
         *self = Self { spec, role: context_field(prompt, "role"), task_id: context_field(prompt, "task_id") };
+        // The task supervisor's prompt (ADR 0041) has no task context: its role is `supervisor`.
+        if self.role.is_none() && prompt.starts_with("SWITCHYARD TASK SUPERVISOR") {
+            self.role = Some("supervisor".into());
+            self.task_id = prompt.find("Task id: ").map(|i| {
+                prompt[i + 9..].chars().take_while(|c| c.is_ascii_hexdigit() || *c == '-').collect()
+            });
+        }
     }
 
     pub fn active(&self) -> bool {

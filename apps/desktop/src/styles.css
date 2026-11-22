@@ -270,6 +270,13 @@ button { font: inherit; color: inherit; }
 /* Projects split view ---------------------------------------------------- */
 
 .split { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 16px; align-items: start; }
+/* Tasks use the whole window; the task page splits into two columns when there is room. */
+.page.page-wide { max-width: none; }
+.task-columns { display: flex; flex-direction: column; gap: 16px; }
+.task-main, .task-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+@media (min-width: 1600px) {
+  .task-columns { display: grid; grid-template-columns: minmax(0, 3fr) minmax(380px, 2fr); align-items: start; }
+}
 .list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); overflow: hidden; }
 .list-item {
   display: flex;
@@ -383,6 +390,12 @@ button { font: inherit; color: inherit; }
 .composer { display: flex; flex-direction: column; gap: 8px; }
 .composer-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .composer-note { padding: 4px 2px; }
+.supervisor-thread { list-style: none; margin: 12px 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.supervisor-message { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: var(--radius); border: 1px solid var(--border); max-width: 92%; }
+.supervisor-message.from-operator { align-self: flex-end; background: var(--panel-raised); }
+.supervisor-message.from-supervisor { align-self: flex-start; }
+.supervisor-message.from-core { align-self: flex-start; border-style: dashed; }
+.supervisor-route { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding-top: 4px; border-top: 1px solid var(--border); }
 .textarea { height: auto; padding: 8px 9px; resize: vertical; line-height: 1.45; width: 100%; }
 
 .code-block {
@@ -740,6 +753,11 @@ details.advanced > summary { cursor: pointer; color: var(--muted); font-size: 13
 .flow-node.needs_you .flow-disc { stroke: var(--warn); fill: var(--warn-soft); }
 .flow-node.needs_you .flow-name { fill: var(--text-strong); }
 .flow-node.needs_you .flow-halo { stroke: var(--warn); animation: flow-pulse 1.6s ease-out infinite; }
+/* A supervisor checking reported work (agent teams). */
+.flow-node.checking .flow-disc { stroke: var(--focus); fill: rgb(122 167 255 / 0.12); }
+.flow-node.checking .flow-name { fill: var(--text-strong); }
+.flow-node.checking .flow-halo { stroke: var(--focus); animation: flow-pulse 1.6s ease-out infinite; }
+.team-flow svg { width: auto; max-width: 100%; margin: 0 auto; }
 @keyframes flow-move { from { stroke-dashoffset: 18; } to { stroke-dashoffset: 0; } }
 @keyframes flow-pulse { from { opacity: 0.9; } to { opacity: 0.15; } }
 @media (prefers-reduced-motion: reduce) {
@@ -782,3 +800,41 @@ details.advanced > summary { cursor: pointer; color: var(--muted); font-size: 13
 }
 .status-action:hover { border-color: var(--accent); color: var(--text-strong); }
 .status-action.attention { border-color: var(--warn); color: var(--warn); }
+
+/* Work board: what each member or role works on (lanes of items you can open). */
+.board { margin: 4px 0 12px; }
+.board-lanes { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; align-items: start; }
+.board-lane { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); padding: 10px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.board-lane.working { border-color: var(--accent); }
+.board-lane.checking { border-color: var(--focus); }
+.board-lane.needs_you { border-color: var(--warn); }
+.board-lane.flash { animation: board-flash 1.2s ease-out; }
+@keyframes board-flash { from { box-shadow: 0 0 0 3px var(--accent-soft); } to { box-shadow: 0 0 0 0 transparent; } }
+.board-lane-head { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 8px; align-items: baseline; }
+.board-lane-head .org-dot { align-self: center; }
+.board-lane-title { display: flex; flex-direction: column; min-width: 0; }
+.board-lane-title strong { color: var(--text-strong); font-weight: 600; overflow-wrap: anywhere; }
+.board-lane-state { grid-column: 2; color: var(--text); }
+.flow-time-inline { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.flow-time-inline.running { color: var(--accent); font-weight: 600; }
+.board-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.board-item { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--panel-raised); }
+.board-item.current { border-color: var(--accent); background: var(--accent-soft); }
+.board-item.done .board-item-title { color: var(--muted); }
+.board-item-head { all: unset; box-sizing: border-box; width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 6px; align-items: center; padding: 6px 8px; cursor: pointer; }
+.board-item-head:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.board-caret { color: var(--faint); font-size: 10px; width: 10px; }
+.board-item-title { color: var(--text-strong); overflow-wrap: anywhere; }
+.board-item-meta { display: block; padding: 0 8px 6px 24px; overflow-wrap: anywhere; }
+.board-item-body { padding: 0 8px 8px 24px; display: flex; flex-direction: column; gap: 6px; }
+.board-details { display: flex; flex-direction: column; gap: 4px; margin: 0; }
+.board-details div { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 8px; }
+.board-details dt { color: var(--muted); }
+.board-details dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+.board-text { white-space: pre-wrap; }
+.board-sublist { margin: 0; padding-left: 16px; }
+.board-links { display: flex; flex-wrap: wrap; gap: 12px; }
+.board-empty { margin: 0; }
+.flow-node.clickable { cursor: pointer; }
+.flow-node.clickable:hover .flow-disc { stroke: var(--text); }
+@media (prefers-reduced-motion: reduce) { .board-lane.flash { animation: none; } }

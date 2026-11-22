@@ -100,6 +100,15 @@ Constraints: a `worktree` row must have `branch` and `base_commit`. Indexes:
   result (output tails), whether the change touched UI files, and who authorized `ask` commands.
 - Append-only (trigger); `task_id` → `tasks` (`ON DELETE CASCADE`).
 
+### `task_supervisors`, `supervisor_messages` (v13)
+- The task supervisor (ADR 0041). `task_supervisors`: one row per task with its own read-only
+  workspace and last session (resumed for the next question).
+- `supervisor_messages`: the conversation, append-only (trigger): sender (`operator`, `supervisor`,
+  `core`), text, the requested route and instruction, what Core did (`outcome`), and the follow-up
+  task Core opened for a delivered task. The supervisor owes an answer while the last message is
+  the operator's.
+- Both cascade with `tasks`.
+
 ### `agents`
 One row per detected executable and vendor.
 

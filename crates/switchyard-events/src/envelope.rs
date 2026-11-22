@@ -456,6 +456,22 @@ pub enum DomainEvent {
     WorkflowDelivered { reason: String, integration_id: Option<Uuid> },
     #[serde(rename = "workflow.failed")]
     WorkflowFailed { reason: String },
+    /// The operator, through the task's supervisor, sent the work to `to`
+    /// (`reasoning`, `coding`, `review` or `tests`; ADR 0041).
+    #[serde(rename = "workflow.directed")]
+    WorkflowDirected { to: String, by: String },
+    /// The operator asked the task's supervisor something (ADR 0041).
+    #[serde(rename = "supervisor.asked")]
+    SupervisorAsked { message_id: Uuid, by: String },
+    /// The supervisor answered (or Core recorded why it could not);
+    /// `route` and `outcome` say where the work went.
+    #[serde(rename = "supervisor.answered")]
+    SupervisorAnswered {
+        message_id: Uuid,
+        route: Option<String>,
+        outcome: Option<String>,
+        follow_up_task_id: Option<Uuid>,
+    },
     #[serde(rename = "workflow.cancelled")]
     WorkflowCancelled { reason: String },
     /// The operator changed the project's role bindings.
@@ -608,6 +624,9 @@ impl DomainEvent {
             Self::WorkflowSubtaskCompleted { .. } => "workflow.subtask_completed",
             Self::WorkflowDelivered { .. } => "workflow.delivered",
             Self::WorkflowFailed { .. } => "workflow.failed",
+            Self::WorkflowDirected { .. } => "workflow.directed",
+            Self::SupervisorAsked { .. } => "supervisor.asked",
+            Self::SupervisorAnswered { .. } => "supervisor.answered",
             Self::WorkflowCancelled { .. } => "workflow.cancelled",
             Self::WorkflowSettingsChanged { .. } => "workflow.settings_changed",
             Self::OrganizationStarted { .. } => "organization.started",
@@ -835,6 +854,14 @@ mod tests {
             DomainEvent::WorkflowResumed { by: "desktop".into() },
             DomainEvent::WorkflowCompleted { reason: "approved".into() },
             DomainEvent::WorkflowFailed { reason: "x".into() },
+            DomainEvent::WorkflowDirected { to: "coding".into(), by: "desktop".into() },
+            DomainEvent::SupervisorAsked { message_id: new_id(), by: "desktop".into() },
+            DomainEvent::SupervisorAnswered {
+                message_id: new_id(),
+                route: Some("coding".into()),
+                outcome: Some("started implement#2".into()),
+                follow_up_task_id: None,
+            },
             DomainEvent::WorkflowPlanned { subtasks: vec!["a".into(), "b".into()] },
             DomainEvent::WorkflowSubtaskCompleted { number: 1, title: "a".into() },
             DomainEvent::WorkflowTestsChanged {

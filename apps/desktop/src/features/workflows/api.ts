@@ -18,6 +18,21 @@ export const pendingApprovals = async (sessionId: string) =>
 
 export const isWorkflowEvent = (e: EventEnvelope): boolean => e.event_type.startsWith("workflow.");
 
+// --- the task supervisor (ADR 0041) -----------------------------------------------
+export const askSupervisor = (taskId: string, text: string) => coreRequest("supervisor.ask", { task_id: taskId, text });
+export const getSupervisor = (taskId: string) => coreRequest("supervisor.get", { task_id: taskId });
+export const organizationEvents = async (taskId: string) =>
+  (await coreRequest("events.list", { task_id: taskId, after_seq: 0, limit: 1000, event_types: ORG_EVENTS })).events;
+const ORG_EVENTS = [
+  "organization.task_delegated",
+  "organization.supervision_started",
+  "organization.work_started",
+  "organization.assessed",
+  "organization.escalated",
+  "organization.status_changed",
+];
+export const isSupervisorEvent = (e: EventEnvelope): boolean => e.event_type.startsWith("supervisor.");
+
 // --- agent organizations (M8.3) ---------------------------------------------------
 export const startOrganization = (taskId: string, lead?: { provider: AgentProvider; model: string | null }) =>
   coreRequest(

@@ -946,6 +946,29 @@ pub struct WorkflowInfo {
     pub question: Option<String>,
 }
 
+/// One message of a task's supervisor conversation (ADR 0041).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupervisorMessage {
+    pub id: Uuid,
+    /// `operator`, `supervisor` or `core`.
+    pub sender: String,
+    pub text: String,
+    /// Where the supervisor sent the work: `none`, `reasoning`, `coding`, `review` or `tests`.
+    #[serde(default)]
+    pub route: Option<String>,
+    #[serde(default)]
+    pub instruction: Option<String>,
+    /// What Core did with the route.
+    #[serde(default)]
+    pub outcome: Option<String>,
+    /// The follow-up task Core opened for work on a delivered task.
+    #[serde(default)]
+    pub follow_up_task_id: Option<Uuid>,
+    #[serde(default)]
+    pub by: Option<String>,
+    pub created_at_ms: i64,
+}
+
 /// One planned subtask of a workflow (ADR 0040).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowPlanItem {

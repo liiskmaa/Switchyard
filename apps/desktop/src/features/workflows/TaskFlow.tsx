@@ -3,6 +3,7 @@ import type { TaskDetail } from "../../types/protocol";
 import { useNow } from "../../lib/useNow";
 import { type FlowNode, NODE_LABEL, type Transfer, buildFlow, formatDuration, routeCounts } from "./flow";
 import { effectiveBinding, modelLabel } from "./labels";
+import { showLane } from "./WorkBoard";
 
 /**
  * Where each role sits: the work loop (reasoning, coding, review) around you
@@ -121,7 +122,11 @@ export function TaskFlow({ detail }: { detail: TaskDetail }) {
           const time = flow.times[node];
           const running = time?.runningSinceMs !== undefined;
           return (
-            <g key={node} className={`flow-node ${state}`}>
+            <g
+              key={node}
+              className={`flow-node ${state}${node === "you" || node === "validation" || node === "branch" ? "" : " clickable"}`}
+              onClick={() => showLane(node)}
+            >
               {state === "working" || state === "needs_you" ? <circle cx={p.x} cy={p.y} r={R + 6} className="flow-halo" /> : null}
               <circle cx={p.x} cy={p.y} r={R} className="flow-disc" />
               <text x={p.x} y={time ? p.y - 2 : p.y + 4} textAnchor="middle" className="flow-name">

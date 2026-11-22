@@ -3,10 +3,10 @@
 
 use switchyard_protocol::ProtocolError;
 use switchyard_protocol::methods::{
-    TaskAssignmentIdParams, TaskAssignmentResult, TaskDecisionParams, TaskDependencyParams, TaskDetail,
-    TaskIdParams, TaskResult, TasksAssignParams, TasksCreateParams, TasksDecideProposalParams,
-    TasksDecideProposalResult, TasksListParams, TasksListResult, TasksNoteParams, TasksNoteResult,
-    TasksUpdateParams,
+    SupervisorAskParams, SupervisorInfo, TaskAssignmentIdParams, TaskAssignmentResult, TaskDecisionParams,
+    TaskDependencyParams, TaskDetail, TaskIdParams, TaskResult, TasksAssignParams, TasksCreateParams,
+    TasksDecideProposalParams, TasksDecideProposalResult, TasksListParams, TasksListResult, TasksNoteParams,
+    TasksNoteResult, TasksUpdateParams,
 };
 
 use super::agents::limit;
@@ -74,6 +74,17 @@ pub(super) async fn cancel_assignment(
 
 pub(super) async fn note(conn: &Connection, p: TasksNoteParams) -> Result<TasksNoteResult, ProtocolError> {
     conn.state.tasks.note(p.task_id, p.text, actor(conn)).await
+}
+
+pub(super) async fn ask_supervisor(
+    conn: &Connection,
+    p: SupervisorAskParams,
+) -> Result<SupervisorInfo, ProtocolError> {
+    conn.state.tasks.ask_supervisor(p.task_id, p.text, actor(conn)).await
+}
+
+pub(super) async fn supervisor(conn: &Connection, p: TaskIdParams) -> Result<SupervisorInfo, ProtocolError> {
+    conn.state.tasks.supervisor(p.task_id).await
 }
 
 pub(super) async fn complete(conn: &Connection, p: TaskDecisionParams) -> Result<TaskResult, ProtocolError> {

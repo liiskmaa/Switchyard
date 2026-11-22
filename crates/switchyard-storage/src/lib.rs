@@ -18,6 +18,7 @@ pub mod policies;
 pub mod projects;
 pub mod sessions;
 pub mod stats;
+pub mod supervisor;
 pub mod tasks;
 pub mod workflows;
 pub mod workspaces;

@@ -238,6 +238,21 @@ It stops and waits for you ("Needs you") when:
 
 Other controls: **Pause**, **Cancel workflow**, and *Advanced* on the task to assign steps by hand.
 
+**Ask the supervisor** (the box under *Progress* on every task page). Type a question or a request
+and press **Ask** (⌘↵):
+
+- *Questions* ("Why did the tests fail?", "What is coding doing?") get an answer; nothing changes.
+- *Requests for work* ("Have review check the error handling again", "Make the cutoff 30 days")
+  are routed by the supervisor to Reasoning, Coding, Review or Tests, and start right away when
+  the workflow allows it. Under the answer you see where the work went and what Switchyard did.
+- If an agent is working, an instruction for *that* role goes straight to it (this also answers its
+  question). Work for another role is refused until the working agent reports; ask again then.
+- On a delivered task, requested work becomes a **follow-up task** with its own workflow (a link
+  appears under the answer).
+- The supervisor is read-only and works in its own copy of the task's branch, so it can ask
+  whatever while agents work. It never pushes, deploys, merges or approves anything; those stay
+  yours.
+
 **Choosing who does what:** the project's **Workflow roles** set provider and model for
 Investigation & reasoning, Implementation and Review. There is no separate "correction" role:
 fixes are done by the Implementation agent.

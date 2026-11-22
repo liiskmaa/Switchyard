@@ -43,6 +43,9 @@ Rust process, **Switchyard Core**. The Tauri desktop app is only a client.
   `migrations/0012_workflow_tests.sql`); reasoning's plan of 2–8 subtasks runs in turn (`s<n>/` step keys); the task
   page's flow display (`apps/desktop/src/features/workflows/flow.ts`, `TaskFlow.tsx`); Core start/stop/restart from
   Settings (`apps/desktop/src-tauri/src/commands.rs`: `core_stop`, `core_start`, `core_restart`).
+- Task supervisor (ADR 0041): `crates/switchyard-tasks/src/supervisor.rs` (pure prompt + reply parser),
+  `crates/switchyard-core/src/tasks/supervisor.rs`, `migrations/0013_task_supervisor.sql`, the pure
+  `workflow::Input::Directed`, `apps/desktop/src/features/workflows/SupervisorBox.tsx`.
 
 The verified Claude CLI behaviour is in `docs/architecture/agent-integration.md`, the verified Codex
 app-server behaviour (0.166.0) in `docs/architecture/codex-integration.md`, and the contract in
@@ -71,6 +74,7 @@ cargo test -p switchyard-core --test integrations       # integration: inspectio
 cargo test -p switchyard-core --test workflows          # engineering@1 workflow via both fakes (models, limits, restarts)
 cargo test -p switchyard-core --test delivery           # M8.2: workflow → M7 integration → delivered (commit, validation, approval)
 cargo test -p switchyard-core --test organizations      # M8.3: dynamic organization via both fakes (supervision, interruption, limits, restart)
+cargo test -p switchyard-core --test supervisor         # ADR 0041: task supervisor answers, routes, follow-ups via the fakes
 cargo test -p switchyard-git --test integrate           # Git integration primitives on temp repos
 SWITCHYARD_REAL_CLAUDE=1 cargo test -p switchyard-core --test real_claude -- --ignored   # real CLI, paid
 SWITCHYARD_REAL_CODEX=1 cargo test -p switchyard-core --test real_codex -- --ignored     # real CLI, paid
@@ -228,6 +232,11 @@ When running Core or the app manually, set `SWITCHYARD_DATA_DIR` (and, if that p
   - The test gate runs only commands the implementer's report names, each through `evaluate_command` (the
     validation policy path), never through a shell; `ask` needs the operator's resume; results and the decision are
     one transaction. Never let a review session run tests (it must stay read-only).
+- **Task supervisor.** A read-only session in its own workspace (never the task's). Its
+  `switchyard-supervisor` block only requests a route; Core sends an instruction to the working
+  agent of the same role (`tasks.note`), refuses other routes while an agent works, and otherwise
+  applies `Input::Directed` through the workflow driver. Delivered tasks get a follow-up task. Never
+  push, deploy, merge, approve or answer a permission request from it.
 - **Organizations.**
   - Decisions stay pure (`switchyard_tasks::organization::decide`); `decide_in_tx` commits state,
     `organization.*` events, subtasks (proposal path, decided by `organization:<key>`), closed subtasks

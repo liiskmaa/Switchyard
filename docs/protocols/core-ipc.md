@@ -156,6 +156,8 @@ client detect a restart. `seq` stays continuous across restarts because it lives
 | `tasks.start_assignment` | `{assignment_id}` | `{task, assignment}`: starts (or resumes the task's earlier session for the same role, provider and workspace) a session (`access: review` for reviews), records the context, then sends it. It waits for Core's own stop of a session that just reported in that workspace; any other live session there is never stopped and the start fails (`workspace_occupied`). On failure the assignment fails and the task returns. |
 | `tasks.cancel_assignment` | `{assignment_id, reason?}` | `{task, assignment}`; stops its session; pending approvals are cancelled with it |
 | `tasks.note` | `{task_id, text}` | `{message, delivered}`: sent to the working agent now, otherwise kept for the next assignment |
+| `supervisor.ask` | `{task_id, text}` | `SupervisorInfo` (ADR 0041): records the operator's message (max 8000 characters) and starts the answer in the background; `conflict` while the last one is unanswered. The answer arrives as `supervisor.answered`. |
+| `supervisor.get` | `{task_id}` | `SupervisorInfo`: `{task_id, thinking, messages: [{id, sender: operator\|supervisor\|core, text, route?: none\|reasoning\|coding\|review\|tests, instruction?, outcome?, follow_up_task_id?, by?, created_at_ms}], workspace_id?}` |
 | `tasks.complete` | `{task_id, note?}` | `{task}`: `awaiting_review` → `completed`, operator only; the last report becomes `result` |
 | `tasks.fail` / `tasks.cancel` | `{task_id, note?}` | `{task}`; an open assignment is cancelled and its session stopped |
 | `tasks.retry` | `{task_id, note?}` | `{task}`: `failed` → `ready`/`blocked`, or `blocked` → `ready` once dependencies are completed |
@@ -364,6 +366,9 @@ the registration is kept and `projects.git_status` returns `repository_unavailab
 | `workflow.tests_changed` | `{phase: running\|passed\|failed\|needs_authorization, reason, step_key?}`: the test gate (ADR 0039) |
 | `workflow.planned` | `{subtasks: [title]}`: reasoning split the task; the subtasks run in order (ADR 0040) |
 | `workflow.subtask_completed` | `{number, title}`: a subtask's review approved (ADR 0040) |
+| `workflow.directed` | `{to, by}`: the operator, through the task's supervisor, sent the work to `reasoning`, `coding`, `review` or `tests` (ADR 0041) |
+| `supervisor.asked` | `{message_id, by}`: the operator asked the task's supervisor (ADR 0041) |
+| `supervisor.answered` | `{message_id, route?, outcome?, follow_up_task_id?}`: the supervisor answered, or Core recorded why it could not |
 | `workflow.delivery_changed` | `{phase, reason, integration_id?}`: delivery progressed (M8.2) |
 | `workflow.delivered` | `{reason, integration_id?}`: the integration landed; the task is completed |
 | `workflow.failed` / `workflow.cancelled` | `{reason}` |

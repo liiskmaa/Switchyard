@@ -31,6 +31,7 @@ import { modelLabel, workflowStageText } from "../workflows/labels";
 import { WorkflowPanel } from "../workflows/WorkflowPanel";
 import { TaskNeedsYou, deliveryNeedsYou } from "../workflows/TaskNeedsYou";
 import { DeliveryPanel } from "../workflows/DeliveryPanel";
+import { SupervisorBox } from "../workflows/SupervisorBox";
 
 /** History events shown before "Show all". */
 const HISTORY_PREVIEW = 20;
@@ -322,316 +323,311 @@ export function TaskDetailView({
         </p>
       ) : null}
 
-      <TaskNeedsYou detail={d} onChanged={refresh} />
-      <WorkflowPanel detail={d} onChanged={refresh} />
-      {deliveryNeedsYou(d) ? null : <DeliveryPanel detail={d} onChanged={refresh} />}
-
-      <details className="panel task-request" open={!d.workflow}>
-        <summary className="task-request-summary">What was asked</summary>
-        <div className="panel-body">
-          {t.description ? (
-            <div className="task-description-block">
-              <p className="task-description">
-                {!fullDescription && t.description.length > 320 ? `${t.description.slice(0, 320)}…` : t.description}
-              </p>
-              {t.description.length > 320 ? (
-                <button type="button" className="link small" onClick={() => setFullDescription(!fullDescription)}>
-                  {fullDescription ? "Show less" : "Show the full description"}
-                </button>
-              ) : null}
-            </div>
-          ) : (
-            <p className="muted small">No description.</p>
-          )}
-          {t.acceptance_criteria.length > 0 ? (
-            <>
-              <h3 className="policy-section">Done when</h3>
-              <ul className="findings">
-                {t.acceptance_criteria.map((c) => (
-                  <li key={c} className="small">
-                    {c}
-                  </li>
-                ))}
-              </ul>
-            </>
-          ) : null}
-          <p className="muted small">
-            {t.kind} · {t.priority} priority
-            {d.workflow ? ` · workflow ${d.workflow.definition}@${d.workflow.version}` : ""}
-          </p>
-          {t.result ? (
-            <p className="small">
-              <strong>Result:</strong> {String(t.result["note"] ?? t.result["summary"] ?? "")}
-            </p>
-          ) : null}
-        </div>
-      </details>
-
-
-
-      {pendingProposals.length > 0 || d.proposals.some((p) => !p.decided_by?.startsWith("organization:")) ? (
-        <Panel title="Proposed subtasks">
-          <p className="muted small">An agent proposed these. Nothing is created until you approve; approved subtasks start as drafts.</p>
-          <ul className="mini-list">
-            {d.proposals.filter((p) => !p.decided_by?.startsWith("organization:")).map((p) => (
-              <li key={p.id}>
-                <span className="mini-title">
-                  {p.position + 1}. {p.proposal.title}{" "}
-                  <Badge tone={p.status === "approved" ? "ok" : p.status === "rejected" ? "neutral" : "warn"}>{p.status}</Badge>
-                </span>
-                {p.proposal.description ? <span className="mini-sub">{p.proposal.description}</span> : null}
-                {p.status === "pending" ? (
-                  <div className="form-actions start">
-                    <Button disabled={action.busy} onClick={() => void action.run(() => decideProposal(p.id, true))}>
-                      Approve as draft
-                    </Button>
-                    <Button variant="ghost" disabled={action.busy} onClick={() => void action.run(() => decideProposal(p.id, false))}>
-                      Reject
-                    </Button>
-                  </div>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        </Panel>
-      ) : null}
-
-
-
-
-
-      {d.workflow && d.workflow.status !== "completed" ? null : <Delivery task={t} />}
-
-
-
-
-      <section className="panel task-tabs-panel">
-        <nav className="project-tabs task-tabs" role="tablist" aria-label="Task details">
-          {(
-            [
-              ["messages", `Messages${conversation.length ? ` (${conversation.length})` : ""}`],
-              ["findings", `Findings${openFindings.length ? ` (${openFindings.length} open)` : ""}`],
-              ["assignments", `Assignments${d.assignments.length ? ` (${d.assignments.length})` : ""}`],
-              ["dependencies", "Dependencies"],
-              ["history", "History"],
-            ] as const
-          ).map(([key, label]) => (
-            <button
-              key={key}
-              type="button"
-              role="tab"
-              aria-selected={tab === key}
-              className={`project-tab${tab === key ? " active" : ""}`}
-              onClick={() => setTab(key)}
-            >
-              {label}
-            </button>
-          ))}
-        </nav>
-        <div className="panel-body">
-          {tab === "messages" ? (
-            <>
-                <p className="muted small">Messages from agents are claims or requests. They never approve, start or complete anything.</p>
-                {hiddenMessages > 0 ? (
-                  <label className="check small">
-                    <input type="checkbox" checked={systemMessages} onChange={(e) => setSystemMessages(e.target.checked)} /> Show
-                    system messages ({hiddenMessages})
-                  </label>
-                ) : null}
-                {conversation.length === 0 ? (
-                  <EmptyState icon="activity" title="No messages yet" />
-                ) : (
-                  <ol className="timeline">
-                    {conversation.map((m) => (
-                      <li key={m.id} className="tl">
-                        <span className="tl-time">{formatClock(m.created_at_ms)}</span>
-                        <Badge tone={m.kind === "malformed_report" || m.kind === "blocker" ? "warn" : AGENT_KINDS.has(m.kind) ? "accent" : "neutral"}>
-                          {MESSAGE_LABEL[m.kind] ?? m.kind}
-                        </Badge>
-                        <span className="tl-body">
-                          <span className="muted small">
-                            {m.sender}
-                            {m.delivery === "pending" ? " · waits for the next assignment" : m.delivery === "delivered" ? " · delivered" : ""}
-                          </span>
-                          <div className="tl-message">{messageText(m)}</div>
-                        </span>
-                      </li>
-                    ))}
-                  </ol>
-                )}
-                {!["completed", "cancelled"].includes(t.status) ? (
-                  <form
-                    className="composer"
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      void action.run(async () => {
-                        await sendNote(t.id, note);
-                        setNote("");
-                      });
-                    }}
-                  >
-                    <textarea
-                      className="input textarea"
-                      aria-label="Note to the agent"
-                      rows={2}
-                      value={note}
-                      onChange={(e) => setNote(e.target.value)}
-                      placeholder={open?.status === "active" ? "Answer or guide the working agent" : "A note for the next assignment"}
-                    />
-                    <div className="composer-actions">
-                      <Button type="submit" disabled={action.busy || note.trim() === ""}>
-                        Send note
-                      </Button>
-                    </div>
-                  </form>
-                ) : null}
-            </>
-          ) : null}
-          {tab === "findings" ? (
-            <>
-                {d.findings.length === 0 ? (
-                  <p className="muted small">No findings.</p>
-                ) : (
-                  <ul className="findings">
-                    {d.findings.map((f) => (
-                      <li key={f.id} className={`finding small${f.status !== "open" ? " muted" : ""}`}>
-                        <Badge tone={SEVERITY_TONE[f.severity]}>{f.severity}</Badge> <strong>{f.title}</strong>
-                        {f.path ? (
-                          <code className="code-tag">
-                            {f.path}
-                            {f.line ? `:${f.line}` : ""}
-                          </code>
-                        ) : null}
-                        {f.status !== "open" ? ` (${f.status})` : ""}
-                        {f.explanation ? <div>{f.explanation}</div> : null}
-                        {f.suggestion ? <div className="muted">Suggestion: {f.suggestion}</div> : null}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-            </>
-          ) : null}
-          {tab === "assignments" ? (
-            <>
-                {open && d.workflow && open.origin === "workflow" ? (
-                  <p className="muted small">The workflow manages this task&apos;s assignments.</p>
-                ) : open ? (
-                  <div className="ws-row">
-                    <span>
-                      {ROLE_LABEL[open.role]} by {providerName(open.provider)} in workspace “{wsName(open.workspace_id)}” · {open.status}
-                    </span>
+      {/* Wide screens: the work on the left; the supervisor, the request and the history on the right. */}
+      <div className="task-columns">
+        <div className="task-main">
+        <TaskNeedsYou detail={d} onChanged={refresh} />
+        <WorkflowPanel detail={d} onChanged={refresh} />
+        {deliveryNeedsYou(d) ? null : <DeliveryPanel detail={d} onChanged={refresh} />}
+        {pendingProposals.length > 0 || d.proposals.some((p) => !p.decided_by?.startsWith("organization:")) ? (
+          <Panel title="Proposed subtasks">
+            <p className="muted small">An agent proposed these. Nothing is created until you approve; approved subtasks start as drafts.</p>
+            <ul className="mini-list">
+              {d.proposals.filter((p) => !p.decided_by?.startsWith("organization:")).map((p) => (
+                <li key={p.id}>
+                  <span className="mini-title">
+                    {p.position + 1}. {p.proposal.title}{" "}
+                    <Badge tone={p.status === "approved" ? "ok" : p.status === "rejected" ? "neutral" : "warn"}>{p.status}</Badge>
+                  </span>
+                  {p.proposal.description ? <span className="mini-sub">{p.proposal.description}</span> : null}
+                  {p.status === "pending" ? (
                     <div className="form-actions start">
-                      {open.session_id ? (
-                        <Button icon="agents" onClick={() => navigate("agents", { sessionId: open.session_id })}>
-                          Open session
-                        </Button>
-                      ) : null}
-                      <Button variant="danger" disabled={action.busy} onClick={() => void action.run(() => cancelAssignment(open.id))}>
-                        Cancel assignment
+                      <Button disabled={action.busy} onClick={() => void action.run(() => decideProposal(p.id, true))}>
+                        Approve as draft
+                      </Button>
+                      <Button variant="ghost" disabled={action.busy} onClick={() => void action.run(() => decideProposal(p.id, false))}>
+                        Reject
                       </Button>
                     </div>
-                  </div>
-                ) : can.assign.length > 0 && d.workflow ? (
-                  <details className="advanced">
-                    <summary>Advanced: assign manually (take over from the workflow)</summary>
-                    <p className="muted small">Pause or cancel the workflow first; a running workflow refuses manual assignments.</p>
-                    <Assign task={t} roles={can.assign} workspaces={workspaces} onDone={refresh} />
-                  </details>
-                ) : can.assign.length > 0 ? (
-                  <Assign task={t} roles={can.assign} workspaces={workspaces} onDone={refresh} />
-                ) : (
-                  <p className="muted small">No agent is working on this task.</p>
-                )}
-                {d.assignments.length > 0 ? (
-                  <ul className="mini-list">
-                    {[...d.assignments].reverse().map((a) => (
-                      <li key={a.id}>
-                        <span className="mini-title">
-                          {a.step_key ? <code className="code-tag">{a.step_key}</code> : null} {ROLE_LABEL[a.role]} · {providerName(a.provider)} ·{" "}
-                          {modelLabel(a.model)}
-                          {a.actual_model && a.actual_model !== a.model ? ` (runs ${a.actual_model})` : ""} · {a.status}
-                          {a.origin === "operator" ? " · manual" : ""}
-                        </span>
-                        <span className="mini-sub">
-                          {wsName(a.workspace_id)}
-                          {a.context_version ? ` · context v${a.context_version}` : ""}
-                          {a.outcome ? ` · ${a.outcome}` : ""} · {formatRelative(a.created_at_ms, now)}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </Panel>
+        ) : null}
+        {d.workflow && d.workflow.status !== "completed" ? null : <Delivery task={t} />}
+        </div>
+        <div className="task-side">
+        <SupervisorBox taskId={t.id} />
+        <details className="panel task-request" open={!d.workflow}>
+          <summary className="task-request-summary">What was asked</summary>
+          <div className="panel-body">
+            {t.description ? (
+              <div className="task-description-block">
+                <p className="task-description">
+                  {!fullDescription && t.description.length > 320 ? `${t.description.slice(0, 320)}…` : t.description}
+                </p>
+                {t.description.length > 320 ? (
+                  <button type="button" className="link small" onClick={() => setFullDescription(!fullDescription)}>
+                    {fullDescription ? "Show less" : "Show the full description"}
+                  </button>
                 ) : null}
-            </>
-          ) : null}
-          {tab === "dependencies" ? (
-            <>
-                {d.dependencies.length === 0 ? <p className="muted small">This task does not wait for other tasks.</p> : null}
-                <ul className="mini-list">
-                  {d.dependencies.map((dep) => (
-                    <li key={dep.id}>
-                      <span className="mini-title">
-                        {dep.title} <Badge tone={statusTone(dep.status)}>{STATUS_LABEL[dep.status]}</Badge>
-                      </span>
-                      {can.dependencies ? (
-                        <Button variant="ghost" disabled={action.busy} onClick={() => void deps.run(() => removeDependency(t.id, dep.id))}>
-                          Remove
-                        </Button>
-                      ) : null}
+              </div>
+            ) : (
+              <p className="muted small">No description.</p>
+            )}
+            {t.acceptance_criteria.length > 0 ? (
+              <>
+                <h3 className="policy-section">Done when</h3>
+                <ul className="findings">
+                  {t.acceptance_criteria.map((c) => (
+                    <li key={c} className="small">
+                      {c}
                     </li>
                   ))}
                 </ul>
-                {can.dependencies ? (
-                  <div className="input-row">
-                    <select className="input select" aria-label="Add a dependency" value={newDep} onChange={(e) => setNewDep(e.target.value)}>
-                      <option value="">Wait for another task…</option>
-                      {tasks
-                        .filter((o) => o.id !== t.id && !t.dependency_ids.includes(o.id))
-                        .map((o) => (
-                          <option key={o.id} value={o.id}>
-                            {o.title}
-                          </option>
-                        ))}
-                    </select>
-                    <Button
-                      disabled={deps.busy || newDep === ""}
-                      onClick={() =>
-                        void deps.run(async () => {
-                          await addDependency(t.id, newDep);
-                          setNewDep("");
-                        })
-                      }
+              </>
+            ) : null}
+            <p className="muted small">
+              {t.kind} · {t.priority} priority
+              {d.workflow ? ` · workflow ${d.workflow.definition}@${d.workflow.version}` : ""}
+            </p>
+            {t.result ? (
+              <p className="small">
+                <strong>Result:</strong> {String(t.result["note"] ?? t.result["summary"] ?? "")}
+              </p>
+            ) : null}
+          </div>
+        </details>
+        <section className="panel task-tabs-panel">
+          <nav className="project-tabs task-tabs" role="tablist" aria-label="Task details">
+            {(
+              [
+                ["messages", `Messages${conversation.length ? ` (${conversation.length})` : ""}`],
+                ["findings", `Findings${openFindings.length ? ` (${openFindings.length} open)` : ""}`],
+                ["assignments", `Assignments${d.assignments.length ? ` (${d.assignments.length})` : ""}`],
+                ["dependencies", "Dependencies"],
+                ["history", "History"],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                role="tab"
+                aria-selected={tab === key}
+                className={`project-tab${tab === key ? " active" : ""}`}
+                onClick={() => setTab(key)}
+              >
+                {label}
+              </button>
+            ))}
+          </nav>
+          <div className="panel-body">
+            {tab === "messages" ? (
+              <>
+                  <p className="muted small">Messages from agents are claims or requests. They never approve, start or complete anything.</p>
+                  {hiddenMessages > 0 ? (
+                    <label className="check small">
+                      <input type="checkbox" checked={systemMessages} onChange={(e) => setSystemMessages(e.target.checked)} /> Show
+                      system messages ({hiddenMessages})
+                    </label>
+                  ) : null}
+                  {conversation.length === 0 ? (
+                    <EmptyState icon="activity" title="No messages yet" />
+                  ) : (
+                    <ol className="timeline">
+                      {conversation.map((m) => (
+                        <li key={m.id} className="tl">
+                          <span className="tl-time">{formatClock(m.created_at_ms)}</span>
+                          <Badge tone={m.kind === "malformed_report" || m.kind === "blocker" ? "warn" : AGENT_KINDS.has(m.kind) ? "accent" : "neutral"}>
+                            {MESSAGE_LABEL[m.kind] ?? m.kind}
+                          </Badge>
+                          <span className="tl-body">
+                            <span className="muted small">
+                              {m.sender}
+                              {m.delivery === "pending" ? " · waits for the next assignment" : m.delivery === "delivered" ? " · delivered" : ""}
+                            </span>
+                            <div className="tl-message">{messageText(m)}</div>
+                          </span>
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                  {!["completed", "cancelled"].includes(t.status) ? (
+                    <form
+                      className="composer"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        void action.run(async () => {
+                          await sendNote(t.id, note);
+                          setNote("");
+                        });
+                      }}
                     >
-                      Add
-                    </Button>
-                  </div>
-                ) : null}
-                {deps.error ? <ErrorNotice title="Cannot change dependencies" message={deps.error.message} code={deps.error.code} /> : null}
-                {d.dependents.length > 0 ? (
-                  <p className="muted small">Waiting for this task: {d.dependents.map((x) => x.title).join(", ")}</p>
-                ) : null}
-            </>
-          ) : null}
-          {tab === "history" ? (
-            <>
-                <p className="muted small">Newest first: every change to this task is journaled (the audit trail).</p>
-                <ol className="timeline">
-                  {shownHistory.map((e) => (
-                    <li key={e.seq} className="tl">
-                      <span className="tl-time">{formatClock(e.occurred_at_ms)}</span>
-                      <span className="muted small">{e.event_type.replace("task.", "")}</span>
-                      <span className="tl-body">{describeEvent(e)}</span>
-                    </li>
-                  ))}
-                </ol>
-                {history.length > HISTORY_PREVIEW ? (
-                  <button type="button" className="link small" onClick={() => setAllHistory(!allHistory)}>
-                    {allHistory ? "Show the latest only" : `Show all ${history.length} events`}
-                  </button>
-                ) : null}
-            </>
-          ) : null}
+                      <textarea
+                        className="input textarea"
+                        aria-label="Note to the agent"
+                        rows={2}
+                        value={note}
+                        onChange={(e) => setNote(e.target.value)}
+                        placeholder={open?.status === "active" ? "Answer or guide the working agent" : "A note for the next assignment"}
+                      />
+                      <div className="composer-actions">
+                        <Button type="submit" disabled={action.busy || note.trim() === ""}>
+                          Send note
+                        </Button>
+                      </div>
+                    </form>
+                  ) : null}
+              </>
+            ) : null}
+            {tab === "findings" ? (
+              <>
+                  {d.findings.length === 0 ? (
+                    <p className="muted small">No findings.</p>
+                  ) : (
+                    <ul className="findings">
+                      {d.findings.map((f) => (
+                        <li key={f.id} className={`finding small${f.status !== "open" ? " muted" : ""}`}>
+                          <Badge tone={SEVERITY_TONE[f.severity]}>{f.severity}</Badge> <strong>{f.title}</strong>
+                          {f.path ? (
+                            <code className="code-tag">
+                              {f.path}
+                              {f.line ? `:${f.line}` : ""}
+                            </code>
+                          ) : null}
+                          {f.status !== "open" ? ` (${f.status})` : ""}
+                          {f.explanation ? <div>{f.explanation}</div> : null}
+                          {f.suggestion ? <div className="muted">Suggestion: {f.suggestion}</div> : null}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+              </>
+            ) : null}
+            {tab === "assignments" ? (
+              <>
+                  {open && d.workflow && open.origin === "workflow" ? (
+                    <p className="muted small">The workflow manages this task&apos;s assignments.</p>
+                  ) : open ? (
+                    <div className="ws-row">
+                      <span>
+                        {ROLE_LABEL[open.role]} by {providerName(open.provider)} in workspace “{wsName(open.workspace_id)}” · {open.status}
+                      </span>
+                      <div className="form-actions start">
+                        {open.session_id ? (
+                          <Button icon="agents" onClick={() => navigate("agents", { sessionId: open.session_id })}>
+                            Open session
+                          </Button>
+                        ) : null}
+                        <Button variant="danger" disabled={action.busy} onClick={() => void action.run(() => cancelAssignment(open.id))}>
+                          Cancel assignment
+                        </Button>
+                      </div>
+                    </div>
+                  ) : can.assign.length > 0 && d.workflow ? (
+                    <details className="advanced">
+                      <summary>Advanced: assign manually (take over from the workflow)</summary>
+                      <p className="muted small">Pause or cancel the workflow first; a running workflow refuses manual assignments.</p>
+                      <Assign task={t} roles={can.assign} workspaces={workspaces} onDone={refresh} />
+                    </details>
+                  ) : can.assign.length > 0 ? (
+                    <Assign task={t} roles={can.assign} workspaces={workspaces} onDone={refresh} />
+                  ) : (
+                    <p className="muted small">No agent is working on this task.</p>
+                  )}
+                  {d.assignments.length > 0 ? (
+                    <ul className="mini-list">
+                      {[...d.assignments].reverse().map((a) => (
+                        <li key={a.id}>
+                          <span className="mini-title">
+                            {a.step_key ? <code className="code-tag">{a.step_key}</code> : null} {ROLE_LABEL[a.role]} · {providerName(a.provider)} ·{" "}
+                            {modelLabel(a.model)}
+                            {a.actual_model && a.actual_model !== a.model ? ` (runs ${a.actual_model})` : ""} · {a.status}
+                            {a.origin === "operator" ? " · manual" : ""}
+                          </span>
+                          <span className="mini-sub">
+                            {wsName(a.workspace_id)}
+                            {a.context_version ? ` · context v${a.context_version}` : ""}
+                            {a.outcome ? ` · ${a.outcome}` : ""} · {formatRelative(a.created_at_ms, now)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+              </>
+            ) : null}
+            {tab === "dependencies" ? (
+              <>
+                  {d.dependencies.length === 0 ? <p className="muted small">This task does not wait for other tasks.</p> : null}
+                  <ul className="mini-list">
+                    {d.dependencies.map((dep) => (
+                      <li key={dep.id}>
+                        <span className="mini-title">
+                          {dep.title} <Badge tone={statusTone(dep.status)}>{STATUS_LABEL[dep.status]}</Badge>
+                        </span>
+                        {can.dependencies ? (
+                          <Button variant="ghost" disabled={action.busy} onClick={() => void deps.run(() => removeDependency(t.id, dep.id))}>
+                            Remove
+                          </Button>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                  {can.dependencies ? (
+                    <div className="input-row">
+                      <select className="input select" aria-label="Add a dependency" value={newDep} onChange={(e) => setNewDep(e.target.value)}>
+                        <option value="">Wait for another task…</option>
+                        {tasks
+                          .filter((o) => o.id !== t.id && !t.dependency_ids.includes(o.id))
+                          .map((o) => (
+                            <option key={o.id} value={o.id}>
+                              {o.title}
+                            </option>
+                          ))}
+                      </select>
+                      <Button
+                        disabled={deps.busy || newDep === ""}
+                        onClick={() =>
+                          void deps.run(async () => {
+                            await addDependency(t.id, newDep);
+                            setNewDep("");
+                          })
+                        }
+                      >
+                        Add
+                      </Button>
+                    </div>
+                  ) : null}
+                  {deps.error ? <ErrorNotice title="Cannot change dependencies" message={deps.error.message} code={deps.error.code} /> : null}
+                  {d.dependents.length > 0 ? (
+                    <p className="muted small">Waiting for this task: {d.dependents.map((x) => x.title).join(", ")}</p>
+                  ) : null}
+              </>
+            ) : null}
+            {tab === "history" ? (
+              <>
+                  <p className="muted small">Newest first: every change to this task is journaled (the audit trail).</p>
+                  <ol className="timeline">
+                    {shownHistory.map((e) => (
+                      <li key={e.seq} className="tl">
+                        <span className="tl-time">{formatClock(e.occurred_at_ms)}</span>
+                        <span className="muted small">{e.event_type.replace("task.", "")}</span>
+                        <span className="tl-body">{describeEvent(e)}</span>
+                      </li>
+                    ))}
+                  </ol>
+                  {history.length > HISTORY_PREVIEW ? (
+                    <button type="button" className="link small" onClick={() => setAllHistory(!allHistory)}>
+                      {allHistory ? "Show the latest only" : `Show all ${history.length} events`}
+                    </button>
+                  ) : null}
+              </>
+            ) : null}
+          </div>
+        </section>
         </div>
-      </section>
+      </div>
     </div>
   );
 }

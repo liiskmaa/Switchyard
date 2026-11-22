@@ -490,6 +490,13 @@ pub enum Input {
     /// The operator retried the task after it failed: a workflow that ended
     /// with it comes back and waits to continue where it stopped.
     TaskReopened,
+    /// The operator (through the task's supervisor) sends the work to
+    /// `target` now: a new step of that role (a new round), or the test gate
+    /// for the current implementation. Only while no agent of the workflow
+    /// is working; Core delivers an instruction for the working agent itself.
+    Directed {
+        target: Target,
+    },
 }
 
 /// What Core must do after committing the decision.
@@ -517,6 +524,37 @@ pub enum Action {
     },
 }
 
+/// Where the operator (through the task's supervisor) sends work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Target {
+    Reasoning,
+    Coding,
+    Review,
+    Tests,
+}
+
+impl Target {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Reasoning => "reasoning",
+            Self::Coding => "coding",
+            Self::Review => "review",
+            Self::Tests => "tests",
+        }
+    }
+
+    /// The role whose agent does this work (`None` for the tests: Core runs them).
+    pub fn binding(self) -> Option<Binding> {
+        match self {
+            Self::Reasoning => Some(Binding::Investigate),
+            Self::Coding => Some(Binding::Implement),
+            Self::Review => Some(Binding::Review),
+            Self::Tests => None,
+        }
+    }
+}
+
 /// A journal-worthy change the decision made.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
@@ -534,6 +572,8 @@ pub enum Change {
     Planned(Vec<String>),
     /// A subtask's review approved: its number and title.
     SubtaskDone(u32, String),
+    /// The operator sent the work to this target (through the supervisor).
+    Directed(Target),
     Delivered(String),
     Cancelled(String),
     Failed(String),
@@ -554,6 +594,9 @@ pub enum WorkflowError {
         "the agent asked a question and is waiting for your answer: answer it with a note on the task page"
     )]
     NeedsAnswer,
+    /// Work cannot be redirected now; the reason, in a sentence.
+    #[error("{0}")]
+    Busy(String),
 }
 
 /// Decides what happens next. Inputs about a step other than the current
@@ -751,6 +794,7 @@ pub fn decide(state: &WorkflowState, input: &Input) -> Result<Decision, Workflow
                 Resume::Answer { question: q.to_owned() },
             );
         }
+        Input::Directed { target } => directed(&mut d, state, *target)?,
         Input::Answered { step } => {
             let asked = matches!(state.on_resume, Some(Resume::Answer { .. } | Resume::Continue));
             if status != WorkflowStatus::Waiting || !asked || current_for(state, step).is_none() {
@@ -966,6 +1010,65 @@ fn reported(d: &mut Decision, current: &Step, outcome: &Outcome) {
             );
         }
     }
+}
+
+/// Whether an agent of the workflow works (or waits, with its assignment
+/// open) on the current step.
+pub fn agent_busy(state: &WorkflowState) -> bool {
+    match state.status {
+        WorkflowStatus::Running => !matches!(state.stage, Some(Stage::Testing | Stage::Delivery)),
+        WorkflowStatus::Waiting | WorkflowStatus::Paused => {
+            matches!(state.on_resume, None | Some(Resume::Continue | Resume::Answer { .. } | Resume::Repair))
+        }
+        _ => false,
+    }
+}
+
+/// `Input::Directed`: a new step for `target`, in a new round of the current
+/// subtask, or the test gate for the current implementation.
+fn directed(d: &mut Decision, state: &WorkflowState, target: Target) -> Result<(), WorkflowError> {
+    let status = state.status;
+    if status.is_final() || status == WorkflowStatus::Pending {
+        return Err(WorkflowError::NotAllowed(status.as_str()));
+    }
+    let Some(current) = state.current.clone() else {
+        return Err(WorkflowError::NotAllowed("not started"));
+    };
+    if agent_busy(state) {
+        return Err(WorkflowError::Busy(format!(
+            "{} is still open; answer or guide its agent, or wait until it reports",
+            current.key()
+        )));
+    }
+    if state.stage == Some(Stage::Testing) && status == WorkflowStatus::Running {
+        return Err(WorkflowError::Busy("Switchyard is running the tests".into()));
+    }
+    if state.stage == Some(Stage::Delivery)
+        && matches!(state.delivery.as_deref(), Some("integrating" | "validating"))
+    {
+        return Err(WorkflowError::Busy("the delivery is validating or integrating".into()));
+    }
+    d.changes.push(Change::Directed(target));
+    d.state.validated_source = None;
+    d.state.delivery = None;
+    let round = current.round + 1;
+    match target {
+        Target::Tests => {
+            if current.binding != Binding::Implement || !state.test_gate {
+                return Err(WorkflowError::Busy(
+                    "there is no finished implementation to test right now; send the work to coding or review".into(),
+                ));
+            }
+            run(d);
+            d.state.stage = Some(Stage::Testing);
+            d.changes.push(Change::Tests("running", "Running the tests again, as you asked.".into()));
+            d.action = Action::RunTests { authorized: false };
+        }
+        Target::Reasoning => begin(d, Step::within(&current, Binding::Investigate, Stage::Triage, round)),
+        Target::Coding => begin(d, Step::within(&current, Binding::Implement, Stage::Implementation, round)),
+        Target::Review => begin(d, Step::within(&current, Binding::Review, Stage::Review, round)),
+    }
+    Ok(())
 }
 
 /// The test gate's result for `current` (an implementation step, ADR 0039).
@@ -1559,6 +1662,49 @@ mod tests {
         let held = report(&paused, Outcome::Done);
         assert_eq!((held.state.status, &held.action), (WorkflowStatus::Paused, &Action::None));
         assert_eq!(key(&apply(&held.state, Input::Resume)), "implement#1");
+    }
+
+    #[test]
+    fn directed_work_starts_a_new_round_only_while_no_agent_works() {
+        let d = apply(&WorkflowState::default(), Input::Start);
+        let directed = |s: &WorkflowState, target| decide(s, &Input::Directed { target });
+        // investigate#1 is working: nothing is redirected underneath it.
+        assert!(matches!(directed(&d.state, Target::Coding), Err(WorkflowError::Busy(_))));
+        // Waiting for an answer: still the agent's turn.
+        let q = apply(&d.state, Input::Question { step: "investigate#1".into(), summary: "x?".into() });
+        assert!(matches!(directed(&q.state, Target::Review), Err(WorkflowError::Busy(_))));
+        let imp = report(&d, Outcome::Done);
+        let tests = apply(&imp.state, Input::Reported { step: "implement#1".into(), outcome: Outcome::Done });
+        assert_eq!(tests.action, Action::RunTests { authorized: false });
+        assert!(
+            matches!(directed(&tests.state, Target::Review), Err(WorkflowError::Busy(_))),
+            "tests are running"
+        );
+        // A review that ended without a verdict waits for a retry: the operator may send it elsewhere.
+        let rev = apply(
+            &tests.state,
+            Input::Tested { step: "implement#1".into(), result: Tested::Passed("ok".into()) },
+        );
+        let stuck = report(&rev, Outcome::Done);
+        assert_eq!(stuck.state.status, WorkflowStatus::Waiting);
+        let to_reasoning = directed(&stuck.state, Target::Reasoning).unwrap();
+        assert_eq!(key(&to_reasoning), "investigate#2");
+        assert!(is_triage_step("investigate#2"));
+        assert!(to_reasoning.changes.contains(&Change::Directed(Target::Reasoning)));
+        assert_eq!(key(&directed(&stuck.state, Target::Coding).unwrap()), "implement#2");
+        assert_eq!(key(&directed(&stuck.state, Target::Review).unwrap()), "review#2");
+        // The tests run only for a finished implementation.
+        assert!(directed(&stuck.state, Target::Tests).is_err());
+        let mut after_impl = tests.state.clone();
+        after_impl.status = WorkflowStatus::Waiting;
+        after_impl.on_resume = Some(Resume::RunTests { authorized: true });
+        assert_eq!(
+            directed(&after_impl, Target::Tests).unwrap().action,
+            Action::RunTests { authorized: false }
+        );
+        // Ended workflows are not redirected.
+        let c = apply(&stuck.state, Input::Cancel { reason: "x".into() });
+        assert!(directed(&c.state, Target::Coding).is_err());
     }
 
     #[test]

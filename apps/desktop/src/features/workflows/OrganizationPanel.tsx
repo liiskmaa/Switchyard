@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 
 import { Badge, Button, ErrorNotice, Panel } from "../../components/ui";
 import { providerName } from "../../lib/agents";
@@ -13,7 +13,10 @@ import type {
   OrgTaskState,
   TaskDetail,
 } from "../../types/protocol";
-import { cancelWorkflow, getOrganization, isOrganizationEvent, pauseWorkflow, resumeWorkflow } from "./api";
+import { cancelWorkflow, getOrganization, isOrganizationEvent, organizationEvents, pauseWorkflow, resumeWorkflow } from "./api";
+import { TeamFlow } from "./TeamFlow";
+import { type Team, YOU, buildTeam } from "./team";
+import { type BoardItem, type BoardLane, WorkBoard, openTask, providerModel } from "./WorkBoard";
 
 type Tone = "ok" | "warn" | "error" | "accent" | "neutral";
 
@@ -129,6 +132,64 @@ function AgentNode({ o, agent, depth }: { o: OrganizationInfo; agent: OrgAgentIn
   );
 }
 
+const OPEN_FIRST: OrgTaskState[] = ["working", "reported", "delegated", "planning", "ready", "waiting", "accepted", "cancelled"];
+
+/** One lane per member: the work it owns, the current item first (ADR 0035 records only). */
+function orgLanes(o: OrganizationInfo, team: Team, projectId: string): BoardLane[] {
+  const state = new Map(team.nodes.map((n) => [n.key, n.state]));
+  return team.nodes
+    .filter((n) => n.key !== YOU)
+    .map((n): BoardLane => {
+      const a = o.agents.find((x) => x.key === n.key);
+      const items = o.tasks
+        .filter((t) => t.owner === n.key)
+        .sort((x, y) => OPEN_FIRST.indexOf(x.state) - OPEN_FIRST.indexOf(y.state))
+        .map((t): BoardItem => {
+          const [label, tone] = TASK_STATE[t.state];
+          const current = o.activity.task === t.key && o.activity.kind !== "idle";
+          const details: [string, ReactNode][] = [];
+          if (t.description) details.push(["What", <span className="board-text">{t.description}</span>]);
+          if (t.acceptance.length) {
+            details.push([
+              "Done when",
+              <ul className="board-sublist">
+                {t.acceptance.map((c) => (
+                  <li key={c}>{c}</li>
+                ))}
+              </ul>,
+            ]);
+          }
+          if (t.scope.length) details.push(["Files", t.scope.join(", ")]);
+          if (t.depends_on.length) details.push(["After", t.depends_on.map((k) => taskTitle(o, k)).join(", ")]);
+          if (t.summary) details.push(["Latest report", <span className="board-text">{t.summary}</span>]);
+          if (t.corrections) details.push(["Corrections", String(t.corrections)]);
+          details.push(["Delegated by", t.created_by === "core" ? "Switchyard" : title(o, t.created_by)]);
+          return {
+            id: t.key,
+            title: t.title,
+            status: current && o.activity.kind === "supervising" ? "Being checked" : label,
+            tone,
+            current,
+            done: t.state === "accepted" || t.state === "cancelled",
+            meta: `${WORK_LABEL[t.work]}${t.corrections ? ` · ${t.corrections} correction${t.corrections > 1 ? "s" : ""}` : ""}`,
+            details,
+            links:
+              t.task_id && t.key !== "objective"
+                ? [{ label: "Open its task", open: openTask(projectId, t.task_id) }]
+                : [],
+          };
+        });
+      return {
+        key: n.key,
+        title: n.title,
+        subtitle: `${a ? providerModel(a.provider, a.model) : ""}${a?.kind === "supervisor" ? " · supervisor" : ""}`,
+        state: state.get(n.key) ?? "idle",
+        time: team.times[n.key],
+        items,
+      };
+    });
+}
+
 function TaskNode({ o, task, projectId }: { o: OrganizationInfo; task: OrgTaskInfo; projectId: string }) {
   const kids = o.tasks.filter((t) => t.parent === task.key);
   const [label, tone] = TASK_STATE[task.state];
@@ -200,6 +261,10 @@ export function OrganizationPanel({ detail, onChanged }: { detail: TaskDetail; o
     refreshOn: isOrganizationEvent,
     intervalMs: 5_000,
   });
+  // The hand-offs in the team picture come from the organization's journal.
+  const events = useCoreQuery(`organization-events:${taskId}`, () => organizationEvents(taskId), {
+    refreshOn: isOrganizationEvent,
+  });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<CoreRequestError | null>(null);
   const o = org.data;
@@ -251,10 +316,18 @@ export function OrganizationPanel({ detail, onChanged }: { detail: TaskDetail; o
         ) : null
       }
     >
-      <p className="org-now">{detail.workflow?.status === "delivered" ? "Delivered: the approved work is merged." : nowText(o)}</p>
+      <TeamFlow
+        org={o}
+        events={events.data ?? []}
+        now={detail.workflow?.status === "delivered" ? "Delivered: the approved work is merged." : nowText(o)}
+      />
       {o.final_summary ? <p className="small">{o.final_summary}</p> : null}
       {error ? <ErrorNotice title="Not done" message={error.message} code={error.code} /> : null}
 
+      <WorkBoard lanes={orgLanes(o, buildTeam(o, events.data ?? [], Date.now()), detail.task.project_id)} />
+
+      <details className="small workflow-tech">
+        <summary>Reporting lines and the whole plan</summary>
       <div className="org-columns">
         <section aria-labelledby="org-people">
           <h3 id="org-people" className="policy-section">
@@ -283,6 +356,7 @@ export function OrganizationPanel({ detail, onChanged }: { detail: TaskDetail; o
           {o.tasks.length <= 1 ? <p className="muted small">The lead supervisor has not planned the work yet.</p> : null}
         </section>
       </div>
+      </details>
 
       <h3 className="policy-section">Decisions and supervision</h3>
       <ContextList entries={decisions} empty="No decisions yet." />

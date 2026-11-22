@@ -142,6 +142,34 @@ impl WorkspaceService {
         self.inner.git.changed_paths(Path::new(&w.path), base, &tree).await
     }
 
+    /// Everything in the worktree now against its base commit, for a reader:
+    /// a one-line stat and the patch cut at `max_bytes`. `None` when nothing
+    /// changed (or the workspace has no base).
+    pub(crate) async fn changes_text(
+        &self,
+        w: &WorkspaceRecord,
+        max_bytes: usize,
+    ) -> Result<Option<String>, switchyard_git::GitError> {
+        let Some(base) = w.base_commit.clone() else { return Ok(None) };
+        let tree = self.content_tree(w).await?;
+        let repo = Path::new(&w.path);
+        let git = &self.inner.git;
+        let stat = git.diff_summary(repo, &base, &tree, 0).await?;
+        if stat.total_files == 0 {
+            return Ok(None);
+        }
+        let (patch, cut) = git.diff_patch(repo, &base, &tree, None, max_bytes).await?;
+        Ok(Some(format!(
+            "{} files changed, +{} -{} against {}.\n```diff\n{}{}\n```",
+            stat.total_files,
+            stat.additions,
+            stat.deletions,
+            &base[..base.len().min(12)],
+            patch.trim_end(),
+            if cut { "\n… (cut)" } else { "" }
+        )))
+    }
+
     /// Marks a settled, session-free workspace `integrating` while Core runs
     /// an integration step in it. Fails if a session is attached. Returns the
     /// workspace and the status it had before.

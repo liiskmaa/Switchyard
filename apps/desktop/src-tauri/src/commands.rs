@@ -18,8 +18,8 @@ use switchyard_protocol::methods::{
     WorkspacesRestore, WorkspacesVerify,
 };
 use switchyard_protocol::methods::{
-    AgentsModels, WorkflowsCancel, WorkflowsGet, WorkflowsPause, WorkflowsRequestCorrection, WorkflowsResume,
-    WorkflowsSetSettings, WorkflowsSettings, WorkflowsStart,
+    AgentsModels, SupervisorAsk, SupervisorGet, WorkflowsCancel, WorkflowsGet, WorkflowsPause,
+    WorkflowsRequestCorrection, WorkflowsResume, WorkflowsSetSettings, WorkflowsSettings, WorkflowsStart,
 };
 use switchyard_protocol::methods::{
     IntegrationsAbortResolution, IntegrationsApprove, IntegrationsCancel, IntegrationsCancelValidation,
@@ -121,6 +121,8 @@ const ALLOWED_METHODS: &[&str] = &[
     WorkflowsGet::NAME,
     WorkflowsPause::NAME,
     WorkflowsResume::NAME,
+    SupervisorAsk::NAME,
+    SupervisorGet::NAME,
     WorkflowsCancel::NAME,
     WorkflowsRequestCorrection::NAME,
     OrganizationsGet::NAME,

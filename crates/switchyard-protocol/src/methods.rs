@@ -770,6 +770,29 @@ pub struct TasksNoteResult {
 
 method!(TasksNote, "tasks.note", TasksNoteParams, TasksNoteResult);
 
+/// The operator's question or request to the task's supervisor (ADR 0041).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupervisorAskParams {
+    pub task_id: Uuid,
+    pub text: String,
+}
+
+/// The task's conversation with its supervisor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SupervisorInfo {
+    pub task_id: Uuid,
+    /// The supervisor is answering the operator's last message.
+    pub thinking: bool,
+    /// Oldest first.
+    pub messages: Vec<crate::model::SupervisorMessage>,
+    /// The supervisor's own read-only workspace, once it has one.
+    #[serde(default)]
+    pub workspace_id: Option<Uuid>,
+}
+
+method!(SupervisorAsk, "supervisor.ask", SupervisorAskParams, SupervisorInfo);
+method!(SupervisorGet, "supervisor.get", TaskIdParams, SupervisorInfo);
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskDecisionParams {
     pub task_id: Uuid,
