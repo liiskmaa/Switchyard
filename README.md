@@ -122,7 +122,7 @@ Project (your repo) ──► Workspaces (Core-owned worktrees, one branch each)
 - macOS 11 or later. The Core crates also build on Linux; the desktop app targets macOS.
 - [Rust](https://rustup.rs) 1.99.1. It's pinned in `rust-toolchain.toml` and rustup installs it
   automatically.
-- Node `^20.19` or `≥ 22.12`, and npm `≥ 11` (`npm i -g npm@11`).
+- Node `^22.12` or `≥ 24` (the repo has an `.nvmrc`: `nvm use`), and npm `≥ 11` (`npm i -g npm@11`).
 - Git and the Xcode Command Line Tools.
 - For agent sessions, either or both of:
   - the [Claude Code](https://docs.anthropic.com/en/docs/claude-code) CLI, logged in

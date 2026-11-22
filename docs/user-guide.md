@@ -86,7 +86,7 @@ Switchyard does not call any AI service itself and stores no passwords. It drive
 
 - A Mac (macOS 11 or later).
 - Git and the Xcode Command Line Tools (`xcode-select --install`).
-- Node `^20.19` or `≥ 22.12`, and npm 11 or newer (`npm i -g npm@11`).
+- Node 22.12 or newer (22 LTS or 24; with nvm, run `nvm use` in the repo), and npm 11 or newer (`npm i -g npm@11`).
 - Rust (install from [rustup.rs](https://rustup.rs); the exact version installs itself).
 - At least one AI program, installed and logged in:
   - Claude Code: `claude auth login`
