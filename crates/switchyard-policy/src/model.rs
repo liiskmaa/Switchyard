@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 /// Version of the compiled-in system restrictions and built-in defaults.
 /// Recorded with every evaluation; bump whenever either changes.
-pub const SYSTEM_POLICY_VERSION: u32 = 2;
+pub const SYSTEM_POLICY_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("unknown {kind} value {value:?}")]
@@ -237,6 +237,12 @@ pub struct RequestScope {
     /// recorded before milestone 6.
     #[serde(default)]
     pub review_session: bool,
+    /// The project's auto mode (ADR 0037), read by Core in the transaction
+    /// that evaluates: file changes and shell commands inside the workspace
+    /// are allowed when no configured rule decides. Absent in evaluations
+    /// recorded before it existed.
+    #[serde(default)]
+    pub auto_mode: bool,
 }
 
 /// Everything the evaluator looks at for one request.

@@ -205,7 +205,7 @@ export type OperationCategory =
   | "unknown";
 
 export type PolicyDecision = "allow" | "ask" | "deny";
-export type PolicyReason = "system_restriction" | "rule" | "default" | "capped";
+export type PolicyReason = "system_restriction" | "rule" | "default" | "capped" | "auto_mode";
 export type RuleScope = "project" | "workspace";
 
 export interface PolicyConditions {
@@ -280,6 +280,16 @@ export interface PolicyCategoryInfo {
   allow_supported: boolean;
   path_condition: boolean;
   command_condition: boolean;
+}
+
+/** A project's policy settings (ADR 0037). */
+export interface PolicySettings {
+  project_id: Uuid;
+  auto_mode: boolean;
+  /** 0 until first changed. */
+  revision: number;
+  updated_at_ms?: number;
+  updated_by?: string;
 }
 
 export interface EffectivePolicy {
@@ -521,6 +531,11 @@ export interface CoreMethods extends TaskMethods, IntegrationMethods {
   };
   "policies.archive": { params: { rule_id: Uuid; expected_revision: number }; result: PolicyRuleResult };
   "policies.effective": { params: { project_id: Uuid; workspace_id?: Uuid }; result: EffectivePolicy };
+  "policies.settings": { params: { project_id: Uuid }; result: PolicySettings };
+  "policies.set_auto_mode": {
+    params: { project_id: Uuid; enabled: boolean; expected_revision: number };
+    result: { settings: PolicySettings; policy_revision: number };
+  };
   "policies.evaluations": {
     params: {
       project_id?: Uuid;

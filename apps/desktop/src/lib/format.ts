@@ -134,6 +134,10 @@ export function describeEvent(event: EventEnvelope): string {
     }
     case "policy.rule_changed":
       return `Policy rule ${str(p, "change") ?? "changed"}: “${str(p, "description") ?? ""}” (${str(p, "decision") ?? "?"} ${str(p, "category") ?? "?"}, revision ${String(p["revision"] ?? "?")})`;
+    case "policy.settings_changed":
+      return p["auto_mode"] === true
+        ? "Auto mode turned on: file changes and commands inside workspaces run without asking"
+        : "Auto mode turned off: file changes and commands ask again";
     case "agent.interrupted":
       return "Interrupt acknowledged";
     case "agent.session_resumed":

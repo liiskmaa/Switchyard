@@ -4,8 +4,12 @@
 //!   rule, appends its revision and journals `policy.rule_changed` in one
 //!   transaction.
 //! * [`evaluate_in_tx`] is the single place requests are evaluated: it loads
-//!   the applicable rules and the current revision, runs the pure evaluator
-//!   and records the result, all inside the caller's transaction.
+//!   the applicable rules, the project's auto mode (ADR 0037) and the current
+//!   revision, runs the pure evaluator and records the result, all inside the
+//!   caller's transaction.
+//! * Auto mode changes go through [`PolicyService::set_auto_mode`]: setting,
+//!   history row (next global revision) and `policy.settings_changed` in one
+//!   transaction.
 //! * [`paths`] computes path facts before evaluation (the only I/O).
 //!
 //! Policies authorize what Switchyard answers; they do not sandbox what an
@@ -21,8 +25,8 @@ use switchyard_policy::{
 };
 use switchyard_protocol::methods::{PoliciesCreateParams, PoliciesEvaluationsParams, PoliciesUpdateParams};
 use switchyard_protocol::model::{
-    EffectivePolicy, PolicyCategoryInfo, PolicyEvaluation, PolicyRule, PolicyRuleRevision, WorkspaceKind,
-    WorkspaceStatus,
+    EffectivePolicy, PolicyCategoryInfo, PolicyEvaluation, PolicyRule, PolicyRuleRevision, PolicySettings,
+    WorkspaceKind, WorkspaceStatus,
 };
 use switchyard_protocol::{ErrorCode, ProtocolError};
 use switchyard_storage::policies::{self as repo, EvaluationFilter, EvaluationRecord, RuleRecord};
@@ -135,6 +139,11 @@ pub(crate) fn evaluate_in_tx(
 ) -> Result<Recorded, StorageError> {
     let rules = repo::applicable_rules(tx, input.scope.project_id, input.scope.workspace_id)?;
     let revision = repo::current_revision(tx)?;
+    // Auto mode comes from Core's records in this transaction, never from the
+    // caller, and is recorded with the input.
+    let mut input = input.clone();
+    input.scope.auto_mode = repo::auto_mode(tx, input.scope.project_id)?;
+    let input = &input;
     let evaluation = evaluate(input, &rules, revision);
     // Only `ask` creates an approval; other triggers settle an existing one.
     let linked =
@@ -421,9 +430,76 @@ fn conflict_error(existing: &RuleRecord) -> ProtocolError {
     .with_data(json!({ "rule_id": existing.id, "revision": existing.revision }))
 }
 
+fn settings_to_wire(s: repo::ProjectPolicySettings) -> PolicySettings {
+    PolicySettings {
+        project_id: s.project_id,
+        auto_mode: s.auto_mode,
+        revision: s.revision,
+        updated_at_ms: s.updated_at_ms,
+        updated_by: s.updated_by,
+    }
+}
+
 impl PolicyService {
     pub fn new(storage: Storage, bus: EventBus) -> Self {
         Self { storage, bus }
+    }
+
+    pub async fn settings(&self, project_id: Uuid) -> Result<PolicySettings, ProtocolError> {
+        self.storage
+            .call(move |c| {
+                let tx = c.transaction()?;
+                if let Err(e) = check_scope(&tx, project_id, None)? {
+                    return Ok(Err(e));
+                }
+                Ok(Ok(settings_to_wire(repo::project_settings(&tx, project_id)?)))
+            })
+            .await
+            .map_err(errors::storage)?
+    }
+
+    /// Turns auto mode on or off (ADR 0037). Pending approvals keep waiting
+    /// for the person they were asked of.
+    pub async fn set_auto_mode(
+        &self,
+        project_id: Uuid,
+        enabled: bool,
+        expected_revision: u32,
+        changed_by: String,
+    ) -> Result<(PolicySettings, i64), ProtocolError> {
+        let now = now_ms();
+        journal::commit_checked(&self.storage, &self.bus, move |tx| {
+            if let Err(e) = check_scope(tx, project_id, None)? {
+                return Ok(Err(e));
+            }
+            let current = repo::project_settings(tx, project_id)?;
+            if current.revision != expected_revision {
+                return Ok(Err(ProtocolError::new(
+                    ErrorCode::StaleRevision,
+                    format!(
+                        "the policy settings changed since they were read (now revision {}, expected {expected_revision}); reload and try again",
+                        current.revision
+                    ),
+                )
+                .with_data(json!({ "project_id": project_id, "current_revision": current.revision }))));
+            }
+            if current.auto_mode == enabled {
+                return Ok(Err(ProtocolError::new(
+                    ErrorCode::InvalidParams,
+                    format!("auto mode is already {}", if enabled { "on" } else { "off" }),
+                )));
+            }
+            let (settings, policy_revision) =
+                repo::set_auto_mode(tx, project_id, enabled, expected_revision, Some(&changed_by), now)?;
+            let event = DomainEvent::PolicySettingsChanged {
+                auto_mode: settings.auto_mode,
+                revision: settings.revision,
+                policy_revision,
+            };
+            let ctx = EventContext { project_id: Some(project_id), ..Default::default() };
+            Ok(Ok(((settings_to_wire(settings), policy_revision), vec![draft(event, &ctx)?])))
+        })
+        .await
     }
 
     pub async fn create(

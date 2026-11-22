@@ -47,6 +47,9 @@ every action that matters. The desktop app is a client: closing it never stops y
   - **Per project or workspace,** you can allow a path ("edits under `docs/`") or one exact command
     (`cargo test`), make reads ask, or block things. When rules disagree, the most restrictive one
     wins.
+  - **Auto mode** (per project, off by default): file changes and any shell command inside the
+    workspace run without asking; outside paths, `.git`, background commands, review sessions and
+    your Ask/Block rules still apply ([ADR 0037](docs/decisions/0037-policy-auto-mode.md)).
   - Requests expire as **denials**, never approvals. Approving one request never creates a rule.
   - Every decision is recorded with the rule revision and the reason.
 - **Workspace isolation:**

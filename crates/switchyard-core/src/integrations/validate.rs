@@ -74,6 +74,7 @@ fn evaluate_command(
             workspace_id: Some(workspace_id),
             workspace_project_id: Some(project_id),
             review_session: false,
+            auto_mode: policies::auto_mode(c, project_id)?,
         },
     };
     let rules = policies::applicable_rules(c, project_id, Some(workspace_id))?;

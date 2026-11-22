@@ -712,3 +712,6 @@ details.advanced > summary { cursor: pointer; color: var(--muted); font-size: 13
 .org-limits { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px 14px; }
 .org-estimates { display: grid; grid-template-columns: 140px repeat(2, minmax(0, 200px)); gap: 6px 12px; align-items: center; }
 .org-estimate-row { display: contents; }
+
+/* Auto mode (ADR 0037): the panel carries a warning edge while it is on. */
+.panel.auto-mode-on { border-color: rgb(215 164 60 / 0.45); }

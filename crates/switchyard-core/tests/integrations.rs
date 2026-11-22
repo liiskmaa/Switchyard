@@ -865,6 +865,47 @@ async fn a_reviewed_task_is_delivered_only_on_the_operators_approval() {
 }
 
 /// Cross-project and invalid requests are refused.
+/// With the project's auto mode on (ADR 0037), a validation command that
+/// would ask runs without authorization; a block rule still refuses one.
+#[tokio::test]
+async fn auto_mode_runs_validation_commands_without_authorization() {
+    let f = fixture().await;
+    no_review(&f).await;
+    std::fs::write(f.ws.join("a.txt"), "a\n").unwrap();
+    let i = create(&f, None).await;
+    let i = commit_ws(&f, i.id, "a").await.unwrap();
+    f.c.call::<PoliciesSetAutoMode>(PoliciesSetAutoModeParams {
+        project_id: f.project_id,
+        enabled: true,
+        expected_revision: 0,
+    })
+    .await
+    .unwrap();
+    // Quoted arguments always ask without auto mode (M4 grammar).
+    let quoted = add_command(&f, "quoted", &["/bin/sh", "-c", "echo ok"], 10).await;
+    f.c.call::<IntegrationsValidate>(IntegrationsValidateParams { integration_id: i.id, authorize: vec![] })
+        .await
+        .unwrap();
+    let d = wait_run(&f, i.id).await;
+    let step = &d.runs[0].steps[0];
+    assert_eq!((step.status, step.policy_decision.as_str()), (StepStatus::Passed, "allow"));
+    assert_eq!(step.authorized_by.as_deref(), Some("policy"));
+    assert!(step.policy_explanation.contains("Auto mode"), "{}", step.policy_explanation);
+
+    // A block rule still wins.
+    f.c.call::<IntegrationsDeleteCommand>(IntegrationsDeleteCommandParams { command_id: quoted })
+        .await
+        .unwrap();
+    add_command(&f, "reset", &["git", "reset", "--hard"], 10).await;
+    shell_rule(&f, "git reset --hard", PolicyDecision::Deny).await;
+    let r = f
+        .c
+        .call::<IntegrationsValidate>(IntegrationsValidateParams { integration_id: i.id, authorize: vec![] })
+        .await
+        .unwrap();
+    assert_eq!(r.run.steps[0].status, StepStatus::Refused);
+}
+
 #[tokio::test]
 async fn cross_project_and_invalid_requests_are_refused() {
     let f = fixture().await;

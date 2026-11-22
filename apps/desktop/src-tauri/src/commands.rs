@@ -10,11 +10,12 @@ use switchyard_client::ClientError;
 use switchyard_protocol::Method;
 use switchyard_protocol::methods::{
     AgentsList, ApprovalsDecide, ApprovalsList, EventsList, PoliciesArchive, PoliciesCreate,
-    PoliciesEffective, PoliciesEvaluations, PoliciesGet, PoliciesList, PoliciesSetEnabled, PoliciesUpdate,
-    ProjectsAdd, ProjectsGet, ProjectsGitStatus, ProjectsList, ProjectsRemove, SessionsGet,
-    SessionsInterrupt, SessionsList, SessionsResume, SessionsSend, SessionsStart, SessionsStop, SystemHealth,
-    WorkspacesArchive, WorkspacesCleanup, WorkspacesCleanupCheck, WorkspacesComplete, WorkspacesCreate,
-    WorkspacesGet, WorkspacesGitStatus, WorkspacesList, WorkspacesRestore, WorkspacesVerify,
+    PoliciesEffective, PoliciesEvaluations, PoliciesGet, PoliciesList, PoliciesSetAutoMode,
+    PoliciesSetEnabled, PoliciesSettings, PoliciesUpdate, ProjectsAdd, ProjectsGet, ProjectsGitStatus,
+    ProjectsList, ProjectsRemove, SessionsGet, SessionsInterrupt, SessionsList, SessionsResume, SessionsSend,
+    SessionsStart, SessionsStop, SystemHealth, WorkspacesArchive, WorkspacesCleanup, WorkspacesCleanupCheck,
+    WorkspacesComplete, WorkspacesCreate, WorkspacesGet, WorkspacesGitStatus, WorkspacesList,
+    WorkspacesRestore, WorkspacesVerify,
 };
 use switchyard_protocol::methods::{
     AgentsModels, WorkflowsCancel, WorkflowsGet, WorkflowsPause, WorkflowsRequestCorrection, WorkflowsResume,
@@ -77,6 +78,8 @@ const ALLOWED_METHODS: &[&str] = &[
     PoliciesArchive::NAME,
     PoliciesEffective::NAME,
     PoliciesEvaluations::NAME,
+    PoliciesSettings::NAME,
+    PoliciesSetAutoMode::NAME,
     TasksList::NAME,
     TasksGet::NAME,
     TasksCreate::NAME,

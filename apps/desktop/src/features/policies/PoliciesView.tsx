@@ -5,6 +5,7 @@ import { useCoreQuery } from "../../stores/useCoreQuery";
 import { listProjects } from "../projects/api";
 import { listWorkspaces } from "../workspaces/api";
 import { effectivePolicy, isEvaluationEvent, isPolicyEvent, listEvaluations, listRules } from "./api";
+import { AutoModePanel } from "./AutoMode";
 import { EvaluationList } from "./EvaluationList";
 import { CATEGORY_LABEL, DECISION_LABEL, DECISION_TONE } from "./labels";
 import { RuleForm } from "./RuleForm";
@@ -110,6 +111,7 @@ export function PoliciesView() {
 
       {eff ? (
         <>
+          <AutoModePanel projectId={projectId} />
           <Panel
             title={selectedWs ? `Rules for workspace “${selectedWs.name}”` : "Rules"}
             actions={

@@ -10,6 +10,7 @@ import { GitStatusPanel } from "./GitStatusPanel";
 import { WorkspacesPanel } from "../workspaces/WorkspacesPanel";
 import { OrgSettingsPanel } from "../workflows/OrgSettingsPanel";
 import { WorkflowRolesPanel } from "../workflows/WorkflowRolesPanel";
+import { AutoModePanel } from "../policies/AutoMode";
 import { isProjectEvent, listProjects, removeProject } from "./api";
 
 export function ProjectsView() {
@@ -118,6 +119,7 @@ function ProjectDetail({ project, onRemoved }: { project: Project; onRemoved: ()
           </span>
         </div>
       </header>
+      <AutoModePanel projectId={project.id} />
       <WorkflowRolesPanel project={project} />
       <OrgSettingsPanel project={project} />
       <WorkspacesPanel project={project} />

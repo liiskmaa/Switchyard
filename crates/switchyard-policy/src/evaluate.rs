@@ -18,9 +18,12 @@ pub enum ReasonCode {
     Rule,
     /// No configured rule matched; the built-in default decided.
     Default,
-    /// An `allow` (from a rule or default) was capped at `ask` by a system
-    /// restriction.
+    /// An `allow` (from a rule, a default or auto mode) was capped at `ask`
+    /// by a system restriction.
     Capped,
+    /// No configured rule matched and the project's auto mode allowed it
+    /// (ADR 0037).
+    AutoMode,
 }
 
 impl ReasonCode {
@@ -30,6 +33,7 @@ impl ReasonCode {
             Self::Rule => "rule",
             Self::Default => "default",
             Self::Capped => "capped",
+            Self::AutoMode => "auto_mode",
         }
     }
 }
@@ -175,7 +179,7 @@ fn is_git_metadata(fact: &PathFact) -> bool {
 }
 
 /// Restrictions that cap an `allow` at `ask`.
-fn caps(input: &EvaluationInput, deciding: Option<&Rule>) -> Vec<Restriction> {
+fn caps(input: &EvaluationInput, deciding: Option<&Rule>, auto: bool) -> Vec<Restriction> {
     let op = &input.operation;
     let mut out = Vec::new();
     if op.category.is_path_category() {
@@ -217,6 +221,8 @@ fn caps(input: &EvaluationInput, deciding: Option<&Rule>) -> Vec<Restriction> {
         let exact = deciding.and_then(|r| r.conditions.command.as_deref());
         let ok = match (exact, op.command.as_deref()) {
             (Some(rule), Some(requested)) => rule == requested && validate_command(requested).is_ok(),
+            // Auto mode allows any foreground command (ADR 0037).
+            (None, Some(_)) => auto,
             _ => false,
         };
         if !ok {
@@ -227,6 +233,16 @@ fn caps(input: &EvaluationInput, deciding: Option<&Rule>) -> Vec<Restriction> {
         }
     }
     out
+}
+
+/// Auto mode (ADR 0037) replaces the `ask` default of file changes and shell
+/// commands with `allow`. It never applies to review sessions, never
+/// overrides a configured rule, and its `allow` is still capped.
+fn auto_mode_applies(input: &EvaluationInput) -> bool {
+    let category = input.operation.category;
+    input.scope.auto_mode
+        && !input.scope.review_session
+        && (category.is_mutation() || category == OperationCategory::Shell)
 }
 
 /// Evaluates one request against the configured rules.
@@ -321,6 +337,14 @@ pub fn evaluate(input: &EvaluationInput, rules: &[Rule], policy_revision: i64) -
                 format!("{scope_text} \u{201c}{}\u{201d} {verb} this.", rule.description.trim()),
             )
         }
+        None if auto_mode_applies(input) => (
+            Decision::Allow,
+            ReasonCode::AutoMode,
+            format!(
+                "Auto mode is on for this project: {} inside the workspace is allowed.",
+                op.category.phrase()
+            ),
+        ),
         None => {
             let d = op.category.default_decision();
             let text = match d {
@@ -336,7 +360,7 @@ pub fn evaluate(input: &EvaluationInput, rules: &[Rule], policy_revision: i64) -
 
     // 5. Caps: an allow becomes ask.
     if decision == Decision::Allow {
-        let capped = caps(input, deciding);
+        let capped = caps(input, deciding, reason == ReasonCode::AutoMode);
         if !capped.is_empty() {
             let why = capped.iter().map(|c| c.message.as_str()).collect::<Vec<_>>().join("; ");
             explanation = format!("{explanation} Approval is still required: {why}.");
@@ -373,9 +397,13 @@ pub fn system_restrictions() -> Vec<Restriction> {
         restriction("git_metadata", "Changes to Git metadata (.git) are never allowed automatically."),
         restriction(
             "shell_not_exact",
-            "Shell commands are allowed automatically only by an exact, plain command rule; background commands always ask.",
+            "Shell commands are allowed automatically only by an exact, plain command rule, or by the project's auto mode; background commands always ask.",
         ),
         restriction("unexpected_fields", "Requests with input fields Switchyard does not know always ask."),
+        restriction(
+            "auto_mode",
+            "Auto mode allows file changes and shell commands inside the workspace; configured rules, the restrictions above and review sessions still apply.",
+        ),
         restriction(
             "review_session",
             "Review sessions cannot change files, and their shell commands always ask.",

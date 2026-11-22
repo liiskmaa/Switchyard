@@ -54,12 +54,17 @@ Design: [ADR 0016](../decisions/0016-approval-policy-model.md) (model and preced
    | Network, external (MCP) tools | Block (not enabled for Claude Code) |
    | Unrecognized | Block (system) |
 
+   **Auto mode** (per project, off by default, [ADR 0037](../decisions/0037-policy-auto-mode.md)):
+   with no matching rule, file changes and shell commands get `allow` (reason `auto_mode`)
+   instead of the `ask` default. It never applies to review sessions and never overrides a rule.
+
 4. **Caps: an `allow` becomes `ask`** when:
    - a target is outside the workspace or unresolvable;
    - a write, edit or delete targets `.git`;
    - the input has unknown fields;
    - a shell command would run in the background;
-   - a shell command is not an exact match of a validated command rule.
+   - a shell command is not an exact match of a validated command rule (lifted when the `allow`
+     came from auto mode).
 
 ## Rules
 
@@ -84,6 +89,19 @@ Design: [ADR 0016](../decisions/0016-approval-policy-model.md) (model and preced
     global policy revision, and appends a full snapshot to `policy_rule_revisions`.
   - Updates must name `expected_revision`, otherwise they fail with `stale_revision`.
   - Scope and category never change; create a new rule instead.
+
+## Auto mode
+
+- Switched per project with `policies.set_auto_mode` (Projects or Policies in the app). The change
+  is versioned, journaled as `policy.settings_changed`, and takes the next global policy revision.
+- Core reads it inside the evaluating transaction and records it in the input (`scope.auto_mode`).
+  Validation commands (M7) follow it too: an `ask` command runs without authorization.
+- Still asking: paths outside the workspace or unresolvable, `.git` writes, background commands,
+  unknown input fields, review sessions, and any configured Ask rule. Still blocked: Block rules,
+  network and external tools, everything the system denies.
+- Turning it on does not answer pending approvals.
+- **An auto-allowed shell command can do anything your user can**, anywhere on the machine. Use
+  Block rules for commands you never want run.
 
 ## People and policies
 

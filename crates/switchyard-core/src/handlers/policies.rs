@@ -6,9 +6,10 @@ use switchyard_protocol::ProtocolError;
 use switchyard_protocol::methods::{
     PoliciesArchiveParams, PoliciesCreateParams, PoliciesEffectiveParams, PoliciesEvaluationsParams,
     PoliciesEvaluationsResult, PoliciesGetResult, PoliciesListParams, PoliciesListResult,
-    PoliciesSetEnabledParams, PoliciesUpdateParams, PolicyRuleIdParams, PolicyRuleResult,
+    PoliciesSetAutoModeParams, PoliciesSetEnabledParams, PoliciesSettingsParams, PoliciesUpdateParams,
+    PolicyRuleIdParams, PolicyRuleResult, PolicySettingsResult,
 };
-use switchyard_protocol::model::{EffectivePolicy, PolicyRule};
+use switchyard_protocol::model::{EffectivePolicy, PolicyRule, PolicySettings};
 
 use super::agents::limit;
 use crate::connection::Connection;
@@ -85,4 +86,25 @@ pub(super) async fn evaluations(
 ) -> Result<PoliciesEvaluationsResult, ProtocolError> {
     let n = limit(p.limit)?;
     Ok(PoliciesEvaluationsResult { evaluations: state.policies.evaluations(p, n).await? })
+}
+
+pub(super) async fn settings(
+    state: &CoreState,
+    p: PoliciesSettingsParams,
+) -> Result<PolicySettings, ProtocolError> {
+    state.policies.settings(p.project_id).await
+}
+
+/// Auto mode never denies anything, so pending approvals are left to the
+/// person they were asked of (ADR 0037).
+pub(super) async fn set_auto_mode(
+    conn: &Connection,
+    p: PoliciesSetAutoModeParams,
+) -> Result<PolicySettingsResult, ProtocolError> {
+    let (settings, policy_revision) = conn
+        .state
+        .policies
+        .set_auto_mode(p.project_id, p.enabled, p.expected_revision, changed_by(conn))
+        .await?;
+    Ok(PolicySettingsResult { settings, policy_revision })
 }

@@ -268,6 +268,21 @@ pub struct PolicyCategoryInfo {
 }
 
 /// Everything that applies to requests in a project or one workspace.
+/// A project's policy settings (ADR 0037).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicySettings {
+    pub project_id: Uuid,
+    /// File changes and shell commands inside the workspace are allowed when
+    /// no configured rule decides; caps, rules and review sessions still apply.
+    pub auto_mode: bool,
+    /// 0 until the settings are first changed.
+    pub revision: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at_ms: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_by: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EffectivePolicy {
     pub project_id: Uuid,

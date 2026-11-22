@@ -54,6 +54,7 @@ impl World {
             workspace_id: Some(self.workspace),
             workspace_project_id: Some(self.project),
             review_session: false,
+            auto_mode: false,
         }
     }
 
@@ -427,4 +428,90 @@ fn evaluations_recorded_before_review_sessions_still_load() {
     v["scope"].as_object_mut().unwrap().remove("review_session");
     let back: EvaluationInput = serde_json::from_value(v).unwrap();
     assert!(!back.scope.review_session);
+}
+
+fn auto(mut i: EvaluationInput) -> EvaluationInput {
+    i.scope.auto_mode = true;
+    i
+}
+
+#[test]
+fn auto_mode_allows_changes_and_commands_inside_the_workspace() {
+    let w = world();
+    for category in [FileWrite, FileEdit, FileDelete] {
+        let e = evaluate(&auto(w.file(category, "src/a.rs")), &[], 4);
+        assert_eq!((e.decision, e.reason), (Allow, ReasonCode::AutoMode), "{category}");
+        assert!(e.explanation.contains("Auto mode"), "{}", e.explanation);
+        assert!(e.restrictions.is_empty());
+    }
+    for command in ["rm -rf build", "npm install && npm test", "cat src/a.rs | grep x"] {
+        let e = evaluate(&auto(w.shell(command)), &[], 0);
+        assert_eq!((e.decision, e.reason), (Allow, ReasonCode::AutoMode), "{command}");
+    }
+    // Reads keep their own default.
+    let read = evaluate(&auto(w.file(FileRead, "a")), &[], 0);
+    assert_eq!((read.decision, read.reason), (Allow, ReasonCode::Default));
+    // Off: unchanged defaults.
+    assert_eq!(evaluate(&w.shell("ls"), &[], 0).decision, Ask);
+    assert_eq!(evaluate(&w.file(FileWrite, "a"), &[], 0).decision, Ask);
+}
+
+#[test]
+fn auto_mode_never_overrides_rules_or_system_restrictions() {
+    let w = world();
+    // Configured block and ask rules win.
+    let block = w.rule(FileDelete, Deny);
+    let e = evaluate(&auto(w.file(FileDelete, "a")), std::slice::from_ref(&block), 0);
+    assert_eq!((e.decision, e.reason), (Deny, ReasonCode::Rule));
+    let ask = with_command(w.rule(Shell, Ask), "git push");
+    assert_eq!(evaluate(&auto(w.shell("git push")), std::slice::from_ref(&ask), 0).decision, Ask);
+    assert_eq!(evaluate(&auto(w.shell("git status")), std::slice::from_ref(&ask), 0).decision, Allow);
+    let ask_docs = with_path(w.rule(FileEdit, Ask), "docs");
+    assert_eq!(
+        evaluate(&auto(w.file(FileEdit, "docs/a.md")), std::slice::from_ref(&ask_docs), 0).decision,
+        Ask
+    );
+    // Caps still apply.
+    let mut outside = auto(w.file(FileWrite, "../x"));
+    outside.paths = vec![PathFact::Outside];
+    let e = evaluate(&outside, &[], 0);
+    assert_eq!((e.decision, e.reason), (Ask, ReasonCode::Capped));
+    assert!(e.restrictions.iter().any(|r| r.code == "path_outside_workspace"));
+    let git = evaluate(&auto(w.file(FileWrite, ".git/config")), &[], 0);
+    assert_eq!(git.decision, Ask);
+    assert!(git.restrictions.iter().any(|r| r.code == "git_metadata"));
+    let mut bg = auto(w.shell("npm run dev"));
+    bg.operation.background = true;
+    let e = evaluate(&bg, &[], 0);
+    assert_eq!(e.decision, Ask);
+    assert!(e.restrictions.iter().any(|r| r.code == "background_command"));
+    assert!(!e.restrictions.iter().any(|r| r.code == "shell_not_exact"));
+    let mut unknown_fields = auto(w.shell("ls"));
+    unknown_fields.operation.unexpected_fields = vec!["sandbox".into()];
+    assert_eq!(evaluate(&unknown_fields, &[], 0).decision, Ask);
+    // Review sessions are unaffected.
+    let mut review = auto(w.file(FileWrite, "a"));
+    review.scope.review_session = true;
+    assert_eq!(evaluate(&review, &[], 0).decision, Deny);
+    let mut review_shell = auto(w.shell("ls"));
+    review_shell.scope.review_session = true;
+    let e = evaluate(&review_shell, &[], 0);
+    assert_eq!((e.decision, e.reason), (Ask, ReasonCode::Default));
+    // Network, external and unknown tools stay blocked.
+    for category in [Network, ExternalTool] {
+        let input =
+            EvaluationInput { operation: op(category, "X", &[], None), paths: vec![], scope: w.scope() };
+        assert_eq!(evaluate(&auto(input), &[], 0).decision, Deny, "{category}");
+    }
+    let unknown = EvaluationInput { operation: op(Unknown, "X", &[], None), paths: vec![], scope: w.scope() };
+    assert_eq!(evaluate(&auto(unknown), &[], 0).reason, ReasonCode::SystemRestriction);
+}
+
+#[test]
+fn evaluations_recorded_before_auto_mode_still_load() {
+    let w = world();
+    let mut v = serde_json::to_value(w.file(FileRead, "a")).unwrap();
+    v["scope"].as_object_mut().unwrap().remove("auto_mode");
+    let back: EvaluationInput = serde_json::from_value(v).unwrap();
+    assert!(!back.scope.auto_mode);
 }

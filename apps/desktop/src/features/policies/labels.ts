@@ -37,6 +37,7 @@ export const REASON_LABEL: Record<PolicyReason, string> = {
   rule: "Configured rule",
   default: "Built-in default",
   capped: "Limited by a safety rule",
+  auto_mode: "Auto mode",
 };
 
 /** Categories whose effect on files is not known (no path condition). */

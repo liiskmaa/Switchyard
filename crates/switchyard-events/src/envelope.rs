@@ -171,6 +171,10 @@ pub enum DomainEvent {
         description: String,
         conditions: serde_json::Value,
     },
+    /// A project's policy settings changed (ADR 0037); context carries the
+    /// project.
+    #[serde(rename = "policy.settings_changed")]
+    PolicySettingsChanged { auto_mode: bool, revision: u32, policy_revision: i64 },
 
     // --- workspaces (context carries project_id and workspace_id) ----------
     /// A workspace record was created; provisioning of its worktree begins.
@@ -545,6 +549,7 @@ impl DomainEvent {
             Self::AgentPermissionResolved { .. } => "agent.permission_resolved",
             Self::AgentPermissionEvaluated { .. } => "agent.permission_evaluated",
             Self::PolicyRuleChanged { .. } => "policy.rule_changed",
+            Self::PolicySettingsChanged { .. } => "policy.settings_changed",
             Self::AgentInterrupted {} => "agent.interrupted",
             Self::AgentSessionResumed { .. } => "agent.session_resumed",
             Self::AgentWarning { .. } => "agent.warning",

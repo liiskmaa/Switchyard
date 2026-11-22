@@ -1,5 +1,6 @@
-//! Policy rules, their append-only revision history, and the append-only
-//! evaluation audit trail (ADRs 0016, 0018).
+//! Policy rules, their append-only revision history, per-project policy
+//! settings (auto mode, ADR 0037), and the append-only evaluation audit trail
+//! (ADRs 0016, 0018).
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
@@ -188,10 +189,103 @@ pub fn applicable_rules(
         .collect())
 }
 
-/// The current global policy revision (0 before the first change).
+/// The current global policy revision (0 before the first change). Rule
+/// changes and settings changes share it.
 pub fn current_revision(conn: &Connection) -> Result<i64, StorageError> {
-    Ok(conn
-        .query_row("SELECT COALESCE(MAX(policy_revision), 0) FROM policy_rule_revisions", [], |r| r.get(0))?)
+    Ok(conn.query_row(
+        "SELECT MAX((SELECT COALESCE(MAX(policy_revision), 0) FROM policy_rule_revisions), \
+                    (SELECT COALESCE(MAX(policy_revision), 0) FROM policy_settings_revisions))",
+        [],
+        |r| r.get(0),
+    )?)
+}
+
+/// A project's policy settings (ADR 0037). A project that never changed them
+/// has auto mode off at revision 0.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectPolicySettings {
+    pub project_id: Uuid,
+    pub auto_mode: bool,
+    pub revision: u32,
+    pub updated_at_ms: Option<i64>,
+    pub updated_by: Option<String>,
+}
+
+pub fn project_settings(conn: &Connection, project_id: Uuid) -> Result<ProjectPolicySettings, StorageError> {
+    let row = conn
+        .query_row(
+            "SELECT auto_mode, revision, updated_at, updated_by FROM policy_project_settings WHERE project_id = ?1",
+            [project_id.to_string()],
+            |r| {
+                Ok((r.get::<_, i64>(0)? != 0, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, Option<String>>(3)?))
+            },
+        )
+        .optional()?;
+    Ok(match row {
+        Some((auto_mode, revision, updated_at, updated_by)) => ProjectPolicySettings {
+            project_id,
+            auto_mode,
+            revision: u32::try_from(revision)
+                .map_err(|_| StorageError::Corrupt("settings revision".into()))?,
+            updated_at_ms: Some(updated_at),
+            updated_by,
+        },
+        None => ProjectPolicySettings {
+            project_id,
+            auto_mode: false,
+            revision: 0,
+            updated_at_ms: None,
+            updated_by: None,
+        },
+    })
+}
+
+/// Whether auto mode is on for the project. Read inside the transaction that
+/// evaluates, like the rules.
+pub fn auto_mode(conn: &Connection, project_id: Uuid) -> Result<bool, StorageError> {
+    Ok(project_settings(conn, project_id)?.auto_mode)
+}
+
+/// Sets auto mode when the stored revision is `expected_revision` (0 when
+/// never set). Appends the history row and returns the new settings and the
+/// new global policy revision. Must run in one transaction with its event.
+pub fn set_auto_mode(
+    conn: &Connection,
+    project_id: Uuid,
+    auto_mode: bool,
+    expected_revision: u32,
+    changed_by: Option<&str>,
+    now_ms: i64,
+) -> Result<(ProjectPolicySettings, i64), StorageError> {
+    let current = project_settings(conn, project_id)?;
+    if current.revision != expected_revision {
+        return Err(StorageError::Conflict(format!(
+            "policy settings changed (revision {} is current, {} was expected)",
+            current.revision, expected_revision
+        )));
+    }
+    let revision = current.revision + 1;
+    conn.execute(
+        "INSERT INTO policy_project_settings (project_id, auto_mode, revision, updated_at, updated_by) \
+         VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (project_id) DO UPDATE SET \
+         auto_mode = excluded.auto_mode, revision = excluded.revision, \
+         updated_at = excluded.updated_at, updated_by = excluded.updated_by",
+        params![project_id.to_string(), i64::from(auto_mode), i64::from(revision), now_ms, changed_by],
+    )?;
+    let policy_revision = current_revision(conn)? + 1;
+    conn.execute(
+        "INSERT INTO policy_settings_revisions (project_id, revision, policy_revision, auto_mode, changed_at, \
+         changed_by) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            project_id.to_string(),
+            i64::from(revision),
+            policy_revision,
+            i64::from(auto_mode),
+            now_ms,
+            changed_by
+        ],
+    )?;
+    Ok((project_settings(conn, project_id)?, policy_revision))
 }
 
 /// One entry of a rule's history.
@@ -499,6 +593,48 @@ mod tests {
                 assert!(c.execute("DELETE FROM policy_rule_revisions", []).is_err());
                 assert!(c.execute("UPDATE policy_rule_revisions SET change = 'x'", []).is_err());
                 assert_eq!(get_rule(c, next.id)?.decision, Decision::Ask);
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn auto_mode_is_off_by_default_versioned_and_shares_the_global_revision() {
+        let (_dir, storage) = temp_storage();
+        let project = insert_project(&storage, "/repo");
+        storage
+            .with_conn(|c| {
+                let s = project_settings(c, project)?;
+                assert_eq!((s.auto_mode, s.revision), (false, 0));
+                let r = rule(project);
+                insert_rule(c, &r)?;
+                assert_eq!(append_revision(c, &r, "created", None, 1)?, 1);
+                let (s, global) = set_auto_mode(c, project, true, 0, Some("op"), 2)?;
+                assert_eq!((s.auto_mode, s.revision, global), (true, 1, 2));
+                assert!(auto_mode(c, project)?);
+                assert_eq!(current_revision(c)?, 2);
+                // The next rule change takes the next global revision.
+                let mut next = r.clone();
+                next.revision = 2;
+                update_rule(c, &next, 1)?;
+                assert_eq!(append_revision(c, &next, "updated", None, 3)?, 3);
+                // A stale writer loses.
+                assert!(matches!(
+                    set_auto_mode(c, project, false, 0, None, 4),
+                    Err(StorageError::Conflict(_))
+                ));
+                let (s, global) = set_auto_mode(c, project, false, 1, None, 4)?;
+                assert_eq!((s.auto_mode, s.revision, global), (false, 2, 4));
+                assert!(c.execute("DELETE FROM policy_settings_revisions", []).is_err());
+                assert!(c.execute("UPDATE policy_settings_revisions SET auto_mode = 1", []).is_err());
+                // A colliding global revision is refused either way.
+                assert!(
+                    c.execute(
+                        "INSERT INTO policy_settings_revisions VALUES (?1, 9, 3, 1, 5, NULL)",
+                        [project.to_string()]
+                    )
+                    .is_err()
+                );
                 Ok(())
             })
             .unwrap();

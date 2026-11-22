@@ -159,6 +159,10 @@ When running Core or the app manually, set `SWITCHYARD_DATA_DIR` (and, if that p
     transaction) and are followed by `AgentService::reevaluate_pending`, which may only deny.
   - Human decisions never create rules. Policies are not a sandbox: never word UI or docs as if
     they were.
+  - Auto mode (ADR 0037) is per project, read by Core inside the evaluating transaction (never from
+    a caller), and only replaces the `ask` default for file changes and shell; rules, caps (except
+    exact-command) and review sessions still apply. Changes go through `PolicyService::set_auto_mode`
+    (setting + history row on the global policy revision + `policy.settings_changed`).
   - When CLI behaviour changes, re-record fixtures in `crates/switchyard-agents/tests/fixtures/`
     (sanitized; see its README) and keep `src/bin/fake_claude.rs` / `src/bin/fake_codex.rs` in sync.
     Integration tests never run the real CLIs: `tests/common` points both at the fakes and its

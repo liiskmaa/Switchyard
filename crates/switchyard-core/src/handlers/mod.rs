@@ -158,6 +158,12 @@ pub(crate) async fn dispatch(conn: &Connection, method: &str, params: Value) -> 
         methods::PoliciesEffective::NAME => {
             typed::<methods::PoliciesEffective, _, _>(params, |p| policies::effective(state, p)).await
         }
+        methods::PoliciesSettings::NAME => {
+            typed::<methods::PoliciesSettings, _, _>(params, |p| policies::settings(state, p)).await
+        }
+        methods::PoliciesSetAutoMode::NAME => {
+            typed::<methods::PoliciesSetAutoMode, _, _>(params, |p| policies::set_auto_mode(conn, p)).await
+        }
         methods::PoliciesEvaluations::NAME => {
             typed::<methods::PoliciesEvaluations, _, _>(params, |p| policies::evaluations(state, p)).await
         }

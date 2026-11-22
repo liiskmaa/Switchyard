@@ -1,6 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 import { Badge, Button, EmptyState, ErrorNotice, KeyValue, Panel } from "../../components/ui";
+import { AutoModeBadge } from "../policies/AutoMode";
 import { nativeIdLabel, providerName, providerShort, supported } from "../../lib/agents";
 import { toCoreError, type CoreRequestError } from "../../lib/core";
 import { formatTimestamp, mergeEvents } from "../../lib/format";
@@ -144,7 +145,13 @@ function SessionHeader({ session, projectName, onChanged }: { session: Session; 
     >
       <KeyValue
         rows={[
-          ["State", <Badge tone={stateTone(session.state)}>{STATE_LABEL[session.state]}</Badge>],
+          [
+            "State",
+            <span>
+              <Badge tone={stateTone(session.state)}>{STATE_LABEL[session.state]}</Badge>{" "}
+              <AutoModeBadge projectId={session.project_id} />
+            </span>,
+          ],
           ["Process", session.attached && session.pid ? `pid ${session.pid}` : <span className="muted">not running</span>],
           [
             "Workspace",

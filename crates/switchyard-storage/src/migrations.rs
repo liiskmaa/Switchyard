@@ -20,6 +20,7 @@ pub const MIGRATIONS: &[(u32, &str)] = &[
     (8, include_str!("../../../migrations/0008_workflows.sql")),
     (9, include_str!("../../../migrations/0009_workflow_delivery.sql")),
     (10, include_str!("../../../migrations/0010_organizations.sql")),
+    (11, include_str!("../../../migrations/0011_policy_auto_mode.sql")),
 ];
 
 pub const LATEST_SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -88,8 +89,10 @@ mod tests {
                 "org_settings",
                 "organizations",
                 "policy_evaluations",
+                "policy_project_settings",
                 "policy_rule_revisions",
                 "policy_rules",
+                "policy_settings_revisions",
                 "projects",
                 "sessions",
                 "task_assignments",
@@ -171,6 +174,44 @@ mod tests {
                     [],
                 );
                 assert!(err.is_err());
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    /// Migration 0011 rebuilds `policy_evaluations` to accept `auto_mode`:
+    /// recorded evaluations survive unchanged and stay append-only.
+    #[test]
+    fn upgrade_to_v11_keeps_policy_evaluations() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.db");
+        {
+            let mut c = Connection::open(&path).unwrap();
+            apply_up_to(&mut c, 10);
+            c.execute_batch(
+                "INSERT INTO policy_evaluations (id, evaluated_at, trigger, project_id, session_id, adapter,
+                     tool_name, native_request_id, category, input, decision, reason, explanation, matched_rules,
+                     restrictions, policy_revision, system_version)
+                     VALUES ('e1', 1, 'request', 'p1', 's1', 'claude_code', 'Bash', 'r1', 'shell', '{}', 'ask',
+                     'default', 'asks', '[]', '[]', 0, 2);",
+            )
+            .unwrap();
+        }
+        let storage = Storage::open(&path).unwrap();
+        storage
+            .with_conn(|c| {
+                let (id, reason): (String, String) =
+                    c.query_row("SELECT id, reason FROM policy_evaluations", [], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                assert_eq!((id.as_str(), reason.as_str()), ("e1", "default"));
+                assert!(c.execute("DELETE FROM policy_evaluations", []).is_err(), "still append-only");
+                c.execute(
+                    "INSERT INTO policy_evaluations (id, evaluated_at, trigger, project_id, session_id, adapter,
+                         tool_name, native_request_id, category, input, decision, reason, explanation,
+                         matched_rules, restrictions, policy_revision, system_version)
+                         VALUES ('e2', 2, 'request', 'p1', 's1', 'claude_code', 'Bash', 'r2', 'shell', '{}',
+                         'allow', 'auto_mode', 'auto', '[]', '[]', 1, 3)",
+                    [],
+                )?;
                 Ok(())
             })
             .unwrap();

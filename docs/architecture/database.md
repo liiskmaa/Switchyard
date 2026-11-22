@@ -86,6 +86,14 @@ Constraints: a `worktree` row must have `branch` and `base_commit`. Indexes:
   - the global policy revision and system policy version;
   - the approval it created or settled.
 
+### `policy_project_settings` and `policy_settings_revisions` (v11)
+- `policy_project_settings`: one row per project once auto mode was changed (`auto_mode`,
+  `revision`, who and when); `ON DELETE CASCADE` with the project. No row means off (ADR 0037).
+- `policy_settings_revisions`: append-only history; each change takes the next global
+  `policy_revision`, shared with `policy_rule_revisions` (triggers refuse a collision either way).
+- Migration 0011 also rebuilds `policy_evaluations` so `reason` accepts `auto_mode`; existing rows
+  are copied unchanged.
+
 ### `agents`
 One row per detected executable and vendor.
 

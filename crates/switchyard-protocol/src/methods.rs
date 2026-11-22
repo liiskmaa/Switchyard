@@ -9,8 +9,8 @@ use uuid::Uuid;
 use crate::model::{
     AgentAvailability, Approval, ApprovalStatus, CleanupReport, ClientInfo, CoreInfo, EffectivePolicy,
     GitStatusReport, HealthReport, OperationCategory, PolicyConditions, PolicyDecision, PolicyEvaluation,
-    PolicyRule, PolicyRuleRevision, Priority, Project, Role, Session, Task, TaskAssignment, TaskFinding,
-    TaskKind, TaskMessage, TaskProposal, TaskReadiness, TaskRef, Workspace, WorkspaceGitStatus,
+    PolicyRule, PolicyRuleRevision, PolicySettings, Priority, Project, Role, Session, Task, TaskAssignment,
+    TaskFinding, TaskKind, TaskMessage, TaskProposal, TaskReadiness, TaskRef, Workspace, WorkspaceGitStatus,
 };
 
 use crate::model::{
@@ -528,6 +528,33 @@ pub struct PoliciesEffectiveParams {
 }
 
 method!(PoliciesEffective, "policies.effective", PoliciesEffectiveParams, EffectivePolicy);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoliciesSettingsParams {
+    pub project_id: Uuid,
+}
+
+method!(PoliciesSettings, "policies.settings", PoliciesSettingsParams, PolicySettings);
+
+/// Turns the project's auto mode on or off (ADR 0037).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoliciesSetAutoModeParams {
+    pub project_id: Uuid,
+    pub enabled: bool,
+    /// The settings revision the change is based on (0 when never set).
+    pub expected_revision: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicySettingsResult {
+    pub settings: PolicySettings,
+    /// Global policy revision created by this change.
+    pub policy_revision: i64,
+}
+
+method!(PoliciesSetAutoMode, "policies.set_auto_mode", PoliciesSetAutoModeParams, PolicySettingsResult);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { Badge, Button, EmptyState, ErrorNotice, Panel } from "../../components/ui";
+import { AutoModeBadge } from "../policies/AutoMode";
 import { providerName } from "../../lib/agents";
 import { toCoreError, type CoreRequestError } from "../../lib/core";
 import { MESSAGE_LABEL, describeEvent, formatClock, formatRelative, shortId } from "../../lib/format";
@@ -265,6 +266,7 @@ export function TaskDetailView({
             <Badge tone={workflowActive ? "accent" : statusTone(t.status)}>
               {d.workflow && workflowActive ? workflowStageText(d.workflow) : STATUS_LABEL[t.status]}
             </Badge>
+            <AutoModeBadge projectId={t.project_id} />
             <span>Updated {formatRelative(t.updated_at_ms, now)}</span>
             {d.dependencies.length > 0 ? <span>Dependencies {d.readiness}</span> : null}
             {t.origin === "proposal" ? <span>From an approved proposal</span> : null}

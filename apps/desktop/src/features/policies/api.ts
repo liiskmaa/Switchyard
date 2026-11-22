@@ -18,6 +18,11 @@ export const archiveRule = (rule: PolicyRule) =>
 export const listEvaluations = async (params: CoreMethods["policies.evaluations"]["params"]) =>
   (await coreRequest("policies.evaluations", params)).evaluations;
 
+export const policySettings = (projectId: string) => coreRequest("policies.settings", { project_id: projectId });
+export const setAutoMode = (projectId: string, enabled: boolean, expectedRevision: number) =>
+  coreRequest("policies.set_auto_mode", { project_id: projectId, enabled, expected_revision: expectedRevision });
+
 export const isPolicyEvent = (e: EventEnvelope): boolean => e.event_type === "policy.rule_changed";
+export const isPolicySettingsEvent = (e: EventEnvelope): boolean => e.event_type === "policy.settings_changed";
 export const isEvaluationEvent = (e: EventEnvelope): boolean =>
   e.event_type === "agent.permission_evaluated" || e.event_type === "agent.permission_resolved";

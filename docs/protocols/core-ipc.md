@@ -143,6 +143,8 @@ client detect a restart. `seq` stays continuous across restarts because it lives
 | `policies.set_enabled` | `{rule_id, expected_revision, enabled}` | `{rule, policy_revision}` |
 | `policies.archive` | `{rule_id, expected_revision}` | `{rule, policy_revision}`. The rule stops applying; its history remains. |
 | `policies.effective` | `{project_id, workspace_id?}` | `EffectivePolicy`: system restrictions, per-category defaults and capabilities, active project rules and (with a workspace) that workspace's rules |
+| `policies.settings` | `{project_id}` | `PolicySettings`: `{project_id, auto_mode, revision, updated_at_ms?, updated_by?}`; revision 0 and `auto_mode: false` until first changed. `project_not_found`. |
+| `policies.set_auto_mode` | `{project_id, enabled, expected_revision}` | `{settings, policy_revision}` (ADR 0037). `stale_revision` (`data.current_revision`), `invalid_params` when already in that state, `project_not_found`. Pending approvals are not answered by the change. |
 | `policies.evaluations` | `{project_id?, workspace_id?, session_id?, rule_id?, decision?, limit?}` | `{evaluations: [PolicyEvaluation]}`, newest first. `rule_id` matches evaluations the rule decided or matched. |
 | `tasks.list` | `{project_id?, include_closed?, limit?}` | `{tasks: [Task]}`, newest first; completed and cancelled tasks only with `include_closed` |
 | `tasks.get` | `{task_id}` | `TaskDetail`: `{task, dependencies: [TaskRef], dependents: [TaskRef], readiness: satisfied\|waiting\|broken, assignments, messages, findings, proposals}` |
@@ -322,6 +324,7 @@ the registration is kept and `projects.git_status` returns `repository_unavailab
 | `agent.permission_evaluated` | `{evaluation_id, trigger, tool_name, category, decision, reason, explanation, rule_id, rule_revision, policy_revision, approval_id, target}`: every evaluation. For `allow`/`deny` it is the final, automatic decision; for `ask` an `agent.permission_requested` follows. `target` is the path or command (at most 512 bytes). |
 | `agent.permission_requested` | `{approval_id, tool_name, tool_use_id, input, description, expires_at_ms, evaluation_id, explanation}` (only for `ask`) |
 | `agent.permission_resolved` | `{approval_id, tool_name, status, source, decided_by, note}`; `source` `policy` means a policy change denied the pending request (`note` explains) |
+| `policy.settings_changed` | `{auto_mode, revision, policy_revision}`; context carries `project_id` (ADR 0037) |
 | `policy.rule_changed` | `{rule_id, change, revision, policy_revision, scope, category, decision, enabled, archived, description, conditions}`; context carries `project_id` (and `workspace_id` for workspace rules) |
 | `agent.interrupted`, `agent.session_resumed`, `agent.warning`, `agent.exited`, `agent.failed` | See `crates/switchyard-events/src/envelope.rs` |
 | `workspace.created` | `{name, path, branch, base_ref, base_commit}` (status `provisioning`) |

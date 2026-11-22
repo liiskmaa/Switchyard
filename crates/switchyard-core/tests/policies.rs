@@ -17,9 +17,10 @@ use switchyard_protocol::methods::{
     ApprovalDecision, ApprovalsDecide, ApprovalsDecideParams, ApprovalsList, ApprovalsListParams, EventsList,
     EventsListParams, PoliciesArchive, PoliciesArchiveParams, PoliciesCreate, PoliciesCreateParams,
     PoliciesEffective, PoliciesEffectiveParams, PoliciesEvaluations, PoliciesEvaluationsParams, PoliciesGet,
-    PoliciesList, PoliciesListParams, PoliciesSetEnabled, PoliciesSetEnabledParams, PoliciesUpdate,
-    PoliciesUpdateParams, PolicyRuleIdParams, ProjectsAdd, ProjectsAddParams, SessionsSend,
-    SessionsSendParams, SessionsStart, SessionsStartParams, WorkspacesCreate, WorkspacesCreateParams,
+    PoliciesList, PoliciesListParams, PoliciesSetAutoMode, PoliciesSetAutoModeParams, PoliciesSetEnabled,
+    PoliciesSetEnabledParams, PoliciesSettings, PoliciesSettingsParams, PoliciesUpdate, PoliciesUpdateParams,
+    PolicyRuleIdParams, ProjectsAdd, ProjectsAddParams, SessionsSend, SessionsSendParams, SessionsStart,
+    SessionsStartParams, WorkspacesCreate, WorkspacesCreateParams,
 };
 use switchyard_protocol::model::{
     Approval, ApprovalStatus, DecisionSource, OperationCategory, PolicyConditions, PolicyDecision,
@@ -1074,4 +1075,130 @@ async fn block_rules_match_unicode_variants_by_resolved_path_and_whole_component
     turns(&f.client, s, 2).await;
     let e = &evaluations(&f.client, s).await[0];
     assert_eq!(e.decision, PolicyDecision::Allow, "a string prefix is not a path prefix: {}", e.explanation);
+}
+
+// --- auto mode (ADR 0037) -------------------------------------------------------------
+
+async fn set_auto(f: &Fixture, enabled: bool, expected_revision: u32) -> Result<u32, ClientError> {
+    f.client
+        .call::<PoliciesSetAutoMode>(PoliciesSetAutoModeParams {
+            project_id: f.project_id,
+            enabled,
+            expected_revision,
+        })
+        .await
+        .map(|r| r.settings.revision)
+}
+
+/// With auto mode on, file changes and any shell command inside the workspace
+/// are answered `allow` without an approval; files outside the workspace and
+/// configured ask rules still ask; turning it off restores asking. Every
+/// change is versioned and journaled.
+#[tokio::test]
+async fn auto_mode_allows_changes_and_commands_without_asking() {
+    let f = fixture().await;
+    let settings =
+        f.client.call::<PoliciesSettings>(PoliciesSettingsParams { project_id: f.project_id }).await.unwrap();
+    assert_eq!((settings.auto_mode, settings.revision), (false, 0));
+    assert_eq!(code(set_auto(&f, true, 3).await.unwrap_err()), ErrorCode::StaleRevision);
+    assert_eq!(code(set_auto(&f, false, 0).await.unwrap_err()), ErrorCode::InvalidParams, "already off");
+    let rev = set_auto(&f, true, 0).await.unwrap();
+    assert_eq!(rev, 1);
+    add_rule(
+        &f.client,
+        create(
+            f.project_id,
+            None,
+            OperationCategory::Shell,
+            PolicyDecision::Ask,
+            None,
+            Some("git push"),
+            "Ask before pushing",
+        ),
+    )
+    .await;
+
+    let s = start(&f.client, f.workspace_id).await;
+    send(&f.client, s, &tool("Write", r#"{"file_path":"$CWD/auto.txt","content":"x"}"#)).await;
+    send(&f.client, s, &tool("Bash", r#"{"command":"ls && echo done","description":"list"}"#)).await;
+    let evs = turns(&f.client, s, 2).await;
+    assert!(of_type(&evs, "agent.permission_requested").is_empty(), "nothing asked");
+    assert!(approvals(&f.client, s, None).await.is_empty());
+    let evals = evaluations(&f.client, s).await;
+    assert_eq!(evals.len(), 2, "{:?}", evs.iter().map(|e| (&e.event_type, &e.payload)).collect::<Vec<_>>());
+    for e in &evals {
+        assert_eq!(
+            (e.decision, e.reason),
+            (PolicyDecision::Allow, PolicyReason::AutoMode),
+            "{}",
+            e.explanation
+        );
+    }
+
+    let recorded: i64 = db(&f)
+        .query_row(
+            "SELECT COUNT(*) FROM policy_evaluations WHERE json_extract(input, '$.scope.auto_mode') = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(recorded, 2, "auto mode is recorded with each evaluated input");
+
+    // Outside the workspace, and a configured ask rule, still ask.
+    send(&f.client, s, &tool("Write", r#"{"file_path":"$CWD/../outside.txt","content":"x"}"#)).await;
+    let p = wait_pending(&f.client, s, 1).await;
+    assert_eq!(p[0].policy.as_ref().unwrap().reason, PolicyReason::Capped);
+    decide(&f.client, p[0].id, ApprovalDecision::Deny).await.unwrap();
+    turns(&f.client, s, 3).await;
+    send(&f.client, s, &tool("Bash", r#"{"command":"git push"}"#)).await;
+    let p = wait_pending(&f.client, s, 1).await;
+    assert_eq!(p[0].policy.as_ref().unwrap().reason, PolicyReason::Rule);
+    decide(&f.client, p[0].id, ApprovalDecision::Deny).await.unwrap();
+    turns(&f.client, s, 4).await;
+
+    // Off again: the same command asks.
+    assert_eq!(set_auto(&f, false, rev).await.unwrap(), 2);
+    send(&f.client, s, &tool("Bash", r#"{"command":"ls && echo done"}"#)).await;
+    let p = wait_pending(&f.client, s, 1).await;
+    assert_eq!(p[0].policy.as_ref().unwrap().reason, PolicyReason::Default);
+
+    // Journaled with the project, and sharing the global revision with rules.
+    let changes: Vec<(bool, i64)> = db(&f)
+        .prepare("SELECT auto_mode, policy_revision FROM policy_settings_revisions ORDER BY revision")
+        .unwrap()
+        .query_map([], |r| Ok((r.get::<_, i64>(0)? == 1, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(changes, [(true, 1), (false, 3)], "the rule took revision 2");
+    let all = f
+        .client
+        .call::<EventsList>(EventsListParams { after_seq: Some(0), limit: Some(1000), ..Default::default() })
+        .await
+        .unwrap()
+        .events;
+    let journaled = of_type(&all, "policy.settings_changed");
+    assert_eq!(journaled.len(), 2);
+    assert_eq!(journaled[0].payload["auto_mode"], true);
+    assert_eq!(journaled[0].context.project_id, Some(f.project_id));
+}
+
+/// Settings exist only for registered projects.
+#[tokio::test]
+async fn auto_mode_settings_need_a_registered_project() {
+    let f = fixture().await;
+    let missing = Uuid::now_v7();
+    let err =
+        f.client.call::<PoliciesSettings>(PoliciesSettingsParams { project_id: missing }).await.unwrap_err();
+    assert_eq!(code(err), ErrorCode::ProjectNotFound);
+    let err = f
+        .client
+        .call::<PoliciesSetAutoMode>(PoliciesSetAutoModeParams {
+            project_id: missing,
+            enabled: true,
+            expected_revision: 0,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(code(err), ErrorCode::ProjectNotFound);
 }

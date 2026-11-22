@@ -296,7 +296,8 @@ Press **Approve** or **Deny** (optionally **Add a reason**). Things to know:
 
 - If nobody answers within 15 minutes (configurable), the request is **denied** automatically. The
   card shows the countdown. Requests are never approved by timeout.
-- Approving one request **never** creates a rule. Want it automatic next time? Add a policy.
+- Approving one request **never** creates a rule. Want it automatic next time? Add a policy, or
+  turn on [auto mode](#auto-mode-stop-the-approve-clicking) for the project.
 - If you change a rule so the pending request is now blocked, it is denied right away.
 - Approved shell commands run with *your* permissions; an approved Codex command is **not** confined
   to the workspace.
@@ -341,6 +342,36 @@ unrecognized operations; duplicate rules.
 
 Rules can be edited (decision, path, command, description), disabled, or archived. Every change is
 versioned, and the **Policies** page lists every past decision with the rule revision that made it.
+
+### Auto mode: stop the approve-clicking
+
+Tired of approving every command? Turn on **auto mode** for the project: **Projects → your project →
+Auto mode → Turn on auto mode…**, then confirm (the same switch is on the **Policies** page).
+
+With auto mode on:
+
+| Request | Answer |
+|---|---|
+| Create, edit, delete files inside the workspace | Runs without asking |
+| Any shell command (pipes, `&&`, `npm install`, `rm`, …) | Runs without asking |
+| Validation commands at delivery | Run without asking for authorization |
+| Files outside the workspace, writes into `.git` | Still asks |
+| Background (long-running) commands, requests with unknown fields | Still asks |
+| Your own **Ask every time** and **Block** rules | Still win |
+| Review sessions | Unchanged: cannot change files, commands ask |
+| Network and MCP tools | Still blocked |
+
+Things to know:
+
+- **This is the risky switch.** A shell command can't be confined to the workspace: with auto mode
+  on, an agent can run anything your user account can, anywhere on your Mac, without you seeing it
+  first. Use it on projects (and machines) where that is acceptable.
+- Add **Block** rules for commands you never want run, e.g. `git push` or `rm -rf /`. They still
+  apply.
+- Tasks and sessions of the project show an **Auto mode** badge while it is on.
+- Requests already waiting when you turn it on still need your answer.
+- Every automatic decision is still recorded (reason "Auto mode") under **Policies**.
+- Turn it off the same way; from then on everything asks again.
 
 **Useful starter rules**
 
@@ -440,7 +471,13 @@ Model choices: **CLI default**, the models the installed program reports, or **O
 name…** (for Claude, a full `claude-…` name; checked only when the session starts). Tasks can
 override any role.
 
-### 10.5 Per project: Agent teams (Projects → *Agent teams*)
+### 10.5 Per project: Auto mode
+
+**Projects → Auto mode** (or **Policies → Auto mode**): off by default. On = file changes and shell
+commands inside the workspace run without asking; see
+[Auto mode](#auto-mode-stop-the-approve-clicking) for exactly what still asks.
+
+### 10.6 Per project: Agent teams (Projects → *Agent teams*)
 
 **Limits** (a plan that would exceed them is refused):
 
@@ -463,7 +500,7 @@ capabilities and your estimates, prefers a different provider for review than fo
 then the cheaper one. Without estimates it says so in its choice. Hover an agent's name on the task
 to see why it was chosen.
 
-### 10.6 Per project: Integration settings (Integrations → *Integration settings*)
+### 10.7 Per project: Integration settings (Integrations → *Integration settings*)
 
 - **Require an approved review of exactly the integrated content**: on = delivery is blocked until a
   review approved exactly this content.
@@ -473,7 +510,7 @@ to see why it was chosen.
   by your shell policies: *allow* runs, *ask* waits for **Authorize and validate**, *block* never
   runs.
 
-### 10.7 Per task (New task form)
+### 10.8 Per task (New task form)
 
 | Field | Notes |
 |---|---|
@@ -487,7 +524,7 @@ to see why it was chosen.
 | Run the engineering workflow | starts the fixed sequence right away (needs: published, no dependencies) |
 | Override roles and models | per-task provider/model per role |
 
-### 10.8 Per workspace
+### 10.9 Per workspace
 
 Name and base revision (what it branches from) when you create it. Rules can be scoped to one
 workspace (see [§8](#8-policies-deciding-what-may-run-without-asking)).
@@ -548,7 +585,7 @@ Everything is in the journal (**Activity**) and the Core log, so you can always 
 ## 14. Limits you should know about
 
 - **Not a sandbox.** Approved commands run as you, anywhere on your Mac. Codex-approved commands
-  are not limited to the workspace.
+  are not limited to the workspace. With auto mode on, that applies to every command an agent runs.
 - **One step at a time** per task and per team; parallelism comes from separate tasks/workspaces.
 - **Corrections reach the next turn**: you can't redirect an agent in the middle of a turn.
 - **Agent reports can be wrong or missing.** Long final messages (over about 8 KB) lose their report.
@@ -581,6 +618,9 @@ it. Inspect the workspace (or your system) and fix it; the journal shows exactly
 
 **Can an AI approve its own work or merge it?** No. Reports are claims. Only you complete tasks
 (or, in a team, its supervisor accepts subtasks), and only you approve a delivery.
+
+**I'm clicking Approve all day. Can it just do things?** Yes: turn on
+[auto mode](#auto-mode-stop-the-approve-clicking) for the project. Read what it means first.
 
 **Which AI should review?** A different one from the implementer, if you have both. Switchyard
 warns when they're the same.
