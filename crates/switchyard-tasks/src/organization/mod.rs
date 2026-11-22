@@ -456,6 +456,10 @@ pub struct OrgState {
     /// Journal position before the current supervision turn's prompt.
     #[serde(default)]
     pub turn_after_seq: i64,
+    /// Waiting tasks whose supervisor was told they depend on cancelled
+    /// work (told once each; after that the user decides).
+    #[serde(default)]
+    pub dead_ends_reported: Vec<String>,
 }
 
 /// An entry for the shared context, written by Core with the decision.
@@ -1656,6 +1660,48 @@ fn schedule(d: &mut Decision, now_ms: i64) {
         d.action = Action::Work { task: key, agent: owner, instructions };
         return;
     }
+    // A waiting task that depends on cancelled work can never start: its
+    // supervisor decides (cancel it or re-plan it), once per task.
+    let dead: Vec<(String, String, Vec<String>)> = d
+        .state
+        .tasks
+        .iter()
+        .filter(|t| t.state == TaskState::Waiting && !d.state.dead_ends_reported.contains(&t.key))
+        .filter_map(|t| {
+            let cancelled: Vec<String> = t
+                .depends_on
+                .iter()
+                .filter(|k| d.state.task(k).is_some_and(|x| x.state == TaskState::Cancelled))
+                .cloned()
+                .collect();
+            (!cancelled.is_empty()).then(|| (t.key.clone(), t.title.clone(), cancelled))
+        })
+        .collect();
+    if !dead.is_empty() {
+        for (key, title, cancelled) in dead {
+            d.state.dead_ends_reported.push(key.clone());
+            let names: Vec<String> =
+                cancelled.iter().map(|k| d.state.task(k).map_or(k.clone(), |t| t.title.clone())).collect();
+            let text = format!(
+                "\u{201c}{title}\u{201d} waits for cancelled work ({}), so it can never start: cancel it, or plan it again without that work.",
+                names.join(", ")
+            );
+            d.context.push(ctx(
+                ContextKind::Observation,
+                ContextStatus::Verified,
+                text.clone(),
+                Some(&key),
+                "core",
+            ));
+            if let Some(r) = d.state.reviewer_of(&key) {
+                let home = d.state.task(&key).and_then(|t| t.parent.clone()).unwrap_or_else(|| ROOT.into());
+                d.state.enqueue(&r, &home, CheckpointItem::Observed { task: key.clone(), text });
+            }
+        }
+        if !d.state.queue.is_empty() {
+            return schedule(d, now_ms);
+        }
+    }
     // Nothing can run, and the objective is not finished: say why.
     let root_done = d.state.task(ROOT).is_some_and(|t| t.state.is_final());
     if !root_done {
@@ -1675,7 +1721,12 @@ fn schedule(d: &mut Decision, now_ms: i64) {
         } else {
             stuck.join("; ")
         };
-        wait(d, format!("Nothing can run: {why}. Resume after changing the plan, or cancel."));
+        wait(
+            d,
+            format!(
+                "Nothing can run: {why}. Tell the lead how to continue (Ask the supervisor, or answer here), then resume; or stop the team."
+            ),
+        );
     }
 }
 

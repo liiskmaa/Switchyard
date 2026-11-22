@@ -63,6 +63,7 @@ fn empty() -> OrgState {
         final_summary: None,
         sessions: BTreeMap::new(),
         turn_after_seq: 0,
+        dead_ends_reported: vec![],
     }
 }
 
@@ -530,4 +531,42 @@ fn a_subtask_the_user_cancels_is_closed_and_its_supervisor_decides() {
     let d = decide(&stuck, &closed).unwrap();
     assert_eq!(d.state.status, OrgStatus::Running);
     assert!(matches!(d.action, Action::Supervise { .. }));
+}
+
+#[test]
+fn work_waiting_on_cancelled_work_goes_to_its_supervisor_once() {
+    // The situation after a cancellation: greet cancelled, "check" still waits for it, nothing runs.
+    let mut s = supervise(&started(), LEAD, PLAN).state;
+    let mut follow = s.task("greet").unwrap().clone();
+    follow.key = "check".into();
+    follow.title = "Check the greeting".into();
+    follow.state = TaskState::Waiting;
+    follow.depends_on = vec!["greet".into()];
+    follow.task_id = Some(uuid::Uuid::now_v7());
+    s.tasks.push(follow);
+    s.task_mut("greet").unwrap().state = TaskState::Cancelled;
+    s.activity = Activity::Idle;
+    s.queue.clear();
+    s.status = OrgStatus::Waiting;
+    let resume = Input::Resume { now_ms: T0 + 5 };
+    let d = decide(&s, &resume).unwrap();
+    let Action::Supervise { checkpoint } = &d.action else { panic!("{:?}", d.action) };
+    assert_eq!(checkpoint.supervisor, LEAD);
+    assert!(
+        checkpoint
+            .items
+            .iter()
+            .any(|i| matches!(i, CheckpointItem::Observed { task, text } if task == "check" && text.contains("can never start"))),
+        "{:?}",
+        checkpoint.items
+    );
+    assert_eq!(d.state.dead_ends_reported, vec!["check".to_owned()]);
+    // Told once: if the lead leaves it, the team waits for the user instead of looping.
+    let mut after = d.state.clone();
+    after.activity = Activity::Idle;
+    after.queue.clear();
+    after.status = OrgStatus::Waiting;
+    let d = decide(&after, &resume).unwrap();
+    assert_eq!(d.state.status, OrgStatus::Waiting);
+    assert!(d.state.reason.unwrap().contains("Tell the lead how to continue"));
 }

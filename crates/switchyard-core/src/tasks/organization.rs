@@ -434,6 +434,7 @@ impl TaskService {
                 final_summary: None,
                 sessions: BTreeMap::new(),
                 turn_after_seq: 0,
+                dead_ends_reported: Vec::new(),
             };
             let workflow = WorkflowRecord {
                 task_id,
