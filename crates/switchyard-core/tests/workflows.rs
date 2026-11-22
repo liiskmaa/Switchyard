@@ -19,8 +19,9 @@ use switchyard_protocol::methods::{
     ApprovalsList, ApprovalsListParams, EventsList, EventsListParams, IntegrationsList,
     IntegrationsListParams, ProjectIdParams, ProjectsAdd, ProjectsAddParams, SessionIdParams, SessionsGet,
     TaskDetail, TaskIdParams, TasksAssign, TasksAssignParams, TasksCreate, TasksCreateParams, TasksGet,
-    WorkflowsCancel, WorkflowsCancelParams, WorkflowsPause, WorkflowsResume, WorkflowsSetSettings,
-    WorkflowsSetSettingsParams, WorkflowsSettings, WorkflowsStart, WorkflowsStartParams,
+    TasksNote, TasksNoteParams, WorkflowsCancel, WorkflowsCancelParams, WorkflowsPause, WorkflowsResume,
+    WorkflowsSetSettings, WorkflowsSetSettingsParams, WorkflowsSettings, WorkflowsStart,
+    WorkflowsStartParams,
 };
 use switchyard_protocol::model::{
     ApprovalStatus, Role, RoleBinding, RoleBindings, RoleBindingsPatch, SessionAccess, TaskKind, TaskStatus,
@@ -413,6 +414,41 @@ async fn unusable_reports_get_two_repair_notes_then_wait() {
     f.client.call::<WorkflowsResume>(TaskIdParams { task_id: task }).await.unwrap();
     let d = wait_delivery(&f, task).await;
     assert_eq!(keys(&d), ["investigate#1", "implement#1", "review#1"]);
+}
+
+/// An agent's question stops the workflow until the operator answers it:
+/// Resume alone is refused (the agent would wait forever behind a "running"
+/// workflow), and the delivered answer lets the same session continue.
+#[tokio::test]
+async fn a_question_waits_for_the_answer_not_for_resume() {
+    let f = fixture().await;
+    let spec = json!({
+        "investigate": [
+            { "report": { "type": "question", "summary": "Unclear scope.", "question": "Per user or per workspace?" } },
+            { "report": report("findings", "per user it is") }
+        ],
+        "implement": { "report": report("implementation", "done") },
+        "review": { "report": review("approved") }
+    });
+    let task = create_task(&f, &spec).await;
+    start(&f, task, claude_everywhere()).await.unwrap();
+    let d = wait_status(&f, task, "waiting").await;
+    let w = d.workflow.as_ref().unwrap();
+    assert_eq!(w.question.as_deref(), Some("Per user or per workspace?"));
+    assert_eq!(w.resume_action, None, "only an answer continues");
+    let refused = f.client.call::<WorkflowsResume>(TaskIdParams { task_id: task }).await.unwrap_err();
+    assert!(remote(refused).message.contains("waiting for your answer"));
+    assert_eq!(status(&detail(&f, task).await), "waiting", "a refused resume changes nothing");
+
+    let sent = f
+        .client
+        .call::<TasksNote>(TasksNoteParams { task_id: task, text: "Per user.".into() })
+        .await
+        .unwrap();
+    assert!(sent.delivered, "the answer went to the waiting session");
+    let d = wait_delivery(&f, task).await;
+    assert_eq!(keys(&d), ["investigate#1", "implement#1", "review#1"], "the same session answered; no retry");
+    assert!(workflow_events(&f, task).await.iter().any(|e| e == "workflow.resumed"));
 }
 
 /// A session that fails is retried once with the same provider and model,

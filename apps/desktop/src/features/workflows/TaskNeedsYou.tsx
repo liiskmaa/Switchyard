@@ -5,10 +5,11 @@ import { toCoreError, type CoreRequestError } from "../../lib/core";
 import { useCoreQuery } from "../../stores/useCoreQuery";
 import type { TaskDetail } from "../../types/protocol";
 import { isApprovalEvent } from "../agents/api";
+import { sendNote } from "../tasks/api";
 import { ApprovalCard } from "../approvals/ApprovalCard";
 import { answerOrganization, cancelWorkflow, getOrganization, isOrganizationEvent, pendingApprovals, resumeWorkflow } from "./api";
 import { DeliveryPanel } from "./DeliveryPanel";
-import { humanizeSteps } from "./labels";
+import { humanizeSteps, stepName } from "./labels";
 
 /** Whether the task's delivery step is waiting for the user (shown in "Needs you"). */
 export const deliveryNeedsYou = (d: TaskDetail): boolean =>
@@ -34,6 +35,8 @@ export function TaskNeedsYou({ detail, onChanged }: { detail: TaskDetail; onChan
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<CoreRequestError | null>(null);
   const question = org.data?.question ?? null;
+  // An engineering step's agent asked something: only the answer continues it.
+  const asked = w?.question ?? null;
   const pending = approvals.data ?? [];
   const delivery = deliveryNeedsYou(detail);
   const stopped = w?.status === "waiting" && !delivery;
@@ -98,7 +101,42 @@ export function TaskNeedsYou({ detail, onChanged }: { detail: TaskDetail; onChan
           </div>
         </div>
       ) : null}
-      {stopped && w && !question ? (
+      {stopped && w && asked ? (
+        <div className="needs-card">
+          <p className="small muted">{w.step_key ? stepName(w.step_key) : "The agent"} asks:</p>
+          <p>{asked}</p>
+          <textarea
+            className="input textarea"
+            rows={3}
+            aria-label="Your answer to the agent"
+            placeholder="Your answer: the agent continues as soon as it is sent"
+            value={answer}
+            onChange={(e) => setAnswer(e.target.value)}
+          />
+          {error ? <ErrorNotice title="Not sent" message={error.message} code={error.code} /> : null}
+          <div className="form-actions start">
+            <Button
+              variant="primary"
+              disabled={busy || answer.trim() === ""}
+              onClick={() =>
+                act(async () => {
+                  const r = await sendNote(w.task_id, answer.trim());
+                  setAnswer("");
+                  if (!r.delivered) {
+                    throw new Error("The answer is saved and goes with the step's next run: the agent's session is not running right now.");
+                  }
+                })
+              }
+            >
+              Send answer
+            </Button>
+            <Button variant="ghost" disabled={busy} onClick={() => act(() => cancelWorkflow(w.task_id))}>
+              Stop the workflow
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      {stopped && w && !question && !asked ? (
         <div className="needs-card">
           <p>{humanizeSteps(w.reason ?? "")}</p>
           {error ? <ErrorNotice title="Not done" message={error.message} code={error.code} /> : null}

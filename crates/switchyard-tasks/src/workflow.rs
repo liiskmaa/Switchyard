@@ -269,9 +269,15 @@ impl Step {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum Resume {
-    /// The current assignment is still open (an agent's question, or a
-    /// paused step still running): just continue.
+    /// The current assignment is still open (a paused step still running,
+    /// or an agent's question in a workflow stored before `Answer`): just
+    /// continue.
     Continue,
+    /// The current step's agent asked the operator this question. Only the
+    /// operator's answer, delivered to the agent as a note
+    /// (`Input::Answered`), continues; resuming without one is refused, so
+    /// the workflow never shows "running" while its agent waits.
+    Answer { question: String },
     /// Send the current assignment another repair note.
     Repair,
     /// Start this step.
@@ -439,10 +445,16 @@ pub enum Input {
         step: String,
         error: String,
     },
-    /// The step's agent asked the operator a question; the assignment stays open.
+    /// The step's agent asked the operator a question; the assignment stays
+    /// open. `summary` is the question as the agent put it.
     Question {
         step: String,
         summary: String,
+    },
+    /// The operator's note answering the step's question was delivered to
+    /// its agent (the agent is working again).
+    Answered {
+        step: String,
     },
     /// The step's assignment ended without a report.
     Ended {
@@ -538,6 +550,10 @@ pub struct Decision {
 pub enum WorkflowError {
     #[error("the workflow is {0}")]
     NotAllowed(&'static str),
+    #[error(
+        "the agent asked a question and is waiting for your answer: answer it with a note on the task page"
+    )]
+    NeedsAnswer,
 }
 
 /// Decides what happens next. Inputs about a step other than the current
@@ -589,6 +605,7 @@ pub fn decide(state: &WorkflowState, input: &Input) -> Result<Decision, Workflow
             WorkflowStatus::Waiting | WorkflowStatus::Paused => {
                 d.changes.push(Change::Resumed);
                 match state.on_resume.clone().unwrap_or(Resume::Continue) {
+                    Resume::Answer { .. } => return Err(WorkflowError::NeedsAnswer),
                     Resume::Continue => run(&mut d),
                     Resume::Repair => {
                         run(&mut d);
@@ -724,13 +741,23 @@ pub fn decide(state: &WorkflowState, input: &Input) -> Result<Decision, Workflow
             if current_for(state, step).is_none() {
                 return Ok(d);
             }
+            let q = summary.trim();
+            let stop = if q.ends_with(['.', '?', '!']) { "" } else { "." };
             wait(
                 &mut d,
                 format!(
-                    "{step} asks you: {summary}. Answer with a note; the workflow continues when it reports."
+                    "{step} asks you: {q}{stop} Answer it; the workflow continues when the agent reports."
                 ),
-                Resume::Continue,
+                Resume::Answer { question: q.to_owned() },
             );
+        }
+        Input::Answered { step } => {
+            let asked = matches!(state.on_resume, Some(Resume::Answer { .. } | Resume::Continue));
+            if status != WorkflowStatus::Waiting || !asked || current_for(state, step).is_none() {
+                return Ok(d);
+            }
+            d.changes.push(Change::Resumed);
+            run(&mut d);
         }
         Input::Ended { step, cancelled, reason } => {
             let Some(current) = current_for(state, step) else { return Ok(d) };
@@ -1540,6 +1567,31 @@ mod tests {
         let q =
             apply(&d.state, Input::Question { step: "investigate#1".into(), summary: "which file?".into() });
         assert_eq!(q.state.status, WorkflowStatus::Waiting);
+        assert_eq!(q.state.on_resume, Some(Resume::Answer { question: "which file?".into() }));
+        assert_eq!(
+            q.state.reason.as_deref(),
+            Some(
+                "investigate#1 asks you: which file? Answer it; the workflow continues when the agent reports."
+            )
+        );
+        // Resuming without an answer is refused: the agent is still waiting.
+        assert_eq!(decide(&q.state, &Input::Resume), Err(WorkflowError::NeedsAnswer));
+        // The answer reached the agent: the workflow runs again, nothing new starts.
+        let answered = apply(&q.state, Input::Answered { step: "investigate#1".into() });
+        assert_eq!((answered.state.status, &answered.action), (WorkflowStatus::Running, &Action::None));
+        assert_eq!(answered.changes, vec![Change::Resumed]);
+        // A note about another step, or with nothing asked, changes nothing.
+        let other = apply(&q.state, Input::Answered { step: "implement#1".into() });
+        assert_eq!(other.state, q.state);
+        let unasked = apply(&d.state, Input::Answered { step: "investigate#1".into() });
+        assert_eq!((unasked.state, unasked.changes), (d.state.clone(), vec![]));
+        // A question stored before `Answer` existed is answered the same way.
+        let mut legacy = q.state.clone();
+        legacy.on_resume = Some(Resume::Continue);
+        assert_eq!(
+            apply(&legacy, Input::Answered { step: "investigate#1".into() }).state.status,
+            WorkflowStatus::Running
+        );
         // The agent answers after the operator's note: the workflow continues by itself.
         assert_eq!(key(&report(&q, Outcome::Done)), "implement#1");
         let i = apply(&d.state, Input::Interrupted { step: "investigate#1".into() });

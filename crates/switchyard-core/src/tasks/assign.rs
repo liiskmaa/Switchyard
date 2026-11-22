@@ -645,6 +645,7 @@ impl TaskService {
     ) -> Result<TasksNoteResult, ProtocolError> {
         let text = super::validate_note(Some(text))?.ok_or_else(|| invalid_params("the note is empty"))?;
         let payload_text = text.clone();
+        let by = actor.clone();
         let (message, live) = commit_checked(&self.storage, &self.bus, move |tx| {
             let now = now_ms();
             let mut drafts = Vec::new();
@@ -667,11 +668,12 @@ impl TaskService {
                 now,
             );
             record_message(tx, &t, &m, Some(&payload_text), &mut drafts)?;
-            Ok(Ok(((m, active.and_then(|a| a.session_id.map(|s| (a.id, s)))), drafts)))
+            Ok(Ok(((m, active.and_then(|a| a.session_id.map(|s| (a.id, s, a.step_key)))), drafts)))
         })
         .await?;
         let mut delivered = false;
-        if let Some((assignment, session)) = live
+        let mut answered = None;
+        if let Some((assignment, session, step)) = live
             && self.agents.is_attached(session)
         {
             let body = format!(
@@ -688,9 +690,16 @@ impl TaskService {
                         .await
                         .map_err(errors::storage)?
                         > 0;
+                    answered = step;
                 }
                 Err(err) => tracing::info!(%task_id, ?err, "note kept for the next assignment"),
             }
+        }
+        // The agent is working again: a workflow waiting for its answer runs.
+        if let Some(step) = answered
+            && let Err(err) = self.answered(task_id, step, by).await
+        {
+            tracing::warn!(%task_id, ?err, "workflow did not take the answer");
         }
         let id = message.id;
         let message = self

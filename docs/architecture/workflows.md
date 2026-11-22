@@ -59,7 +59,7 @@ findings, no correction role), ADR 0039 (the test gate), ADR 0040 (subtasks).
 | Review `blocked` (e.g. the workspace changed during it) | the review again (`review#n@2`) |
 | An agent reports a blocker | the step again |
 | No usable report after 2 automatic repair notes | another repair note |
-| An agent asks a question | continue (answer with a note; it continues when the agent reports) |
+| An agent asks a question | refused: only the operator's answer continues. The note (`tasks.note`) is delivered to the waiting session and the workflow runs again (`Input::Answered`); `WorkflowInfo.question` carries the agent's question. Workflows stored before this change (resume `continue`) are answered the same way. |
 | A session failed twice (one automatic retry, same provider and model) | the step again |
 | You cancelled the step's assignment | the step again |
 | Core restarted while the step ran | the step again (agents are never restarted automatically) |

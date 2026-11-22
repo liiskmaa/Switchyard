@@ -939,6 +939,11 @@ pub struct WorkflowInfo {
     /// The subtask being worked on, 1-based.
     #[serde(default)]
     pub subtask: Option<u32>,
+    /// The question the current step's agent asked, while the workflow waits
+    /// for the operator's answer (sent with `tasks.note`). Resuming without
+    /// an answer is refused.
+    #[serde(default)]
+    pub question: Option<String>,
 }
 
 /// One planned subtask of a workflow (ADR 0040).

@@ -690,6 +690,8 @@ export interface WorkflowInfo {
   plan?: { title: string; description?: string; done: boolean }[];
   /** The subtask being worked on, 1-based. */
   subtask?: number | null;
+  /** The step's agent asked this and waits for the answer (sent with `tasks.note`); Resume is refused until then. */
+  question?: string | null;
 }
 
 // --- agent organizations (M8.3) ---------------------------------------------------

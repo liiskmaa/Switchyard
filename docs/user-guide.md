@@ -231,7 +231,7 @@ It stops and waits for you ("Needs you") when:
 | Reasoning planned more than 8 subtasks | **Resume** implements the task as one piece |
 | Review is *blocked* (e.g. files changed during review) | **Resume** reruns the review |
 | An agent reports a blocker | Fix the cause, then **Resume** |
-| An agent asks a question | **Send answer**; it continues |
+| An agent asks a question | Type your answer under **Needs you** and press **Send answer**; the same agent continues. Resume does nothing until you answer. |
 | An agent twice gave no usable report | **Resume** (sends another reminder) |
 | A session failed twice | **Resume** retries the step |
 | Core was restarted mid-step | **Resume** (agents are never restarted on their own) |

@@ -211,6 +211,8 @@ fn resume_text(state: &WorkflowState) -> Option<String> {
         return None;
     }
     Some(match &state.on_resume {
+        // Only the operator's answer continues (`question` on the wire).
+        Some(Resume::Answer { .. }) => return None,
         None | Some(Resume::Continue) => "continue".into(),
         Some(Resume::Repair) => "send the agent another repair note".into(),
         Some(Resume::Start { step }) => format!("start {}", step.key()),
@@ -256,6 +258,10 @@ fn wire(w: &WorkflowRecord) -> Result<WorkflowInfo, StorageError> {
             })
             .collect(),
         subtask: state.current.as_ref().and_then(|s| s.subtask),
+        question: match (&state.status, &state.on_resume) {
+            (WorkflowStatus::Waiting, Some(Resume::Answer { question })) => Some(question.clone()),
+            _ => None,
+        },
     })
 }
 
@@ -514,6 +520,21 @@ impl TaskService {
             self.retry(task_id, Some("continued by the workflow".into()), actor.clone()).await?;
         }
         self.operator_input(task_id, Input::Resume, actor).await
+    }
+
+    /// The operator's note reached the agent of an engineering workflow's
+    /// step: if the workflow waited for that answer, it runs again.
+    pub(super) async fn answered(
+        &self,
+        task_id: Uuid,
+        step: String,
+        by: String,
+    ) -> Result<(), ProtocolError> {
+        let engineering = self.workflow(task_id).await?.is_some_and(|w| w.definition == wf::DEFINITION);
+        if !engineering {
+            return Ok(());
+        }
+        self.apply_input(task_id, Input::Answered { step }, None, by).await
     }
 
     pub async fn cancel_workflow(
@@ -930,7 +951,14 @@ impl TaskService {
                     }
                 }
             }
-            DomainEvent::TaskMessageRecorded { kind, sender, assignment_id: Some(id), summary, .. } => {
+            DomainEvent::TaskMessageRecorded {
+                message_id,
+                kind,
+                sender,
+                assignment_id: Some(id),
+                summary,
+                ..
+            } => {
                 let unusable = kind == "malformed_report" && sender == "core";
                 let question = kind == "info_request" && sender == "agent";
                 if !unusable && !question {
@@ -945,7 +973,24 @@ impl TaskService {
                 if unusable {
                     Some(Input::Unusable { step, error: summary })
                 } else {
-                    Some(Input::Question { step, summary })
+                    // The agent's own question, from Core's record of its report.
+                    let (task, message) = (a.task_id, *message_id);
+                    let asked = self
+                        .storage
+                        .call(move |c| {
+                            Ok(store::messages_for_task(c, task)?
+                                .into_iter()
+                                .find(|m| m.id == message)
+                                .and_then(|m| {
+                                    m.payload["report"]["question"].as_str().map(|q| super::bounded(q, 2000))
+                                }))
+                        })
+                        .await
+                        .map_err(errors::storage)?;
+                    Some(Input::Question {
+                        step,
+                        summary: asked.filter(|q| !q.trim().is_empty()).unwrap_or(summary),
+                    })
                 }
             }
             DomainEvent::TaskStatusChanged { to, .. }
