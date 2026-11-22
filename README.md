@@ -141,6 +141,8 @@ npm install
 npm run dev          # builds Core, then launches the desktop app (Core starts automatically)
 ```
 
+New to Switchyard? Read the [user guide](docs/user-guide.md).
+
 Then:
 
 1. **Projects → Add repository** and pick a local Git repository.
@@ -219,6 +221,7 @@ docs/                        Architecture, ADRs, protocol specs
 
 ## Documentation
 
+- **[User guide (start here)](docs/user-guide.md)**: how to use Switchyard, every setting, every use case
 - [Architecture overview](docs/architecture/overview.md)
 - [Workspaces: lifecycle, isolation, cleanup](docs/architecture/workspaces.md)
 - [Approval policies](docs/architecture/policies.md)
