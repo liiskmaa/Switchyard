@@ -15,6 +15,7 @@ import type {
 } from "../../types/protocol";
 import { cancelWorkflow, getOrganization, isOrganizationEvent, organizationEvents, pauseWorkflow, resumeWorkflow } from "./api";
 import { TeamFlow } from "./TeamFlow";
+import { LiveActivity } from "./LiveActivity";
 import { type Team, YOU, buildTeam } from "./team";
 import { type BoardItem, type BoardLane, WorkBoard, openTask, providerModel } from "./WorkBoard";
 
@@ -321,6 +322,7 @@ export function OrganizationPanel({ detail, onChanged }: { detail: TaskDetail; o
         events={events.data ?? []}
         now={detail.workflow?.status === "delivered" ? "Delivered: the approved work is merged." : nowText(o)}
       />
+      {live ? <LiveActivity workspaceId={o.workspace_id} /> : null}
       {o.final_summary ? <p className="small">{o.final_summary}</p> : null}
       {error ? <ErrorNotice title="Not done" message={error.message} code={error.code} /> : null}
 

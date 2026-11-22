@@ -151,14 +151,23 @@ pub fn check(s: &Snapshot, now_ms: i64, l: &Limits) -> Option<Stuck> {
             Kind::Workflow => Remedy::InterruptStep(step.key.clone()),
             Kind::Team => Remedy::None,
         };
+        let detail = match s.kind {
+            Kind::Workflow => format!(
+                "The step {} is open but its agent session ended (a crash or a restart). Switchyard ends the step; \
+                 resume to run it again.",
+                step.key
+            ),
+            Kind::Team => format!(
+                "The team's current turn ({}) has no running agent session (a crash, a restart, or a start that \
+                 failed). Stop the team and start it again, or restart Core and resume: Core then settles the \
+                 interrupted turn.",
+                step.key
+            ),
+        };
         return Some(Stuck {
             code: Code::OrphanedStep,
             title: format!("{}'s agent is not running", step.key),
-            detail: format!(
-                "The step {} is open but its agent session ended (a crash or a restart). Switchyard marks it \
-                 interrupted; resume to run it again.",
-                step.key
-            ),
+            detail,
             since_ms: step.since_ms,
             remedy,
         });

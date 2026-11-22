@@ -72,6 +72,8 @@ const WATCHED: [&str; 9] = [
 /// Failed tool operations in one work turn that make Core interrupt it.
 const MAX_TOOL_FAILURES: u32 = 3;
 const ACTOR: &str = "organization";
+/// Why Core closes a step it handed to the supervisor (a question, an unusable turn).
+const HANDED_OFF: &str = "handed to its supervisor";
 
 /// The project's organization settings.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1066,6 +1068,12 @@ impl TaskService {
                 {
                     return;
                 }
+                // Core's own hand-off after a question or an unusable turn: that turn
+                // was already given to the organization; counting it again would
+                // fail the next turn of the same task before it starts.
+                if status == "cancelled" && outcome.as_deref() == Some(HANDED_OFF) {
+                    return;
+                }
                 let Ok(state) = state_of(&rec) else { return };
                 let Some(t) = state.task_by_id(a.task_id) else { return };
                 if !matches!(&state.activity, Activity::Working { task, .. } if *task == t.key) {
@@ -1133,8 +1141,7 @@ impl TaskService {
                 // task) first, so the next step never starts beside a session that is
                 // still stopping. The cancellation's own event comes later and finds
                 // the organization moved on.
-                let _ =
-                    self.cancel_assignment(a.id, Some("handed to its supervisor".into()), ACTOR.into()).await;
+                let _ = self.cancel_assignment(a.id, Some(HANDED_OFF.into()), ACTOR.into()).await;
                 let input = Input::Worked { task: t.key.clone(), outcome, evidence, now_ms: now_ms() };
                 if let Err(err) = self.apply_org(rec.task_id, input, Some(seq)).await {
                     tracing::error!(?err, "cannot apply a work turn");
@@ -1848,6 +1855,11 @@ fn decide_in_tx(
                         format!("{} could not be started: {}. Resume to try again.", t.title, e.message);
                     if let Some(tt) = d.state.tasks.iter_mut().find(|x| x.key == t.key) {
                         tt.state = TaskState::Ready;
+                        // The turn never started: its instructions go back, so the
+                        // retry gets them (they were moved out for this turn).
+                        let mut back = std::mem::take(&mut tt.current_instructions);
+                        back.append(&mut tt.instructions);
+                        tt.instructions = back;
                     }
                     d.state.activity = Activity::Idle;
                     d.state.status = OrgStatus::Waiting;

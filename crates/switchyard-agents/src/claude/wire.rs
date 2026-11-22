@@ -31,6 +31,9 @@ pub struct Normalizer {
     pending_permissions: HashMap<String, Option<String>>,
     interrupt_ids: HashSet<String>,
     next_control_id: u64,
+    /// The agent produced something (a message, streamed text, a tool call)
+    /// since the current turn's `init`.
+    turn_output: bool,
 }
 
 impl Normalizer {
@@ -70,7 +73,7 @@ impl Normalizer {
             Some("stream_event") => self.stream_event(&message),
             Some("assistant") => self.assistant(&message),
             Some("user") => self.user(&message),
-            Some("result") => vec![self.result(&message)],
+            Some("result") => self.result(&message),
             Some("control_request") => self.control_request(&message),
             Some("control_response") => self.control_response(&message),
             Some("control_cancel_request") => self.control_cancel(&message),
@@ -79,6 +82,9 @@ impl Normalizer {
     }
 
     fn system(&mut self, m: &Value) -> Vec<AdapterOutput> {
+        if m.get("subtype").and_then(Value::as_str) == Some("init") {
+            self.turn_output = false;
+        }
         match m.get("subtype").and_then(Value::as_str) {
             // `init` is repeated at the start of every turn; report it once.
             Some("init") if !self.ready => {
@@ -110,6 +116,7 @@ impl Normalizer {
     }
 
     fn stream_event(&mut self, m: &Value) -> Vec<AdapterOutput> {
+        self.turn_output = true;
         // Sub-agent output (parent_tool_use_id set) is not streamed live.
         if m.get("parent_tool_use_id").is_some_and(|p| !p.is_null()) {
             return Vec::new();
@@ -140,6 +147,7 @@ impl Normalizer {
     }
 
     fn assistant(&mut self, m: &Value) -> Vec<AdapterOutput> {
+        self.turn_output = true;
         let message = m.get("message").unwrap_or(&Value::Null);
         let message_id = str_field(message, "id");
         let blocks = message.get("content").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -208,13 +216,30 @@ impl Normalizer {
         out
     }
 
-    fn result(&mut self, m: &Value) -> AdapterOutput {
+    fn result(&mut self, m: &Value) -> Vec<AdapterOutput> {
         let subtype = str_field(m, "subtype");
         let is_error = m.get("is_error").and_then(Value::as_bool).unwrap_or(true);
         let terminal = str_field(m, "terminal_reason");
         let interrupted = terminal.as_deref().is_some_and(|r| r.starts_with("aborted"));
         let result_text = str_field(m, "result").map(|t| truncate(&t, MAX_DURABLE_TEXT).0);
-        AdapterOutput::Event(AgentEvent::TurnFinished {
+        // Seen with Claude Code 2.1.330: after resuming a session whose last turn
+        // was interrupted, the CLI first emits a leftover `result` (success, no
+        // text, no cost of its own) and only then works on the new message. It
+        // is not the end of this turn: no output, no model use since `init`.
+        let empty = result_text.as_deref().is_none_or(|t| t.trim().is_empty());
+        if subtype.as_deref() == Some("success")
+            && !is_error
+            && empty
+            && turn_cost(m).is_none()
+            && !self.turn_output
+        {
+            return vec![AdapterOutput::Event(AgentEvent::Warning {
+                message: "ignored a result with no output and no cost of its own (a leftover after a resume)"
+                    .into(),
+            })];
+        }
+        self.turn_output = false;
+        vec![AdapterOutput::Event(AgentEvent::TurnFinished {
             success: subtype.as_deref() == Some("success") && !is_error,
             interrupted,
             stop_reason: str_field(m, "stop_reason"),
@@ -225,7 +250,7 @@ impl Normalizer {
             usage: None,
             num_turns: m.get("num_turns").and_then(Value::as_u64),
             result_text,
-        })
+        })]
     }
 
     fn control_request(&mut self, m: &Value) -> Vec<AdapterOutput> {
@@ -450,6 +475,32 @@ mod tests {
         // An aborted turn reports no usage: unknown, not zero.
         let interrupted = turn_costs(&replay("interrupt").1);
         assert_eq!(interrupted[0].1, None);
+    }
+
+    #[test]
+    fn a_leftover_result_after_a_resume_does_not_end_the_turn() {
+        let mut n = Normalizer::new();
+        let init =
+            br#"{"type":"system","subtype":"init","session_id":"s1","tools":[],"model":"m","cwd":"/w"}"#;
+        n.ingest(init);
+        // Success, no text, no model use since the last result, nothing produced yet.
+        let leftover = br#"{"type":"result","subtype":"success","is_error":false,"result":"","duration_ms":176,"total_cost_usd":4.4,"model_usage_since_last_result":{}}"#;
+        let out = n.ingest(leftover);
+        assert!(matches!(&out[..], [AdapterOutput::Event(AgentEvent::Warning { .. })]), "{out:?}");
+        // The real turn follows and ends normally.
+        n.ingest(br#"{"type":"assistant","message":{"id":"m1","content":[{"type":"text","text":"done"}]}}"#);
+        let real = br#"{"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":4.5,"model_usage_since_last_result":{"m":{"costUSD":0.1}}}"#;
+        assert!(matches!(
+            &n.ingest(real)[..],
+            [AdapterOutput::Event(AgentEvent::TurnFinished { success: true, .. })]
+        ));
+        // An interrupted turn still ends, output or not.
+        n.ingest(init);
+        let aborted = br#"{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_tools"}"#;
+        assert!(matches!(
+            &n.ingest(aborted)[..],
+            [AdapterOutput::Event(AgentEvent::TurnFinished { interrupted: true, .. })]
+        ));
     }
 
     #[test]

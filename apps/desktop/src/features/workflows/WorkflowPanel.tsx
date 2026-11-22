@@ -29,6 +29,7 @@ import {
   workflowTone,
 } from "./labels";
 import { TaskFlow } from "./TaskFlow";
+import { LiveActivity } from "./LiveActivity";
 import { WorkBoard } from "./WorkBoard";
 import { roleLanes } from "./board";
 import { buildFlow } from "./flow";
@@ -244,6 +245,7 @@ export function WorkflowPanel({ detail, onChanged }: { detail: TaskDetail; onCha
       actions={<Badge tone={workflowTone(w.status)}>{WORKFLOW_STATUS_LABEL[w.status]}</Badge>}
     >
       <TaskFlow detail={detail} />
+      {!final ? <LiveActivity workspaceId={w.workspace_id} /> : null}
       {flow ? <WorkBoard lanes={roleLanes(detail, flow, now)} /> : null}
       {w.plan && w.plan.length > 0 ? (
         <section aria-label="Work plan">

@@ -871,3 +871,22 @@ details.advanced > summary { cursor: pointer; color: var(--muted); font-size: 13
 /* The watchdog's finding on a task (ADR 0045). */
 .stuck-card { border-color: var(--warn); }
 .stuck-done { color: var(--ok); }
+
+/* What the agents are doing now, under the graph. */
+.live { display: flex; flex-direction: column; gap: 8px; margin: 0 0 12px; }
+.live-activity { border: 1px solid var(--border); border-left: 3px solid var(--faint); border-radius: var(--radius); padding: 8px 10px; background: var(--panel-raised); }
+.live-activity.working { border-left-color: var(--accent); }
+.live-activity.needs_you { border-left-color: var(--warn); }
+.live-now { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); align-self: center; }
+.live-activity.working .live-dot { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); animation: flow-pulse 1.6s ease-out infinite; }
+.live-activity.needs_you .live-dot { background: var(--warn); }
+.live-what { color: var(--text-strong); font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; min-width: 0; flex: 1 1 20em; }
+.live-time { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 600; }
+.live-recent { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.live-recent li { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; }
+.live-text { color: var(--muted); overflow-wrap: anywhere; }
+.live-tool .live-text { font-family: var(--mono); font-size: 11.5px; }
+.live-message .live-text { color: var(--text); }
+.live-approval .live-text { color: var(--warn); }
+@media (prefers-reduced-motion: reduce) { .live-activity.working .live-dot { animation: none; } }
