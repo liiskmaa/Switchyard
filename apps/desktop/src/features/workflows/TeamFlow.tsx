@@ -2,7 +2,7 @@ import { providerName } from "../../lib/agents";
 import { useNow } from "../../lib/useNow";
 import type { EventEnvelope, OrganizationInfo } from "../../types/protocol";
 import { formatDuration } from "./flow";
-import { type Handoff, type TeamNode, YOU, buildTeam } from "./team";
+import { type Handoff, type Keeper, type TeamNode, YOU, buildTeam } from "./team";
 import { showLane } from "./WorkBoard";
 
 const R = 32;
@@ -77,6 +77,47 @@ export function wrapName(title: string, width = 22): string[] {
   if (lines.length > 2) return [lines[0] ?? "", short(lines.slice(1).join(" "), width)];
   return lines;
 }
+/**
+ * The goal keeper beside you: a dashed ring (it is not an agent of the team),
+ * who judges, and its status; a dashed line to the lead it watches, labelled
+ * with the last verdict. A click opens the goal checklist below.
+ */
+function KeeperNode({ k, lead }: { k: Keeper; lead: TeamNode | undefined }) {
+  const label = `Goal keeper: ${k.referee ? `checked by ${k.referee}` : "no agent available"}. ${k.line}.`;
+  const show = () => document.getElementById("goal-title")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  return (
+    <g>
+      {lead ? (
+        <g className={`flow-route keeper-route ${k.state}`}>
+          <path d={`M ${k.x} ${k.y + R + 4} Q ${k.x} ${(k.y + lead.y) / 2} ${lead.x + R + 4} ${lead.y - 6}`} />
+          {k.verdict ? (
+            <text x={k.x + 8} y={(k.y + lead.y) / 2 + 10} className="flow-label">
+              {short(k.verdict, 18)}
+            </text>
+          ) : null}
+        </g>
+      ) : null}
+      <g className={`flow-node keeper ${k.state} clickable`} onClick={show} role="button" aria-label={label}>
+        <title>{`${label} It checks the code changes against the objective after accepted work and every 30 minutes. It never approves or completes anything.`}</title>
+        {k.state === "checking" || k.state === "needs_you" ? <circle cx={k.x} cy={k.y} r={R + 6} className="flow-halo" /> : null}
+        <circle cx={k.x} cy={k.y} r={R} className="flow-disc" />
+        <text x={k.x} y={k.y + 4} textAnchor="middle" className="flow-name">
+          GK
+        </text>
+        <text x={k.x} y={k.y + R + 16} textAnchor="middle" className="flow-node-title">
+          Goal keeper
+        </text>
+        <text x={k.x} y={k.y + R + 30} textAnchor="middle" className="flow-sub">
+          {k.referee ? short(k.referee, 24) : "no agent"}
+        </text>
+        <text x={k.x} y={k.y + R + 44} textAnchor="middle" className="flow-sub keeper-line">
+          {short(k.line, 26)}
+        </text>
+      </g>
+    </g>
+  );
+}
+
 const same = (a: Handoff | null, from: string, to: string) => a !== null && a.from === from && a.to === to;
 
 /**
@@ -137,6 +178,7 @@ export function TeamFlow({ org, events, now: caption }: { org: OrganizationInfo;
             </g>
           );
         })}
+        {team.keeper.watches ? <KeeperNode k={team.keeper} lead={node.get(team.keeper.watches)} /> : null}
         {team.nodes.map((n) => {
           const time = team.times[n.key];
           const running = time?.runningSinceMs !== undefined;

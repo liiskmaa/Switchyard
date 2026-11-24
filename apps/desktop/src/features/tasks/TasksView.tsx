@@ -43,6 +43,11 @@ export function TasksView() {
     refreshOn: isWorkspaceEvent,
   });
   const list = tasks.data ?? [];
+  // Subtasks are working items of their main task: once finished or cancelled they leave the list
+  // (they stay on the main task's page). The selected one stays visible.
+  const shown = list.filter(
+    (t) => t.parent_task_id === null || !["completed", "cancelled"].includes(t.status) || t.id === taskId,
+  );
 
   if (projects.data && projects.data.length === 0) {
     return (
@@ -89,7 +94,7 @@ export function TasksView() {
         </select>
         <label className="check">
           <input type="checkbox" checked={includeClosed} onChange={(e) => setIncludeClosed(e.target.checked)} /> Show completed and
-          cancelled
+          cancelled tasks (finished subtasks stay on their main task)
         </label>
       </div>
       {tasks.error ? <ErrorNotice title="Cannot load tasks" message={tasks.error.message} code={tasks.error.code} /> : null}
@@ -107,12 +112,12 @@ export function TasksView() {
       ) : null}
       <div className="split">
         <div className="list" role="listbox" aria-label="Tasks">
-          {list.length === 0 && tasks.data ? (
+          {shown.length === 0 && tasks.data ? (
             <EmptyState icon="approvals" title="No tasks">
               Create a task, then assign an agent to investigate or implement it.
             </EmptyState>
           ) : null}
-          {taskTree(list).map(({ task: t, depth, last, orphan, children }) => (
+          {taskTree(shown).map(({ task: t, depth, last, orphan, children }) => (
             <button
               key={t.id}
               type="button"

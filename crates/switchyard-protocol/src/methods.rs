@@ -1102,6 +1102,37 @@ pub struct WorkflowResult {
 
 method!(WorkflowsStart, "workflows.start", WorkflowsStartParams, WorkflowResult);
 
+/// Starts a cancelled or failed task again as a new task (same title,
+/// description and criteria) with its workflow or team.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TasksStartAgainParams {
+    pub task_id: Uuid,
+    /// Continue in the old task's workspace, with the work already done
+    /// (default); `false` starts from the project's current branch.
+    #[serde(default = "yes")]
+    pub keep_work: bool,
+    /// As in `workflows.start`: `engineering` or `organization`; by default
+    /// the old task's definition.
+    #[serde(default)]
+    pub definition: Option<String>,
+    #[serde(default)]
+    pub lead: Option<RoleBinding>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TasksStartAgainResult {
+    pub task: Task,
+    /// The new workflow, or why it did not start (the task exists either way).
+    pub workflow: Option<WorkflowInfo>,
+    pub start_error: Option<String>,
+}
+
+method!(TasksStartAgain, "tasks.start_again", TasksStartAgainParams, TasksStartAgainResult);
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowsGetResult {
     pub workflow: Option<WorkflowInfo>,
@@ -1179,6 +1210,23 @@ pub struct OrganizationsAnswerParams {
 }
 
 method!(OrganizationsAnswer, "organizations.answer", OrganizationsAnswerParams, OrganizationsGetResult);
+
+/// The user's decision on work proposed outside the agreed scope (ADR 0046).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OrganizationsDecideScopeParams {
+    pub task_id: Uuid,
+    /// The proposed organization task's key.
+    pub key: String,
+    pub approve: bool,
+}
+
+method!(
+    OrganizationsDecideScope,
+    "organizations.decide_scope",
+    OrganizationsDecideScopeParams,
+    OrganizationsGetResult
+);
 
 method!(OrganizationsSettings, "organizations.settings", ProjectIdParams, OrgSettingsInfo);
 

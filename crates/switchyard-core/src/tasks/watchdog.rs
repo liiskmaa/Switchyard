@@ -39,6 +39,15 @@ pub(crate) struct Findings {
     told: HashSet<(Uuid, String)>,
     /// Orphaned steps already cancelled.
     cancelled: HashSet<Uuid>,
+    /// Teams whose goal check runs now (ADR 0046).
+    pub(super) goal_running: HashSet<Uuid>,
+    /// Teams whose last goal check gave no verdict: not again before this time.
+    pub(super) goal_retry: HashMap<Uuid, i64>,
+    /// Why a team's last goal check gave no verdict, and when.
+    pub(super) goal_failed: HashMap<Uuid, (i64, String)>,
+    /// Providers whose referee turn failed (a usage limit, say): not chosen
+    /// as referee again before this time.
+    pub(super) referee_unusable: HashMap<String, i64>,
 }
 
 pub(crate) type SharedFindings = Arc<Mutex<Findings>>;
@@ -227,6 +236,16 @@ impl TaskService {
         let mut seen = HashSet::new();
         for g in gathered {
             seen.insert(g.task_id);
+            // A team's goal check, when due (ADR 0046).
+            if g.snapshot.kind == Kind::Team {
+                let id = g.task_id;
+                if let Ok(rec) = self.storage.call(move |c| org_store::get(c, id)).await
+                    && let Ok(state) =
+                        serde_json::from_value::<switchyard_tasks::organization::OrgState>(rec.state)
+                {
+                    self.maybe_check_goal(id, &state, now);
+                }
+            }
             let found = check(&g.snapshot, now, &self.watchdog_limits);
             let mut applied = None;
             if let Some(Stuck { remedy, .. }) = &found {
@@ -309,13 +328,15 @@ impl TaskService {
         }
     }
 
-    /// Stores the finding and journals a change (`task.stuck_changed`).
+    /// Stores the finding and journals a change (`task.stuck_changed`). A
+    /// title that only counts on ("silent for 401 min", "… 402 min") is the
+    /// same finding: it is kept up to date in memory but not journaled again.
     async fn record_stuck(&self, task: Uuid, item: Option<StuckItem>) {
         let changed = {
             let mut f = self.findings.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            let before =
-                f.stuck.get(&task).map(|i| (i.code.clone(), i.title.clone(), i.remedy_applied.clone()));
-            let after = item.as_ref().map(|i| (i.code.clone(), i.title.clone(), i.remedy_applied.clone()));
+            let key = |i: &StuckItem| (i.code.clone(), same_finding(&i.title), i.remedy_applied.clone());
+            let before = f.stuck.get(&task).map(key);
+            let after = item.as_ref().map(key);
             match &item {
                 Some(i) => {
                     f.stuck.insert(task, i.clone());
@@ -353,6 +374,16 @@ impl TaskService {
     }
 }
 
+/// A finding's title without its counts (words that are only a number), so
+/// a growing count is no change; a step key such as `org:review#4` stays.
+fn same_finding(title: &str) -> String {
+    title
+        .split_whitespace()
+        .map(|w| if w.chars().all(|c| c.is_ascii_digit()) { "N" } else { w })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub(crate) fn spawn_watchdog(
     svc: TaskService,
     interval: Duration,
@@ -366,4 +397,19 @@ pub(crate) fn spawn_watchdog(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_growing_count_is_the_same_finding() {
+        assert_eq!(
+            super::same_finding("org:review#4 has been silent for 401 min"),
+            super::same_finding("org:review#4 has been silent for 402 min")
+        );
+        assert_ne!(
+            super::same_finding("org:review#4 has been silent for 9 min"),
+            super::same_finding("org:review#5 has been silent for 9 min")
+        );
+    }
 }

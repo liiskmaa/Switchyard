@@ -320,6 +320,26 @@ see [§10](#10-every-configuration-option)).
 > Teams are new and so far proven only with scripted test agents. Real models may write poor plans.
 > Start with small objectives and keep an eye on it.
 
+**Keeping a team on the goal.** The lead's first plan is the agreed scope. If it later wants to
+add implementation work that doesn't finish or fix an agreed task, that work waits under **Needs you** ("The lead
+wants to add work outside the agreed plan") until you **Approve** or **Decline** it; the team keeps
+working on the agreed tasks meanwhile. If a task is worked on three times without being accepted,
+or eight supervision turns pass without anything accepted, the team stops and tells you why; Resume
+allows one more try.
+
+After the lead accepts work (and at least every half hour), a separate agent, on a different provider
+than the lead when you have one installed, checks the code changes against the objective. Its checklist
+appears on the team page under **Progress toward the goal**. If every criterion is met, the lead is told
+to finish. If the team is drifting or going in circles, the team stops and tells you which work is off
+the objective; Resume continues anyway. The check is another model's opinion and can be wrong, so it
+never finishes, approves or cancels anything itself.
+
+**Stopping and starting again.** **Stop the team** (or cancelling a workflow) cancels the task and
+the team's open subtasks. The code stays in the task's workspace, and the cancelled task says so:
+**Start again with this work** opens a new task with the same description that continues in that
+workspace, and is told what the earlier team finished. **Start again from scratch** begins from your
+current branch. The two tasks link to each other.
+
 ### D. "I want to drive every step myself" (manual tasks)
 
 Create a task with *Run the engineering workflow* unticked. On the task page use **Assign and

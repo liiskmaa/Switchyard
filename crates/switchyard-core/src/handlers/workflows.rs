@@ -48,6 +48,13 @@ pub(super) async fn start(
     Ok(WorkflowResult { workflow: conn.state.tasks.start_workflow(p, actor(conn)).await? })
 }
 
+pub(super) async fn start_again(
+    conn: &Connection,
+    p: switchyard_protocol::methods::TasksStartAgainParams,
+) -> Result<switchyard_protocol::methods::TasksStartAgainResult, ProtocolError> {
+    conn.state.tasks.start_again(p, actor(conn)).await
+}
+
 pub(super) async fn get(state: &CoreState, p: TaskIdParams) -> Result<WorkflowsGetResult, ProtocolError> {
     Ok(WorkflowsGetResult { workflow: state.tasks.workflow(p.task_id).await? })
 }

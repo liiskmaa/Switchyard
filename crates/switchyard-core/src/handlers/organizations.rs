@@ -15,6 +15,13 @@ pub(super) async fn get(state: &CoreState, p: TaskIdParams) -> Result<Organizati
     Ok(OrganizationsGetResult { organization: state.tasks.organization(p.task_id).await? })
 }
 
+pub(super) async fn decide_scope(
+    state: &CoreState,
+    p: switchyard_protocol::methods::OrganizationsDecideScopeParams,
+) -> Result<OrganizationsGetResult, ProtocolError> {
+    Ok(OrganizationsGetResult { organization: state.tasks.decide_scope(p.task_id, p.key, p.approve).await? })
+}
+
 pub(super) async fn answer(
     state: &CoreState,
     p: OrganizationsAnswerParams,

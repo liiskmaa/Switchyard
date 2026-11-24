@@ -219,6 +219,9 @@ pub(crate) async fn dispatch(conn: &Connection, method: &str, params: Value) -> 
         methods::WorkflowsSetSettings::NAME => {
             typed::<methods::WorkflowsSetSettings, _, _>(params, |p| workflows::set_settings(conn, p)).await
         }
+        methods::TasksStartAgain::NAME => {
+            typed::<methods::TasksStartAgain, _, _>(params, |p| workflows::start_again(conn, p)).await
+        }
         methods::WorkflowsStart::NAME => {
             typed::<methods::WorkflowsStart, _, _>(params, |p| workflows::start(conn, p)).await
         }
@@ -258,6 +261,12 @@ pub(crate) async fn dispatch(conn: &Connection, method: &str, params: Value) -> 
         }
         methods::OrganizationsGet::NAME => {
             typed::<methods::OrganizationsGet, _, _>(params, |p| organizations::get(state, p)).await
+        }
+        methods::OrganizationsDecideScope::NAME => {
+            typed::<methods::OrganizationsDecideScope, _, _>(params, |p| {
+                organizations::decide_scope(state, p)
+            })
+            .await
         }
         methods::OrganizationsAnswer::NAME => {
             typed::<methods::OrganizationsAnswer, _, _>(params, |p| organizations::answer(state, p)).await

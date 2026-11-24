@@ -21,6 +21,7 @@
 //! Nothing here performs I/O or knows a provider.
 
 mod directive;
+pub mod goal;
 mod render;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -125,6 +126,8 @@ snake_enum!(
         Working => "working",
         /// Work reported (or ended); its supervisor reviews it next.
         Reported => "reported",
+        /// New work outside the agreed scope: it waits for the user (ADR 0046).
+        Proposed => "proposed",
         Accepted => "accepted",
         Cancelled => "cancelled",
     }
@@ -206,6 +209,10 @@ pub struct Limits {
     pub max_cost_usd: Option<f64>,
     /// Tokens, where the provider reports usage.
     pub max_tokens: Option<u64>,
+    /// Work turns on one task before the user is asked (ADR 0046).
+    pub max_task_turns: u32,
+    /// Supervision turns in a row without accepted work before the user is asked.
+    pub max_turns_without_progress: u32,
 }
 
 impl Default for Limits {
@@ -221,6 +228,8 @@ impl Default for Limits {
             max_minutes: 240,
             max_cost_usd: None,
             max_tokens: None,
+            max_task_turns: 3,
+            max_turns_without_progress: 8,
         }
     }
 }
@@ -237,6 +246,8 @@ impl Limits {
         range("max_retries", self.max_retries, 0, 5)?;
         range("max_supervision_turns", self.max_supervision_turns, 1, 200)?;
         range("max_minutes", self.max_minutes, 1, 24 * 60)?;
+        range("max_task_turns", self.max_task_turns, 1, 20)?;
+        range("max_turns_without_progress", self.max_turns_without_progress, 1, 100)?;
         if self.max_concurrent_sessions != 1 {
             return Err("max_concurrent_sessions must be 1: an organization works in one workspace, and a \
                         workspace runs one session at a time"
@@ -298,6 +309,14 @@ pub struct OrgTask {
     pub state: TaskState,
     pub corrections: u32,
     pub attempts: u32,
+    /// Work turns started on this task (the loop guard, ADR 0046).
+    #[serde(default)]
+    pub turns: u32,
+    /// A coordination area added after the plan was agreed: its own breakdown
+    /// is not agreed scope (its implementation work needs `continues` or the
+    /// user's approval).
+    #[serde(default)]
+    pub late: bool,
     /// Supervisor instructions for the owner's next turn.
     pub instructions: Vec<String>,
     /// The instructions of the turn that runs now (shown in its context).
@@ -460,6 +479,21 @@ pub struct OrgState {
     /// work (told once each; after that the user decides).
     #[serde(default)]
     pub dead_ends_reported: Vec<String>,
+    /// The first plan was made: later new work must continue a task or wait
+    /// for the user's approval (ADR 0046).
+    #[serde(default)]
+    pub scope_agreed: bool,
+    /// Supervision turns since work was last accepted (the loop guard).
+    #[serde(default)]
+    pub turns_since_progress: u32,
+    /// The latest goal check (ADR 0046, stage 2).
+    #[serde(default)]
+    pub goal: Option<goal::GoalReport>,
+    /// Work was accepted since the last goal check.
+    #[serde(default)]
+    pub goal_due: bool,
+    #[serde(default)]
+    pub last_goal_check_ms: i64,
 }
 
 /// An entry for the shared context, written by Core with the decision.
@@ -544,6 +578,17 @@ pub enum Input {
         status: String,
         now_ms: i64,
     },
+    /// The independent goal check's verdict (ADR 0046, stage 2).
+    GoalChecked {
+        report: goal::GoalReport,
+        now_ms: i64,
+    },
+    /// The user approves or declines work proposed outside the agreed scope (ADR 0046).
+    ScopeDecision {
+        key: String,
+        approve: bool,
+        now_ms: i64,
+    },
     /// Switchyard's watchdog (ADR 0045) found the team stuck (its resumes
     /// keep stopping at the same place): the lead decides how to continue.
     Nudge {
@@ -583,17 +628,51 @@ pub enum Action {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Change {
     Created,
-    AgentAdded { key: String },
-    TaskDelegated { key: String },
-    Assessed { task: String, verdict: Verdict, by: String, text: Option<String> },
-    Observed { task: String, text: String },
-    Escalated { by: String, to: EscalateTo, question: String },
-    DirectiveRejected { by: String, error: String },
-    Waiting { reason: String },
+    AgentAdded {
+        key: String,
+    },
+    TaskDelegated {
+        key: String,
+    },
+    /// New work outside the agreed scope waits for the user (ADR 0046).
+    ScopeProposed {
+        key: String,
+    },
+    /// The independent goal check judged the team (ADR 0046).
+    GoalChecked {
+        verdict: goal::Verdict,
+        summary: String,
+    },
+    Assessed {
+        task: String,
+        verdict: Verdict,
+        by: String,
+        text: Option<String>,
+    },
+    Observed {
+        task: String,
+        text: String,
+    },
+    Escalated {
+        by: String,
+        to: EscalateTo,
+        question: String,
+    },
+    DirectiveRejected {
+        by: String,
+        error: String,
+    },
+    Waiting {
+        reason: String,
+    },
     Paused,
     Resumed,
-    Done { summary: String },
-    Cancelled { reason: String },
+    Done {
+        summary: String,
+    },
+    Cancelled {
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -929,6 +1008,120 @@ pub fn decide(state: &OrgState, input: &Input) -> Result<Decision, OrgError> {
                 schedule(&mut d, *now_ms);
             }
         }
+        Input::GoalChecked { report, now_ms } => {
+            if matches!(state.status, OrgStatus::Done | OrgStatus::Cancelled) {
+                return Ok(d);
+            }
+            let mut report = report.clone();
+            report.at_ms = *now_ms;
+            d.state.goal = Some(report.clone());
+            d.state.goal_due = false;
+            d.state.last_goal_check_ms = *now_ms;
+            d.changes.push(Change::GoalChecked { verdict: report.verdict, summary: report.summary.clone() });
+            d.context.push(ctx(
+                ContextKind::Progress,
+                ContextStatus::Claim,
+                format!("Goal check ({}): {}", report.verdict.as_str().replace('_', " "), report.summary),
+                None,
+                "goal-check",
+            ));
+            match report.verdict {
+                goal::Verdict::OnTrack => {}
+                goal::Verdict::Done => {
+                    if let Some(lead) =
+                        d.state.agents.iter().find(|a| a.reports_to.is_none()).map(|a| a.key.clone())
+                    {
+                        let text = format!(
+                            "The independent goal check finds every criterion of the objective met: {} If you agree, \
+                             finish now: say \"done\": true. If not, say exactly which criterion is still open and why.",
+                            report.summary
+                        );
+                        // A waiting team keeps its reason: the lead reads this
+                        // when the user resumes it.
+                        d.state.enqueue(&lead, ROOT, CheckpointItem::Observed { task: ROOT.into(), text });
+                        if d.state.status == OrgStatus::Running {
+                            schedule(&mut d, *now_ms);
+                        }
+                    }
+                }
+                goal::Verdict::Drifting | goal::Verdict::Looping => {
+                    // Only a running team is stopped; a waiting one keeps the
+                    // reason it waits for (the report is shown either way).
+                    if d.state.status == OrgStatus::Running {
+                        let off: Vec<String> = report
+                            .off_goal
+                            .iter()
+                            .map(|k| {
+                                d.state.task(k).map_or(k.clone(), |t| format!("\u{201c}{}\u{201d}", t.title))
+                            })
+                            .collect();
+                        let what = if report.verdict == goal::Verdict::Drifting {
+                            "drifting from"
+                        } else {
+                            "going in circles on"
+                        };
+                        wait(
+                            &mut d,
+                            format!(
+                                "The independent goal check finds the team {what} the objective: {}{} Resume to continue \
+                                 anyway, tell the lead how to refocus (Ask the supervisor), or stop the team.",
+                                report.summary,
+                                if off.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" Off the objective: {}.", off.join(", "))
+                                }
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        Input::ScopeDecision { key, approve, now_ms } => {
+            let Some(t) = state.task(key).cloned() else {
+                return Err(OrgError::NotAllowed("no such task"));
+            };
+            if t.state != TaskState::Proposed {
+                return Err(OrgError::NotAllowed("the task is not waiting for your approval"));
+            }
+            let text = if *approve {
+                if let Some(tt) = d.state.task_mut(key) {
+                    tt.state = TaskState::Waiting;
+                }
+                format!(
+                    "The user approved the new work \u{201c}{}\u{201d}; it is part of the plan now.",
+                    t.title
+                )
+            } else {
+                if let Some(tt) = d.state.task_mut(key) {
+                    tt.state = TaskState::Cancelled;
+                }
+                d.closed_tasks.push((key.clone(), false));
+                format!(
+                    "The user declined the new work \u{201c}{}\u{201d}: stay within the agreed plan and finish the objective.",
+                    t.title
+                )
+            };
+            d.context.push(ctx(
+                ContextKind::Decision,
+                ContextStatus::Decided,
+                text.clone(),
+                Some(key),
+                "user",
+            ));
+            if let Some(r) = d.state.reviewer_of(key) {
+                let home = t.parent.clone().unwrap_or_else(|| ROOT.into());
+                d.state.enqueue(&r, &home, CheckpointItem::Observed { task: key.clone(), text });
+            }
+            if d.state.status == OrgStatus::Waiting && d.state.question_from.is_none() {
+                d.state.status = OrgStatus::Running;
+                d.state.reason = None;
+                d.changes.push(Change::Resumed);
+            }
+            if d.state.status == OrgStatus::Running {
+                schedule(&mut d, *now_ms);
+            }
+        }
         Input::Nudge { text, now_ms } => {
             if matches!(state.status, OrgStatus::Done | OrgStatus::Cancelled) || state.question_from.is_some()
             {
@@ -1000,6 +1193,13 @@ pub fn decide(state: &OrgState, input: &Input) -> Result<Decision, OrgError> {
                 d.state.reason = None;
                 // A fresh budget of wall-clock time from now.
                 d.state.started_at_ms = *now_ms;
+                // The user decided to continue: one more attempt at a task the loop
+                // guard held, and a fresh count of turns without progress.
+                let max = d.state.limits.max_task_turns;
+                for t in d.state.tasks.iter_mut().filter(|t| !t.state.is_final() && t.turns >= max) {
+                    t.turns = max.saturating_sub(1);
+                }
+                d.state.turns_since_progress = 0;
                 d.changes.push(Change::Resumed);
                 schedule(&mut d, *now_ms);
             }
@@ -1146,6 +1346,44 @@ fn apply_directive(
     r
 }
 
+/// Keys a directive reuses, all at once and with what to do instead: a
+/// supervisor that resends earlier, accepted parts of its plan would otherwise
+/// learn of one repeat per rejected turn.
+fn repeated_keys(state: &OrgState, dir: &Directive) -> Vec<String> {
+    let mut out = Vec::new();
+    let agents: Vec<&str> =
+        dir.agents.iter().map(|a| a.key.as_str()).filter(|k| state.agent(k).is_some()).collect();
+    if !agents.is_empty() {
+        out.push(format!(
+            "agent {} already exists: leave existing agents out of \"agents\" and name them as a task's owner",
+            agents.join(", ")
+        ));
+    }
+    for t in dir.tasks.iter().filter_map(|t| state.task(&t.key)) {
+        out.push(format!(
+            "a task with key {} already exists ({}): keys are never reused; to have that task redone, assess it \
+             with verdict \"correct\"; for another round of work (a re-review after a fix, say), add a task with a \
+             new key such as {}-2",
+            t.key,
+            t.state.as_str(),
+            t.key
+        ));
+    }
+    let new: BTreeSet<&str> = dir.tasks.iter().map(|t| t.key.as_str()).collect();
+    for t in &dir.tasks {
+        if let Some(c) = t.continues.as_deref()
+            && state.task(c).is_none()
+            && !new.contains(c)
+        {
+            out.push(format!(
+                "task {}: \"continues\" names {c}, which is not a task key of the team (use a key such as {ROOT})",
+                t.key
+            ));
+        }
+    }
+    out
+}
+
 fn apply_directive_inner(
     d: &mut Decision,
     checkpoint: &Checkpoint,
@@ -1156,6 +1394,10 @@ fn apply_directive_inner(
 ) -> Result<(), String> {
     let limits = d.state.limits.clone();
     let src = format!("agent:{me}");
+    let repeated = repeated_keys(&d.state, dir);
+    if !repeated.is_empty() {
+        return Err(repeated.join("; "));
+    }
     // Agents.
     for a in &dir.agents {
         if d.state.agent(&a.key).is_some() {
@@ -1210,6 +1452,16 @@ fn apply_directive_inner(
     }
     // Tasks.
     let mut planned: BTreeSet<String> = BTreeSet::new();
+    let scope_agreed = d.state.scope_agreed;
+    // The first breakdown of an agreed coordination task (the objective, or an
+    // area delegated to a supervisor) is part of the agreed scope.
+    let first_breakdown: BTreeSet<String> = d
+        .state
+        .tasks
+        .iter()
+        .filter(|t| t.state == TaskState::Planning && !t.late)
+        .map(|t| t.key.clone())
+        .collect();
     for t in &dir.tasks {
         if d.state.task(&t.key).is_some() {
             return Err(format!("a task with key {} already exists", t.key));
@@ -1266,7 +1518,19 @@ fn apply_directive_inner(
             ));
         }
         // Everything waits for its dependencies; coordination is planned once they are accepted.
-        let state = TaskState::Waiting;
+        // After the first plan, new implementation work must continue an agreed
+        // task; anything else is new scope and waits for the user (ADR 0046).
+        // Investigation, documentation, testing and review support the objective
+        // without widening what the product does; a late coordination area may be
+        // added, but its own breakdown is not agreed.
+        let continues_agreed = t.continues.as_deref().is_some_and(|k| {
+            d.state.task(k).is_some_and(|x| !matches!(x.state, TaskState::Proposed | TaskState::Cancelled))
+        });
+        let breakdown = first_breakdown.contains(&parent);
+        let unagreed = scope_agreed && !continues_agreed && !breakdown;
+        let new_scope = unagreed && t.work == WorkKind::Implementation;
+        let late = unagreed && t.work == WorkKind::Coordination;
+        let state = if new_scope { TaskState::Proposed } else { TaskState::Waiting };
         let scope = if t.scope.is_empty() { owner.scope.clone() } else { t.scope.clone() };
         let task_id =
             *new_ids.get(&format!("task:{}", t.key)).ok_or_else(|| format!("no id for task {}", t.key))?;
@@ -1284,6 +1548,8 @@ fn apply_directive_inner(
             state,
             corrections: 0,
             attempts: 0,
+            turns: 0,
+            late,
             instructions: Vec::new(),
             current_instructions: Vec::new(),
             summary: None,
@@ -1297,6 +1563,23 @@ fn apply_directive_inner(
         planned.insert(t.key.clone());
         d.created_tasks.push(t.key.clone());
         d.changes.push(Change::TaskDelegated { key: t.key.clone() });
+        if new_scope {
+            d.changes.push(Change::ScopeProposed { key: t.key.clone() });
+            d.context.push(ctx(
+                ContextKind::Decision,
+                ContextStatus::Proposal,
+                format!(
+                    "{} proposes new work outside the agreed plan: \u{201c}{}\u{201d}. It starts only if the user approves it.",
+                    title_of(&d.state, me),
+                    t.title.trim()
+                ),
+                Some(&t.key),
+                &format!("agent:{me}"),
+            ));
+        }
+    }
+    if !d.created_tasks.is_empty() {
+        d.state.scope_agreed = true;
     }
     // Assessments.
     for a in &dir.assessments {
@@ -1317,6 +1600,8 @@ fn apply_directive_inner(
                 }
                 let tt = d.state.task_mut(&a.task).ok_or("missing task")?;
                 tt.state = TaskState::Accepted;
+                d.state.turns_since_progress = 0;
+                d.state.goal_due = true;
                 d.closed_tasks.push((a.task.clone(), true));
                 if t.work == WorkKind::Coordination
                     && let Some(o) = d.state.agent_mut(&t.owner)
@@ -1576,6 +1861,23 @@ fn apply_directive_inner(
 }
 
 /// Starts whatever can run next, if nothing runs.
+/// A review looks at finished work: it waits while other work in its area is
+/// still open (a fix the lead added after the first review, say), unless that
+/// work waits for the review. Work only the user can start (proposed) does not
+/// hold it back.
+fn review_waits(state: &OrgState, t: &OrgTask) -> bool {
+    t.work == WorkKind::Review
+        && t.parent.as_deref().is_some_and(|p| {
+            state.children(p).any(|s| {
+                s.key != t.key
+                    && s.work != WorkKind::Review
+                    && !s.state.is_final()
+                    && s.state != TaskState::Proposed
+                    && !s.depends_on.contains(&t.key)
+            })
+        })
+}
+
 fn schedule(d: &mut Decision, now_ms: i64) {
     if d.state.status != OrgStatus::Running || d.state.activity != Activity::Idle {
         return;
@@ -1662,8 +1964,19 @@ fn schedule(d: &mut Decision, now_ms: i64) {
                 ),
             );
         }
+        if d.state.turns_since_progress >= l.max_turns_without_progress {
+            return wait(
+                d,
+                format!(
+                    "{} supervision turns in a row accepted no work: the team may be going in circles. Read the \
+                     decisions, then resume to let it continue, give the lead a direction, or stop the team.",
+                    d.state.turns_since_progress
+                ),
+            );
+        }
         let checkpoint = d.state.queue.remove(0);
         d.state.supervision_turns += 1;
+        d.state.turns_since_progress += 1;
         if let Some(a) = d.state.agent_mut(&checkpoint.supervisor) {
             a.status = AgentStatus::Active;
         }
@@ -1675,12 +1988,27 @@ fn schedule(d: &mut Decision, now_ms: i64) {
         .state
         .tasks
         .iter()
-        .find(|t| t.state == TaskState::Ready && t.task_id.is_some())
+        .find(|t| t.state == TaskState::Ready && t.task_id.is_some() && !review_waits(&d.state, t))
         .map(|t| (t.key.clone(), t.owner.clone()));
     if let Some((key, owner)) = next {
+        if let Some(t) = d.state.task(&key)
+            && t.turns >= l.max_task_turns
+        {
+            let last =
+                t.summary.clone().map(|s| format!(" The last turn ended with: {s}")).unwrap_or_default();
+            return wait(
+                d,
+                format!(
+                    "\u{201c}{}\u{201d} was worked on {} times without being accepted: it may be going in circles.{last} \
+                     Resume to allow one more attempt, give the lead a direction, or stop the team.",
+                    t.title, t.turns
+                ),
+            );
+        }
         let instructions = match d.state.task_mut(&key) {
             Some(t) => {
                 t.state = TaskState::Working;
+                t.turns += 1;
                 t.current_instructions = std::mem::take(&mut t.instructions);
                 t.current_instructions.clone()
             }
@@ -1737,6 +2065,22 @@ fn schedule(d: &mut Decision, now_ms: i64) {
     }
     // Nothing can run, and the objective is not finished: say why.
     let root_done = d.state.task(ROOT).is_some_and(|t| t.state.is_final());
+    let proposed: Vec<String> = d
+        .state
+        .tasks
+        .iter()
+        .filter(|t| t.state == TaskState::Proposed)
+        .map(|t| format!("\u{201c}{}\u{201d}", t.title))
+        .collect();
+    if !root_done && !proposed.is_empty() {
+        return wait(
+            d,
+            format!(
+                "The lead proposes new work outside the agreed plan: {}. Approve or decline it under Needs you.",
+                proposed.join(", ")
+            ),
+        );
+    }
     if !root_done {
         let stuck: Vec<String> = d
             .state
@@ -1763,5 +2107,16 @@ fn schedule(d: &mut Decision, now_ms: i64) {
     }
 }
 
+/// Whether a goal check is due: work was accepted since the last one, or the
+/// team has worked `interval_ms` since the last one (or since it started).
+pub fn goal_check_due(state: &OrgState, now_ms: i64, interval_ms: i64) -> bool {
+    if state.status != OrgStatus::Running || state.tasks.iter().all(|t| t.key == ROOT) {
+        return false;
+    }
+    state.goal_due || now_ms - state.last_goal_check_ms.max(state.started_at_ms) >= interval_ms
+}
+
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
+#[cfg(test)]
+pub(crate) use tests as tests_support;

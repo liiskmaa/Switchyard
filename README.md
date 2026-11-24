@@ -14,7 +14,7 @@
   <img alt="Platform: macOS" src="https://img.shields.io/badge/platform-macOS-lightgrey">
   <img alt="Rust 1.99" src="https://img.shields.io/badge/rust-1.99-b7410e">
   <img alt="Tauri 2" src="https://img.shields.io/badge/tauri-2-24c8db">
-  <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue">
+  <img alt="License: FSL-1.1-MIT" src="https://img.shields.io/badge/license-FSL--1.1--MIT-blue">
 </p>
 
 ---
@@ -267,4 +267,7 @@ separate source trees. None of them is an OS-level sandbox; that is not implemen
 
 ## License
 
-[MIT](LICENSE)
+[Functional Source License 1.1, MIT Future License](LICENSE.md) (FSL-1.1-MIT): free to use, change
+and share for any purpose except a competing product or service (offering Switchyard, or what it
+does, to others as a commercial product). Each version becomes MIT two years after its release.
+Versions published before 24 November 2026 remain under the MIT license they were published with.

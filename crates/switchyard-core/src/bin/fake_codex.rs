@@ -303,10 +303,11 @@ impl Fake {
             self.task.start(&text, arg);
         }
         if self.task.active() {
-            let step = self
-                .task
-                .next()
-                .unwrap_or(report::Step { tools: Vec::new(), text: "Nothing more to do.".into() });
+            let step = self.task.next().unwrap_or(report::Step {
+                tools: Vec::new(),
+                text: "Nothing more to do.".into(),
+                fail: None,
+            });
             for tool in &step.tools {
                 let (name, arg) = tool.split_once(':').unwrap_or((tool.as_str(), ""));
                 let r = match name {

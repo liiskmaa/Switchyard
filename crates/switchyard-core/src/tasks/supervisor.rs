@@ -220,18 +220,29 @@ impl TaskService {
             .await
     }
 
-    async fn supervisor_turn_text(
+    pub(super) async fn supervisor_turn_text(
         &self,
         session_id: Uuid,
         after: i64,
         e: &EventEnvelope,
     ) -> Result<String, String> {
         match e.decode() {
-            Ok(DomainEvent::AgentTurnCompleted { interrupted: false, result, .. }) => {
+            Ok(DomainEvent::AgentTurnCompleted { interrupted: false, result, success, reason, .. }) => {
                 // The turn's result repeats its final message: use it only when no message was streamed.
                 let text =
                     self.supervision_text(session_id, after, e.seq, None).await.map_err(|e| e.message)?;
-                Ok(if text.trim().is_empty() { result.unwrap_or_default() } else { text })
+                let text = if text.trim().is_empty() { result.unwrap_or_default() } else { text };
+                // A failed turn with nothing said (a usage limit, say): its reason, not "no block".
+                if !success && text.trim().is_empty() {
+                    return Err(format!(
+                        "the turn failed: {}",
+                        reason
+                            .as_deref()
+                            .map(|r| r.trim_start_matches("failed: "))
+                            .unwrap_or("no reason given")
+                    ));
+                }
+                Ok(text)
             }
             Ok(DomainEvent::AgentTurnCompleted { .. }) => Err("the turn was interrupted".into()),
             Ok(DomainEvent::AgentExited { final_state, .. }) => {
@@ -286,7 +297,43 @@ impl TaskService {
     /// The supervisor's session: its last one resumed when the provider
     /// supports it, otherwise a new read-only session in its own workspace.
     /// Returns the session and the journal position before it started.
-    async fn supervisor_session(
+    /// The task's side workspace (read-only sessions of the supervisor and
+    /// the goal check), created from the task's branch on first use and
+    /// recorded without touching the supervisor's session.
+    pub(super) async fn side_workspace(&self, task_id: Uuid) -> Result<(Uuid, Uuid), ProtocolError> {
+        let (task, rec, task_ws) = self
+            .storage
+            .call(move |c| {
+                let t = store::get_task(c, task_id)?;
+                let rec = sup_store::get(c, task_id)?;
+                let ws = wf_store::find_workflow(c, task_id)?.and_then(|w| w.workspace_id);
+                Ok((t, rec, ws))
+            })
+            .await
+            .map_err(errors::storage)?;
+        if let Some(id) = rec.as_ref().and_then(|r| r.workspace_id)
+            && self.workspaces.record(id).await.is_ok()
+        {
+            return Ok((id, task.project_id));
+        }
+        let base = match task_ws {
+            Some(id) => self.workspaces.record(id).await.ok().and_then(|w| w.branch),
+            None => None,
+        };
+        let name = format!("supervisor-{}", &task.id.simple().to_string()[..12]);
+        let id = self.workspaces.create(task.project_id, Some(name), base).await?.id;
+        let record = SupervisorRecord {
+            task_id,
+            project_id: task.project_id,
+            workspace_id: Some(id),
+            session_id: None,
+            updated_at_ms: now_ms(),
+        };
+        self.storage.call(move |c| sup_store::upsert(c, &record)).await.map_err(errors::storage)?;
+        Ok((id, task.project_id))
+    }
+
+    pub(super) async fn supervisor_session(
         &self,
         task_id: Uuid,
         provider: AgentProvider,

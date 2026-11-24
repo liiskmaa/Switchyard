@@ -269,12 +269,23 @@ fn wire(w: &WorkflowRecord) -> Result<WorkflowInfo, StorageError> {
             (WorkflowStatus::Waiting, Some(Resume::Answer { question })) => Some(question.clone()),
             _ => None,
         },
+        continues_task_id: None,
+        continued_by_task_id: None,
     })
 }
 
 /// The task's workflow, for `tasks.get`.
 pub(crate) fn info(c: &Connection, task: Uuid) -> Result<Option<WorkflowInfo>, StorageError> {
-    wf_store::find_workflow(c, task)?.as_ref().map(wire).transpose()
+    let Some(rec) = wf_store::find_workflow(c, task)? else { return Ok(None) };
+    let mut info = wire(&rec)?;
+    if let Some(ws) = rec.workspace_id {
+        let all = wf_store::workflows_in_workspace(c, ws)?;
+        if let Some(i) = all.iter().position(|w| w.task_id == task) {
+            info.continues_task_id = i.checked_sub(1).and_then(|j| all.get(j)).map(|w| w.task_id);
+            info.continued_by_task_id = all.get(i + 1).map(|w| w.task_id);
+        }
+    }
+    Ok(Some(info))
 }
 
 fn repair_note(n: u32, error: &str) -> String {
@@ -617,10 +628,19 @@ impl TaskService {
         let reason =
             reason.filter(|r| !r.trim().is_empty()).unwrap_or_else(|| format!("cancelled by {actor}"));
         if self.organizing(task_id).await? {
-            self.org_operator(task_id, switchyard_tasks::organization::Input::Cancel { reason }).await?;
-            return self.workflow_required(task_id).await;
+            self.org_operator(
+                task_id,
+                switchyard_tasks::organization::Input::Cancel { reason: reason.clone() },
+            )
+            .await?;
+        } else {
+            self.operator_input(task_id, Input::Cancel { reason: reason.clone() }, actor.clone()).await?;
         }
-        self.operator_input(task_id, Input::Cancel { reason }, actor).await
+        // Stopping the workflow or team cancels the task (and a team's open
+        // subtasks): nothing works on it any more. Its work stays in the
+        // workspace for `tasks.start_again`.
+        self.close_ended(task_id, &reason, &actor).await;
+        self.workflow_required(task_id).await
     }
 
     /// A task an agent reported blocked goes back to work through the

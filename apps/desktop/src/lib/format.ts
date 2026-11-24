@@ -281,6 +281,18 @@ export function describeEvent(event: EventEnvelope): string {
       return str(p, "reason") ?? "Delivered";
     case "workflow.failed":
       return `Workflow failed: ${str(p, "reason") ?? "?"}`;
+    case "organization.goal_checked": {
+      const v = str(p, "verdict") ?? "?";
+      const label: Record<string, string> = {
+        done: "the objective is met",
+        on_track: "on track",
+        drifting: "drifting from the objective",
+        looping: "going in circles",
+      };
+      return `Goal check: ${label[v] ?? v}. ${str(p, "summary") ?? ""}`.trim();
+    }
+    case "organization.scope_proposed":
+      return `The lead proposes new work outside the agreed plan: ${str(p, "title") ?? ""} (waits for your approval)`;
     case "task.stuck_changed": {
       const title = str(p, "title");
       const remedy = str(p, "remedy");

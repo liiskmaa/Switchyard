@@ -158,11 +158,12 @@ client detect a restart. `seq` stays continuous across restarts because it lives
 | `tasks.note` | `{task_id, text}` | `{message, delivered}`: sent to the working agent now, otherwise kept for the next assignment |
 | `workflows.set_step_through` | `{task_id, on}` | `{workflow}` (ADR 0043): wait before each automatic hand-off; `WorkflowInfo.step_through`, and `next_step` while waiting to start a step |
 | `workflows.preview_next` | `{task_id}` | `{step_key, role, provider, model?, prompt, context}`: the waiting step's prompt exactly as it would be sent now (pending notes included); `invalid_state` when not waiting to start a step |
+| `organizations.decide_scope` | `{task_id, key, approve}` | `{organization}` (ADR 0046): approve or decline work the lead proposed outside the agreed scope; `invalid_state` unless it is proposed |
 | `watchdog.list` | `{}` | `{items: [{task_id, project_id, task_title, kind: workflow\|team, code, title, detail, since_ms, session_id?, remedy_applied?}]}` (ADR 0045): what the watchdog finds stuck now, newest first |
 | `supervisor.ask` | `{task_id, text}` | `SupervisorInfo` (ADR 0041): records the operator's message (max 8000 characters) and starts the answer in the background; `conflict` while the last one is unanswered. The answer arrives as `supervisor.answered`. |
 | `supervisor.get` | `{task_id}` | `SupervisorInfo`: `{task_id, thinking, messages: [{id, sender: operator\|supervisor\|core, text, route?: none\|reasoning\|coding\|review\|tests, instruction?, outcome?, follow_up_task_id?, by?, created_at_ms}], workspace_id?}` |
 | `tasks.complete` | `{task_id, note?}` | `{task}`: `awaiting_review` → `completed`, operator only; the last report becomes `result` |
-| `tasks.fail` / `tasks.cancel` | `{task_id, note?}` | `{task}`; an open assignment is cancelled and its session stopped |
+| `tasks.fail` / `tasks.cancel` | `{task_id, note?}` | `{task}`; an open assignment is cancelled and its session stopped; every open task below it (child tasks, a team's tasks) is cancelled too |
 | `tasks.retry` | `{task_id, note?}` | `{task}`: `failed` → `ready`/`blocked`, or `blocked` → `ready` once dependencies are completed |
 | `tasks.decide_proposal` | `{proposal_id, approve, note?}` | `{proposal, created_task}`: approving creates a draft subtask; once only (`conflict`) |
 | `integrations.list` | `{project_id?, task_id?, include_closed?, limit?}` | `{integrations: [Integration]}`, newest first |
@@ -186,9 +187,10 @@ client detect a restart. `seq` stays continuous across restarts because it lives
 | `workflows.start` | `{task_id, overrides?: {role: {provider, model?}}, workspace_id?, definition?: engineering\|organization, lead?: {provider, model?}}` | `{workflow}`; on a `ready` task; `engineering` (default) snapshots the bindings, creates a workspace unless given, starts `investigate#1`; `organization` (M8.3) creates an agent organization whose lead supervisor (Core's choice unless `lead`) plans the work |
 | `workflows.get` | `{task_id}` | `{workflow?}` (also in `tasks.get` as `workflow`) |
 | `workflows.pause` / `workflows.resume` | `{task_id}` | `{workflow}`; resume does what `resume_action` says |
-| `workflows.cancel` | `{task_id, reason?}` | `{workflow}`; cancels the workflow's open assignment |
+| `workflows.cancel` | `{task_id, reason?}` | `{workflow}`; cancels the workflow's open assignment and the task (a team: its open subtasks too; ADR 0047) |
+| `tasks.start_again` | `{task_id, keep_work? = true, definition?, lead?}` | `{task, workflow?, start_error?}`: a new task from a cancelled/failed one (or one whose workflow ended), started with the same kind of workflow; `keep_work` continues in the old workspace (ADR 0047). `WorkflowInfo` carries `continues_task_id` / `continued_by_task_id` |
 | `workflows.request_correction` | `{task_id, note?}` | `{workflow}`; while delivering (not validating/integrating): a correction round, then review and delivery again; `note` reaches the agent. For an organization: back to its lead supervisor with `note` |
-| `organizations.get` | `{task_id}` | `{organization?}`: status, reason, agents (title, kind, reports_to, scope, provider, model, selection rationale, status, depth), tasks (key, M6 `task_id`, work, parent, owner, scope, acceptance, depends_on, state, corrections, summary), activity, usage and limits, the supervisor's `question` to the user, the shared `context` (labelled entries), `final_summary` |
+| `organizations.get` | `{task_id}` | `{organization?}`: status, reason, agents (title, kind, reports_to, scope, provider, model, selection rationale, status, depth), tasks (key, M6 `task_id`, work, parent, owner, scope, acceptance, depends_on, state, corrections, summary), activity, usage and limits, the supervisor's `question` to the user, the shared `context` (labelled entries), `final_summary`, the last goal check `goal?` (`{verdict, summary, criteria: [{criterion, status: met\|partial\|open, evidence}], off_goal, at_ms, by}`, ADR 0046), `turns_since_progress`, and the goal keeper's live state `goal_keeper?` (`{referee: string\|null, checking, due, next_check_ms, last_error, last_error_ms}`; `referee` null means no agent CLI is available, so nothing is checked) |
 | `organizations.answer` | `{task_id, text}` | `{organization?}`; answers the escalation the organization waits on; the supervisor gets it at its next turn |
 | `organizations.settings` / `organizations.set_settings` | `{project_id}` / `{project_id, limits?, estimates?, overrides?}` | `{project_id, limits, estimates, overrides, revision, profiles: [{provider, model, display, summary, runtime, skills}], skills}`; limits are validated (`max_concurrent_sessions` must be 1); estimates and overrides name installed providers, known skills and offered models |
 | `live.subscribe` | `{session_id?}` | `{subscription_id}`. Delivers `live` frames. |
@@ -385,6 +387,8 @@ the registration is kept and `projects.git_status` returns `repository_unavailab
 | `organization.work_started` | `{key, agent, instructions}`: instructions put into this turn's context |
 | `organization.assessed` | `{key, verdict: accept\|correct\|reassign\|cancel, by, instructions?}` |
 | `organization.observed` | `{key, text, interrupted}`: Core noticed work outside its scope or repeated failures (and interrupted the turn) |
+| `organization.scope_proposed` | `{key, title}`: the lead proposed work outside the agreed scope; it waits for the user (ADR 0046) |
+| `organization.goal_checked` | `{verdict: done\|on_track\|drifting\|looping, summary}`: the independent goal check's verdict (ADR 0046) |
 | `organization.escalated` | `{by, to: supervisor\|user, question}` |
 | `organization.directive_rejected` | `{by, error}`: the directive changed nothing |
 | `organization.context_added` | `{from_seq, to_seq}`: shared-context entries added |

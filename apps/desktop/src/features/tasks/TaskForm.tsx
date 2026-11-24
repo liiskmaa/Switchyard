@@ -4,7 +4,7 @@ import { Button, ErrorNotice } from "../../components/ui";
 import { toCoreError, type CoreRequestError } from "../../lib/core";
 import { useCoreQuery } from "../../stores/useCoreQuery";
 import type { RoleBindings, Task, TaskKind, TaskPriority } from "../../types/protocol";
-import { startWorkflow, workflowSettings } from "../workflows/api";
+import { startOrganization, startWorkflow, workflowSettings } from "../workflows/api";
 import { BINDING_KEYS, BINDING_LABEL, effectiveBinding, modelLabel, overridesOf } from "../workflows/labels";
 import { RoleBindingsEditor } from "../workflows/RoleBindingsEditor";
 import { providerName } from "../../lib/agents";
@@ -32,7 +32,9 @@ export function TaskForm({
   const [criteria, setCriteria] = useState("");
   const [dependsOn, setDependsOn] = useState<string[]>([]);
   const [publish, setPublish] = useState(true);
-  const [runWorkflow, setRunWorkflow] = useState(true);
+  // How the task starts: a team (as on the task page, the default), the fixed sequence, or not yet.
+  const [mode, setMode] = useState<"organization" | "engineering" | "none">("organization");
+  const runWorkflow = mode !== "none";
   const [override, setOverride] = useState<RoleBindings | null>(null);
   const [editing, setEditing] = useState(false);
   const settings = useCoreQuery(`workflow-settings:${projectId}`, () => workflowSettings(projectId));
@@ -60,8 +62,12 @@ export function TaskForm({
       });
       if (runWorkflow && canRun) {
         try {
-          const patch = project && override ? overridesOf(project, override) : {};
-          await startWorkflow(task.id, Object.keys(patch).length > 0 ? patch : undefined);
+          if (mode === "organization") {
+            await startOrganization(task.id);
+          } else {
+            const patch = project && override ? overridesOf(project, override) : {};
+            await startWorkflow(task.id, Object.keys(patch).length > 0 ? patch : undefined);
+          }
         } catch (err) {
           // The task exists; its page offers to start the workflow again.
           setError(toCoreError(err));
@@ -141,11 +147,21 @@ export function TaskForm({
         <input type="checkbox" checked={publish} onChange={(e) => setPublish(e.target.checked)} /> Publish now (otherwise it stays a
         draft)
       </label>
-      <label className="check">
-        <input type="checkbox" checked={runWorkflow && canRun} disabled={!canRun} onChange={(e) => setRunWorkflow(e.target.checked)} /> Run
-        the engineering workflow (engineering@2): Switchyard assigns investigation, implementation and review itself, and loops back through reasoning when review finds something
-      </label>
-      {runWorkflow && canRun && bindings ? (
+      <fieldset className="start-choice" disabled={!canRun}>
+        <legend className="small">How to start{canRun ? "" : " (a draft or a task waiting for others starts later)"}</legend>
+        <label className="check">
+          <input type="radio" name="new-task-start" checked={mode === "organization"} onChange={() => setMode("organization")} />{" "}
+          <strong>Team</strong>: a lead plans the work, brings in the specialists it needs and checks every result
+        </label>
+        <label className="check">
+          <input type="radio" name="new-task-start" checked={mode === "engineering"} onChange={() => setMode("engineering")} />{" "}
+          <strong>Fixed sequence</strong>: investigation, implementation, tests and review in a set order (engineering@2)
+        </label>
+        <label className="check">
+          <input type="radio" name="new-task-start" checked={mode === "none"} onChange={() => setMode("none")} /> Don't start yet
+        </label>
+      </fieldset>
+      {mode === "engineering" && canRun && bindings ? (
         <div className="workflow-form-bindings">
           <p className="muted small">
             {BINDING_KEYS.map((k) => {

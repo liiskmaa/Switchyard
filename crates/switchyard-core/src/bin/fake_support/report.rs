@@ -5,14 +5,15 @@
 //! turn of that role (the first turn answers the task context; later turns
 //! answer operator notes). A step is `{"tool": "SCENARIO", "report": {...}}` (or
 //! `"tools": [...]`, run in order)
-//! or `{"text": "verbatim final message"}`; an optional top-level `"linger_ms"`
+//! or `{"text": "verbatim final message"}` or `{"fail": "reason"}` (the fake Claude ends the
+//! turn as failed, saying nothing, like a usage limit); an optional top-level `"linger_ms"`
 //! keeps the process alive that long after its input closes; `tool` uses the fake's own
 //! scenario syntax (`write:FILE`, `cmd:COMMAND`, `tool:NAME|JSON`, ...) and runs
 //! before the final message. The role and task id are read from the task
 //! context in the prompt, exactly as Core rendered it. The turn count per task
 //! and role is kept in a file, so a resumed session (a new process) continues
 //! with the next step. The task supervisor's turns (ADR 0041) use the role
-//! `supervisor`.
+//! `supervisor`, a team's goal check (ADR 0046) the role `goal`.
 
 use serde_json::Value;
 
@@ -21,6 +22,10 @@ pub struct Step {
     /// Tools run in order before the final message (`"tool"` or `"tools": [...]`).
     pub tools: Vec<String>,
     pub text: String,
+    /// The turn fails with this reason and no message (`{"fail": "..."}`); only
+    /// the fake Claude plays it.
+    #[allow(dead_code)]
+    pub fail: Option<String>,
 }
 
 /// The scenario of the task this process works on, kept across turns.
@@ -62,8 +67,15 @@ impl TaskScript {
         let spec = arg.and_then(decode_hex).and_then(|b| serde_json::from_slice::<Value>(&b).ok());
         *self = Self { spec, role: context_field(prompt, "role"), task_id: context_field(prompt, "task_id") };
         // The task supervisor's prompt (ADR 0041) has no task context: its role is `supervisor`.
-        if self.role.is_none() && prompt.starts_with("SWITCHYARD TASK SUPERVISOR") {
-            self.role = Some("supervisor".into());
+        let side_role = if prompt.starts_with("SWITCHYARD TASK SUPERVISOR") {
+            Some("supervisor")
+        } else if prompt.starts_with("SWITCHYARD GOAL CHECK") {
+            Some("goal")
+        } else {
+            None
+        };
+        if let (None, Some(role)) = (&self.role, side_role) {
+            self.role = Some(role.into());
             self.task_id = prompt.find("Task id: ").map(|i| {
                 prompt[i + 9..].chars().take_while(|c| c.is_ascii_hexdigit() || *c == '-').collect()
             });
@@ -102,6 +114,7 @@ impl TaskScript {
             (_, Some(report)) => format!("Work summary.\n\n```switchyard-report\n{report}\n```"),
             _ => "No report in this step.".to_owned(),
         };
-        Some(Step { tools, text })
+        let fail = step.get("fail").and_then(Value::as_str).map(str::to_owned);
+        Some(Step { tools, text, fail })
     }
 }

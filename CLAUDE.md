@@ -54,6 +54,16 @@ Rust process, **Switchyard Core**. The Tauri desktop app is only a client.
   policy, `classify.rs`, `models.rs`), provider `gemini`, `migrations/0014_gemini_provider.sql` (the runner's
   `-- switchyard: foreign_keys=off` marker for table rebuilds), `src/bin/fake_gemini.rs`. See
   `docs/architecture/acp-integration.md`.
+- Goal observer (ADR 0046): scope guard and loop guard in the pure `organization` (`continues`, `proposed`,
+  `max_task_turns`, `max_turns_without_progress`, `organizations.decide_scope`); the independent goal check
+  (pure `crates/switchyard-tasks/src/organization/goal.rs`, Core `crates/switchyard-core/src/tasks/goal.rs`, started
+  from the watchdog loop, fresh read-only session on another provider, `Input::GoalChecked`,
+  `organization.goal_checked`); UI `features/workflows/GoalPanel.tsx`. A verdict only nudges the lead or stops
+  the team for the user; it never completes, approves or cancels anything.
+- Start again (ADR 0047): `workflows.cancel` cancels the task and a team's open subtasks
+  (`tasks/again.rs::close_ended`); `tasks.start_again` makes a new task, by default in the old workspace; the link
+  between them is derived from workflows sharing a workspace (`continues_task_id`/`continued_by_task_id`). UI
+  `features/workflows/StartAgain.tsx`.
 - Task supervisor (ADR 0041): `crates/switchyard-tasks/src/supervisor.rs` (pure prompt + reply parser),
   `crates/switchyard-core/src/tasks/supervisor.rs`, `migrations/0013_task_supervisor.sql`, the pure
   `workflow::Input::Directed`, `apps/desktop/src/features/workflows/SupervisorBox.tsx`.
@@ -233,6 +243,9 @@ When running Core or the app manually, set `SWITCHYARD_DATA_DIR` (and, if that p
   - Workflow decisions stay pure (`switchyard_tasks::workflow::decide`). The driver commits the new
     state, its `workflow.*` events, `last_event_seq` and the next step's assignment in one
     transaction, and only then starts the session. Never start a workflow step any other way.
+  - A workflow or team step whose turn fails without a report (a usage limit, an API error) ends as
+    failed, like a session that ended early (`reactor.rs::on_turn`); only an operator's own
+    assignment waits for a follow-up message.
   - Workflow assignments use `create_assignment`/`start_assignment` like the operator's, with a
     unique `step_key`; never bypass them. A Core restart makes a running step `interrupted` (wait);
     never restart agents automatically.

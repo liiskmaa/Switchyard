@@ -45,6 +45,8 @@ export const startOrganization = (taskId: string, lead?: { provider: AgentProvid
   );
 export const getOrganization = async (taskId: string) =>
   (await coreRequest("organizations.get", { task_id: taskId })).organization;
+export const decideScope = (taskId: string, key: string, approve: boolean) =>
+  coreRequest("organizations.decide_scope", { task_id: taskId, key, approve });
 export const answerOrganization = (taskId: string, text: string) =>
   coreRequest("organizations.answer", { task_id: taskId, text });
 export const orgSettings = (projectId: string) => coreRequest("organizations.settings", { project_id: projectId });
@@ -54,3 +56,7 @@ export const saveOrgSettings = (
 ) => coreRequest("organizations.set_settings", { project_id: projectId, ...patch });
 export const isOrganizationEvent = (e: EventEnvelope): boolean =>
   e.event_type.startsWith("organization.") || e.event_type.startsWith("workflow.") || e.event_type.startsWith("task.");
+
+/** A cancelled or failed task as a new task, by default in the same workspace with its work. */
+export const startAgain = (taskId: string, keepWork: boolean) =>
+  coreRequest("tasks.start_again", { task_id: taskId, keep_work: keepWork });

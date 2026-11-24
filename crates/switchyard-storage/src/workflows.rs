@@ -125,6 +125,19 @@ pub fn get_workflow(conn: &Connection, task: Uuid) -> Result<WorkflowRecord, Sto
     find_workflow(conn, task)?.ok_or_else(|| StorageError::NotFound(format!("workflow of task {task}")))
 }
 
+/// Every workflow that worked in `workspace`, oldest first (a task started
+/// again continues in its predecessor's workspace).
+pub fn workflows_in_workspace(
+    conn: &Connection,
+    workspace: Uuid,
+) -> Result<Vec<WorkflowRecord>, StorageError> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLUMNS} FROM task_workflows WHERE workspace_id = ?1 ORDER BY created_at, task_id"
+    ))?;
+    let rows = stmt.query_map([workspace.to_string()], from_row)?;
+    rows.map(|r| r?).collect()
+}
+
 /// Workflows that are not finished.
 pub fn active_workflows(conn: &Connection) -> Result<Vec<WorkflowRecord>, StorageError> {
     let mut stmt = conn.prepare(&format!(

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { EventEnvelope, OrgAgentInfo, OrganizationInfo, OrgTaskInfo } from "../../types/protocol";
-import { YOU, buildTeam } from "./team";
+import { YOU, buildTeam, keeperOf } from "./team";
 
 function agent(key: string, reports_to: string | null, status: OrgAgentInfo["status"] = "idle"): OrgAgentInfo {
   return {
@@ -161,5 +161,32 @@ describe("route labels", () => {
     expect(routeLabel(["Delegated"])).toBe("Delegated");
     expect(routeLabel(["Report", "Report"])).toBe("Report ×2");
     expect(routeLabel(["Delegated", "Fix this", "Cancelled"])).toBe("last: Cancelled (3)");
+  });
+});
+
+describe("the goal keeper", () => {
+  const NOW = 10_000_000;
+  const keeper = (over: Partial<OrganizationInfo>) => {
+    const o = org({ agents: [agent("lead", null)], ...over });
+    return keeperOf(o, buildTeam(o, [], NOW).nodes, NOW);
+  };
+  const live = { referee: "Codex", checking: false, due: false, next_check_ms: NOW + 12 * 60_000, last_error: null, last_error_ms: null };
+
+  it("stands beside you and watches the lead", () => {
+    const k = keeper({ goal_keeper: live });
+    expect([k.watches, k.state, k.referee, k.line]).toEqual(["lead", "idle", "Codex", "First check in 12m"]);
+  });
+
+  it("says so when it is off or checking", () => {
+    expect(keeper({ goal_keeper: { ...live, referee: null } })).toMatchObject({ state: "off", line: "Off: no agent available" });
+    expect(keeper({}).state).toBe("off");
+    expect(keeper({ goal_keeper: { ...live, checking: true } })).toMatchObject({ state: "checking", line: "Checking now" });
+  });
+
+  it("shows the last verdict, a drift as needing you, and a failed check after it", () => {
+    const goal = { verdict: "drifting" as const, summary: "s", criteria: [], off_goal: [], at_ms: NOW - 4 * 60_000, by: "Codex" };
+    expect(keeper({ goal_keeper: live, goal })).toMatchObject({ state: "needs_you", line: "Drifting · 4m ago", verdict: "Drifting" });
+    const failed = { ...live, last_error: "no block", last_error_ms: NOW - 60_000 };
+    expect(keeper({ goal_keeper: failed, goal }).line).toBe("Last check failed 1m ago");
   });
 });

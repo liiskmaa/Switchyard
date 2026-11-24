@@ -14,6 +14,7 @@ import type {
   TaskDetail,
 } from "../../types/protocol";
 import { cancelWorkflow, getOrganization, isOrganizationEvent, organizationEvents, pauseWorkflow, resumeWorkflow } from "./api";
+import { GoalPanel } from "./GoalPanel";
 import { TeamFlow } from "./TeamFlow";
 import { LiveActivity } from "./LiveActivity";
 import { type Team, YOU, buildTeam } from "./team";
@@ -28,6 +29,7 @@ const TASK_STATE: Record<OrgTaskState, [string, Tone]> = {
   ready: ["Up next", "neutral"],
   working: ["Working", "accent"],
   reported: ["Being checked", "accent"],
+  proposed: ["Waits for your approval", "warn"],
   accepted: ["Accepted", "ok"],
   cancelled: ["Cancelled", "neutral"],
 };
@@ -323,6 +325,7 @@ export function OrganizationPanel({ detail, onChanged }: { detail: TaskDetail; o
         now={detail.workflow?.status === "delivered" ? "Delivered: the approved work is merged." : nowText(o)}
       />
       {live ? <LiveActivity workspaceId={o.workspace_id} /> : null}
+      <GoalPanel o={o} />
       {o.final_summary ? <p className="small">{o.final_summary}</p> : null}
       {error ? <ErrorNotice title="Not done" message={error.message} code={error.code} /> : null}
 

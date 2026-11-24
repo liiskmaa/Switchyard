@@ -132,6 +132,13 @@ pub fn find_task(conn: &Connection, id: Uuid) -> Result<Option<TaskRecord>, Stor
     .transpose()
 }
 
+/// The ids of the tasks whose parent is `parent`.
+pub fn child_task_ids(conn: &Connection, parent: Uuid) -> Result<Vec<Uuid>, StorageError> {
+    let mut stmt = conn.prepare("SELECT id FROM tasks WHERE parent_task_id = ?1 ORDER BY created_at")?;
+    let rows = stmt.query_map([parent.to_string()], |r| r.get::<_, String>(0))?;
+    rows.map(|r| Uuid::parse_str(&r?).map_err(|e| StorageError::Corrupt(e.to_string()))).collect()
+}
+
 pub fn get_task(conn: &Connection, id: Uuid) -> Result<TaskRecord, StorageError> {
     find_task(conn, id)?.ok_or_else(|| StorageError::NotFound(format!("task {id}")))
 }

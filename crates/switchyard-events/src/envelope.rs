@@ -535,6 +535,13 @@ pub enum DomainEvent {
     /// the verified changes after it.
     #[serde(rename = "organization.observed")]
     OrganizationObserved { key: String, text: String, interrupted: bool },
+    /// The independent goal check judged the team (ADR 0046): `done`,
+    /// `on_track`, `drifting` or `looping`.
+    #[serde(rename = "organization.goal_checked")]
+    OrganizationGoalChecked { verdict: String, summary: String },
+    /// The lead proposed work outside the agreed scope; it waits for the user (ADR 0046).
+    #[serde(rename = "organization.scope_proposed")]
+    OrganizationScopeProposed { key: String, title: String },
     #[serde(rename = "organization.escalated")]
     OrganizationEscalated { by: String, to: String, question: String },
     /// A supervisor's directive did not fit the organization or its limits; nothing changed.
@@ -646,6 +653,8 @@ impl DomainEvent {
             Self::OrganizationAssessed { .. } => "organization.assessed",
             Self::OrganizationObserved { .. } => "organization.observed",
             Self::OrganizationEscalated { .. } => "organization.escalated",
+            Self::OrganizationScopeProposed { .. } => "organization.scope_proposed",
+            Self::OrganizationGoalChecked { .. } => "organization.goal_checked",
             Self::OrganizationDirectiveRejected { .. } => "organization.directive_rejected",
             Self::OrganizationContextAdded { .. } => "organization.context_added",
             Self::OrganizationStatusChanged { .. } => "organization.status_changed",
@@ -941,6 +950,8 @@ mod tests {
                 instructions: None,
             },
             DomainEvent::OrganizationObserved { key: "t".into(), text: "x".into(), interrupted: true },
+            DomainEvent::OrganizationGoalChecked { verdict: "on_track".into(), summary: "s".into() },
+            DomainEvent::OrganizationScopeProposed { key: "k".into(), title: "t".into() },
             DomainEvent::OrganizationEscalated { by: "lead".into(), to: "user".into(), question: "?".into() },
             DomainEvent::OrganizationDirectiveRejected { by: "lead".into(), error: "x".into() },
             DomainEvent::OrganizationContextAdded { from_seq: 1, to_seq: 3 },

@@ -764,6 +764,15 @@ details.advanced > summary { cursor: pointer; color: var(--muted); font-size: 13
 .flow-node.checking .flow-disc { stroke: var(--focus); fill: rgb(122 167 255 / 0.12); }
 .flow-node.checking .flow-name { fill: var(--text-strong); }
 .flow-node.checking .flow-halo { stroke: var(--focus); animation: flow-pulse 1.6s ease-out infinite; }
+/* The goal keeper (ADR 0046): beside the team, not in it; a dashed ring and watch line. */
+.flow-node.keeper .flow-disc { stroke-dasharray: 5 3; }
+.flow-node.keeper.idle .flow-disc { stroke: var(--focus); }
+.flow-node.keeper.off .flow-disc { stroke: var(--border-strong); fill: none; }
+.flow-node.keeper.off .flow-name, .flow-node.keeper.off .keeper-line { fill: var(--muted); }
+.flow-node.keeper.needs_you .keeper-line { fill: var(--warn); }
+.keeper-route path { fill: none; stroke: var(--focus); stroke-width: 1.5; stroke-dasharray: 3 5; opacity: 0.8; }
+.keeper-route.off path { stroke: var(--border-strong); }
+.keeper-route.needs_you path { stroke: var(--warn); }
 .team-flow svg { width: auto; max-width: 100%; margin: 0 auto; }
 @keyframes flow-move { from { stroke-dashoffset: 18; } to { stroke-dashoffset: 0; } }
 @keyframes flow-pulse { from { opacity: 0.9; } to { opacity: 0.15; } }
@@ -890,3 +899,14 @@ details.advanced > summary { cursor: pointer; color: var(--muted); font-size: 13
 .live-message .live-text { color: var(--text); }
 .live-approval .live-text { color: var(--warn); }
 @media (prefers-reduced-motion: reduce) { .live-activity.working .live-dot { animation: none; } }
+
+/* Goal checklist (ADR 0046) */
+.goal-panel { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; background: var(--panel-raised); margin: 8px 0; }
+.goal-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.goal-head h3 { margin: 0; }
+.goal-list { list-style: none; margin: 6px 0; padding: 0; display: grid; gap: 4px; }
+.goal-row { display: grid; grid-template-columns: max-content 1fr; column-gap: 8px; align-items: baseline; }
+.goal-evidence { grid-column: 2; overflow-wrap: anywhere; }
+.goal-off { color: var(--error, var(--warn)); }
+.lineage { margin: 0 0 8px; }
+.start-choice { border: 0; padding: 0; margin: 8px 0; display: grid; gap: 4px; }

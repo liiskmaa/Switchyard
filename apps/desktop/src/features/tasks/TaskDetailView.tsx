@@ -32,6 +32,7 @@ import { WorkflowPanel } from "../workflows/WorkflowPanel";
 import { TaskNeedsYou, deliveryNeedsYou } from "../workflows/TaskNeedsYou";
 import { DeliveryPanel } from "../workflows/DeliveryPanel";
 import { SupervisorBox } from "../workflows/SupervisorBox";
+import { SubtaskList } from "./SubtaskList";
 
 /** A short label for an event type: `organization.status_changed` → `team · status changed`. */
 export function eventLabel(type: string): string {
@@ -338,6 +339,7 @@ export function TaskDetailView({
         <TaskNeedsYou detail={d} onChanged={refresh} />
         <WorkflowPanel detail={d} onChanged={refresh} />
         {deliveryNeedsYou(d) ? null : <DeliveryPanel detail={d} onChanged={refresh} />}
+        <SubtaskList task={d.task} hideTeam={d.workflow?.definition === "organization"} />
         {pendingProposals.length > 0 || d.proposals.some((p) => !p.decided_by?.startsWith("organization:")) ? (
           <Panel title="Proposed subtasks">
             <p className="muted small">An agent proposed these. Nothing is created until you approve; approved subtasks start as drafts.</p>

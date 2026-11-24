@@ -29,13 +29,14 @@ use switchyard_protocol::methods::{
     IntegrationsSetSettings, IntegrationsSettings, IntegrationsUpdateFromTarget, IntegrationsValidate,
 };
 use switchyard_protocol::methods::{
-    OrganizationsAnswer, OrganizationsGet, OrganizationsSetSettings, OrganizationsSettings,
+    OrganizationsAnswer, OrganizationsDecideScope, OrganizationsGet, OrganizationsSetSettings,
+    OrganizationsSettings,
 };
 use switchyard_protocol::methods::{ShutdownParams, SystemShutdown};
 use switchyard_protocol::methods::{
     TasksAddDependency, TasksAssign, TasksCancel, TasksCancelAssignment, TasksComplete, TasksCreate,
     TasksDecideProposal, TasksFail, TasksGet, TasksList, TasksNote, TasksPublish, TasksRemoveDependency,
-    TasksRetry, TasksStartAssignment, TasksUpdate,
+    TasksRetry, TasksStartAgain, TasksStartAssignment, TasksUpdate,
 };
 use tauri::State;
 
@@ -96,6 +97,7 @@ const ALLOWED_METHODS: &[&str] = &[
     TasksComplete::NAME,
     TasksFail::NAME,
     TasksCancel::NAME,
+    TasksStartAgain::NAME,
     TasksRetry::NAME,
     TasksDecideProposal::NAME,
     IntegrationsList::NAME,
@@ -124,6 +126,7 @@ const ALLOWED_METHODS: &[&str] = &[
     WorkflowsResume::NAME,
     SupervisorAsk::NAME,
     WatchdogList::NAME,
+    OrganizationsDecideScope::NAME,
     WorkflowsSetStepThrough::NAME,
     WorkflowsPreviewNext::NAME,
     SupervisorGet::NAME,

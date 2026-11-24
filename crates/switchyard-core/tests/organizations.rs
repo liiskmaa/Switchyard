@@ -38,7 +38,11 @@ struct Fixture {
 }
 
 async fn fixture() -> Fixture {
-    let core = TestCore::start_with(|_| {}).await;
+    fixture_with(|_| {}).await
+}
+
+async fn fixture_with(config: impl FnOnce(&mut switchyard_core::CoreConfig)) -> Fixture {
+    let core = TestCore::start_with(config).await;
     let (client, _rx) = core.connect().await;
     let repo = git_repo(core.dir.path(), "org-repo");
     let project = client
@@ -521,4 +525,136 @@ async fn pause_and_cancel_go_through_the_workflow() {
     assert_eq!((w.definition.as_str(), w.status.as_str()), ("organization", "cancelled"));
     let o = org(&f, task).await;
     assert_eq!(o.status, "cancelled");
+    assert_eq!(
+        detail(&f, task).await.task.status,
+        TaskStatus::Cancelled,
+        "stopping the team cancels the task"
+    );
+}
+
+/// Stopping a team cancels the objective and its open subtasks; starting it
+/// again with its work continues in the same workspace with a new team.
+#[tokio::test]
+async fn a_stopped_team_closes_its_tasks_and_starts_again_with_its_work() {
+    let f = fixture().await;
+    // lib/ has no allow rule: the worker waits on an approval while the team is stopped.
+    let worker = json!({ "implement": [{ "tool": "write:lib/a.txt", "report": implementation("first", &["lib/a.txt"]) }] });
+    let lead = json!({ "supervise": [
+        directive(json!({ "summary": "One specialist", "agents": [
+            { "key": "impl", "title": "Implementer", "kind": "specialist", "responsibility": "r", "scope": ["lib"], "provider": "claude_code" }],
+            "tasks": [{ "key": "code", "title": "Code", "work": "implementation", "owner": "impl",
+                "description": format!("Do it. {}", script(&worker)) }] })) ]});
+    let task = create_task(&f, format!("Stop me. {}", script(&lead))).await;
+    start(&f, task).await;
+    let (o, _) = wait_org(&f, task, "the work turn", |o, _| o.activity.kind == "working").await;
+    let code = o.tasks.iter().find(|t| t.key == "code").unwrap().task_id.unwrap();
+    f.client
+        .call::<switchyard_protocol::methods::WorkflowsCancel>(
+            switchyard_protocol::methods::WorkflowsCancelParams {
+                task_id: task,
+                reason: Some("start over".into()),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(detail(&f, task).await.task.status, TaskStatus::Cancelled);
+    assert_eq!(detail(&f, code).await.task.status, TaskStatus::Cancelled, "the open subtask is closed too");
+    let again = f
+        .client
+        .call::<switchyard_protocol::methods::TasksStartAgain>(
+            switchyard_protocol::methods::TasksStartAgainParams {
+                task_id: task,
+                keep_work: true,
+                definition: None,
+                lead: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(again.start_error, None);
+    let w = again.workflow.unwrap();
+    assert_eq!(w.definition, "organization", "a team starts a team again");
+    assert_eq!(w.workspace_id, Some(o.workspace_id));
+    assert_eq!(w.continues_task_id, Some(task));
+    wait_org(&f, again.task.id, "the new team", |o, _| o.status != "pending").await;
+}
+
+/// ADR 0046: after accepted work an independent referee (not the lead's
+/// provider) checks the objective; a "drifting" verdict stops a running team
+/// for the user with the referee's reasons, and the report is on the team.
+#[tokio::test]
+async fn a_goal_check_after_accepted_work_stops_a_drifting_team() {
+    let f = fixture_with(|c| c.watchdog_interval = Duration::from_millis(100)).await;
+    let worker = json!({ "implement": [{ "tool": "write:src/greet.txt", "report": implementation("Greeting", &["src/greet.txt"]) }] });
+    let verdict = json!({ "verdict": "drifting", "summary": "The greeting is done; the extra work is not part of it.",
+        "criteria": [{ "criterion": "src/greet.txt greets", "status": "met", "evidence": "src/greet.txt" }],
+        "off_goal": ["code"] });
+    let lead = json!({
+        "supervise": [
+            directive(json!({ "summary": "One specialist", "agents": [
+                { "key": "impl", "title": "Implementer", "kind": "specialist", "responsibility": "r", "scope": ["src"], "provider": "claude_code" }],
+                "tasks": [{ "key": "code", "title": "Code", "work": "implementation", "owner": "impl",
+                    "description": format!("Do it. {}", script(&worker)) }] })),
+            directive(json!({ "summary": "ok", "assessments": [{ "task": "code", "verdict": "accept" }] })),
+            // The next supervision turn waits on an approval: the team is running when the check lands.
+            { "tool": "cmd:echo hold", "text": "```switchyard-org\n{\"summary\": \"Finished. Outstanding: none.\", \"done\": true}\n```" },
+        ],
+        "goal": { "text": format!("The work is checked.\n\n```switchyard-goal\n{verdict}\n```") },
+    });
+    let task = create_task(&f, format!("Greet. {}", script(&lead))).await;
+    start(&f, task).await;
+    let (o, _) =
+        wait_org(&f, task, "the drifting verdict", |o, _| o.goal.is_some() && o.status == "waiting").await;
+    // The goal keeper is reported with the team: who checks, not checking now, no failure.
+    let keeper = o.goal_keeper.clone().unwrap();
+    assert!(keeper.referee.is_some() && !keeper.checking && keeper.last_error.is_none(), "{keeper:?}");
+    let goal = o.goal.unwrap();
+    assert_eq!(goal["verdict"], "drifting");
+    assert_eq!(goal["criteria"][0]["status"], "met");
+    assert!(
+        !goal["by"].as_str().unwrap().starts_with("Codex"),
+        "the referee is not the lead's provider: {goal}"
+    );
+    let reason = o.reason.unwrap();
+    assert!(
+        reason.contains("drifting from the objective") && reason.contains("\u{201c}Code\u{201d}"),
+        "{reason}"
+    );
+    let checked = events(&f, "organization.goal_checked").await;
+    assert_eq!(checked.len(), 1, "{checked:?}");
+    assert_eq!(checked[0]["payload"]["verdict"], "drifting");
+    assert!(o.context.iter().any(|c| c.text.starts_with("Goal check (drifting)")));
+}
+
+/// A specialist's turn fails without a report (a usage limit, say): the step
+/// ends as failed instead of waiting for a follow-up nobody sends; the team
+/// retries it once, then its supervisor decides (here: asks the user).
+#[tokio::test]
+async fn a_failed_turn_ends_the_step_and_reaches_the_supervisor() {
+    let f = fixture().await;
+    no_review_required(&f).await;
+    let worker =
+        json!({ "implement": [{ "fail": "usage limit reached" }, { "fail": "usage limit reached" }] });
+    let lead = json!({ "supervise": [
+        directive(json!({ "summary": "One specialist", "agents": [
+            { "key": "impl", "title": "Implementer", "kind": "specialist", "responsibility": "r", "scope": ["lib"], "provider": "claude_code" }],
+            "tasks": [{ "key": "code", "title": "Code", "work": "implementation", "owner": "impl",
+                "description": format!("Do it. {}", script(&worker)) }] })),
+        directive(json!({ "summary": "The implementer cannot work.",
+            "escalate": { "to": "user", "question": "The implementer's agent fails every turn: switch its provider?" } })),
+    ]});
+    let task = create_task(&f, format!("Failing worker. {}", script(&lead))).await;
+    start(&f, task).await;
+    let (o, _) = wait_org(&f, task, "the lead's question after the failures", |o, _| {
+        o.status == "waiting" && o.question.is_some()
+    })
+    .await;
+    assert!(o.question.unwrap().contains("fails every turn"));
+    let ended = events(&f, "task.assignment_ended").await;
+    let failed: Vec<_> = ended
+        .iter()
+        .filter(|e| e["payload"]["outcome"].as_str().is_some_and(|s| s.contains("the turn failed")))
+        .collect();
+    assert_eq!(failed.len(), 2, "one try and one retry, each ended as failed: {ended:?}");
+    assert!(failed.iter().all(|e| e["payload"]["status"] == "failed"));
 }

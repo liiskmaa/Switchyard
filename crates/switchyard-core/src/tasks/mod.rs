@@ -11,8 +11,10 @@
 //! Every change goes through [`crate::journal::commit_checked`]: the task
 //! rows and their `task.*` events are written in one transaction.
 
+mod again;
 mod assign;
 mod convert;
+mod goal;
 mod organization;
 mod reactor;
 mod supervisor;
@@ -769,7 +771,10 @@ impl TaskService {
     pub async fn cancel(&self, id: Uuid, note: Option<String>, actor: String) -> Result<Task, ProtocolError> {
         let note = validate_note(note)?;
         let reason = note.unwrap_or_else(|| format!("cancelled by {actor}"));
-        self.close(id, TaskStatus::Cancelled, reason, actor).await
+        let task = self.close(id, TaskStatus::Cancelled, reason.clone(), actor.clone()).await?;
+        // Its subtasks (a team's work included) belong to it: they are cancelled too.
+        self.close_subtasks(id, &reason, &actor).await;
+        Ok(task)
     }
 
     /// Fails or cancels a task, cancelling its open assignment (and stopping

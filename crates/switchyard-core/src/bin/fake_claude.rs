@@ -483,10 +483,15 @@ impl Fake {
     /// One turn of the task scenario: an optional tool, then the final message.
     fn task_turn(&mut self) -> bool {
         self.init();
-        let step = self
-            .task
-            .next()
-            .unwrap_or(report::Step { tools: Vec::new(), text: "Nothing more to do.".into() });
+        let step = self.task.next().unwrap_or(report::Step {
+            tools: Vec::new(),
+            text: "Nothing more to do.".into(),
+            fail: None,
+        });
+        if let Some(reason) = &step.fail {
+            self.result(false, reason, "");
+            return true;
+        }
         for tool in &step.tools {
             let (name, arg) = tool.split_once(':').unwrap_or((tool.as_str(), ""));
             let outcome = match name {

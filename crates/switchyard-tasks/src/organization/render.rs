@@ -161,6 +161,12 @@ pub fn render_supervisor(
             a.status.as_str(),
         ));
     }
+    if state.turns_since_progress > 2 {
+        p.push_str(&format!(
+            "\nNote: {} supervision turns in a row accepted no work. Focus on finishing the objective.\n",
+            state.turns_since_progress
+        ));
+    }
     p.push_str("\n## Tasks in your scope\n");
     for t in subtree(state, &checkpoint.task) {
         p.push_str(&format!(
@@ -214,7 +220,11 @@ pub fn render_supervisor(
             CheckpointItem::Escalated { from, question } => format!("{from} escalates to you: {question}"),
             CheckpointItem::Answer { text } => format!("The user answered your escalation: {text}"),
             CheckpointItem::Rejected { error } => {
-                format!("Your previous directive was rejected and changed nothing: {error}. Send a corrected one.")
+                format!(
+                    "Your previous directive was rejected and changed nothing: {error}. Send a corrected one. \
+                     Your earlier accepted directives still stand: the agents and tasks listed above exist \
+                     already, so do not send them again."
+                )
             }
             CheckpointItem::Instruction { from, text } => {
                 format!("{from} sent your finished scope back: {text}")
@@ -268,7 +278,7 @@ pub fn render_supervisor(
  \"agents\": [{{\"key\": \"docs\", \"title\": \"Documentation specialist\", \"kind\": \"specialist\", \"reports_to\": \"{me}\",\n\
    \"responsibility\": \"...\", \"scope\": [\"docs/\"], \"capabilities\": [\"documentation\"], \"provider\": \"optional\", \"model\": \"optional\"}}],\n\
  \"tasks\": [{{\"key\": \"write-docs\", \"title\": \"...\", \"description\": \"...\", \"work\": \"documentation\", \"owner\": \"docs\",\n\
-   \"scope\": [\"docs/\"], \"acceptance\": [\"...\"], \"depends_on\": [\"other-task-key\"]}}],\n\
+   \"scope\": [\"docs/\"], \"acceptance\": [\"...\"], \"depends_on\": [\"other-task-key\"], \"continues\": \"task-key it finishes or fixes\"}}],\n\
  \"assessments\": [{{\"task\": \"key\", \"verdict\": \"accept|correct|reassign|cancel\", \"instructions\": \"...\", \"to\": \"agent key\", \"evidence\": \"...\"}}],\n\
  \"context\": [{{\"kind\": \"decision|finding|risk|progress\", \"text\": \"...\", \"status\": \"claim|proposal|decided\", \"supersedes\": 12}}],\n\
  \"escalate\": {{\"to\": \"supervisor|user\", \"question\": \"...\"}},\n\
@@ -276,7 +286,13 @@ pub fn render_supervisor(
 ```\n\
 Work kinds: implementation, investigation, documentation, testing, review (owned by a specialist), and \
 coordination (owned by a supervisor who reports to you; it breaks that part down itself). Omit what you do not \
-need. Resolve ordinary engineering decisions yourself; escalate only what is consequential or unresolved. \
+need. A review task starts only after the other open work in its area is finished, so to have a fix reviewed \
+again, add the fix and assess the review \"correct\". Resolve ordinary engineering decisions yourself; escalate only what is consequential or unresolved. \
+Stay on the objective: your first plan is the agreed scope. After it, every new implementation or coordination \
+task must name in \"continues\" the agreed task it finishes or fixes; one that continues none is new scope, and \
+it waits for the user's approval before anything starts (investigation, documentation, testing and review do not \
+need it). Do not grow the work beyond the objective's acceptance criteria. \
+When the objective's criteria are met, say \"done\": true. \
 The directive does not grant permissions: every tool request still goes through Switchyard's policies, and \
 only the user approves delivery.",
         me = checkpoint.supervisor,

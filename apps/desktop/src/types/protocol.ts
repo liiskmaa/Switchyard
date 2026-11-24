@@ -696,6 +696,10 @@ export interface WorkflowInfo {
   step_through?: boolean;
   /** The step that starts when you continue, while the workflow waits to start one. */
   next_step?: string | null;
+  /** The task whose workspace and work this one continues (`tasks.start_again`). */
+  continues_task_id?: Uuid | null;
+  /** The task that took over this one's workspace and work. */
+  continued_by_task_id?: Uuid | null;
 }
 
 // --- agent organizations (M8.3) ---------------------------------------------------
@@ -708,6 +712,8 @@ export type OrgTaskState =
   | "ready"
   | "working"
   | "reported"
+  /** New work outside the agreed scope, waiting for the user (ADR 0046). */
+  | "proposed"
   | "accepted"
   | "cancelled";
 
@@ -782,8 +788,36 @@ export interface OrganizationInfo {
   question_from: string | null;
   context: OrgContextEntry[];
   final_summary: string | null;
+  /** The last independent goal check (ADR 0046). */
+  goal?: OrgGoalReport | null;
+  /** Supervision turns since work was last accepted. */
+  turns_since_progress?: number;
+  /** The goal keeper's live state (ADR 0046); absent from an older Core. */
+  goal_keeper?: GoalKeeperInfo | null;
   created_at_ms: number;
   updated_at_ms: number;
+}
+
+/** The independent goal check of a team, as it stands now. */
+export interface GoalKeeperInfo {
+  /** Who judges; null: no agent CLI is available, so nothing is checked. */
+  referee: string | null;
+  checking: boolean;
+  due: boolean;
+  next_check_ms: number | null;
+  last_error: string | null;
+  last_error_ms: number | null;
+}
+
+export type OrgGoalVerdict = "done" | "on_track" | "drifting" | "looping";
+
+export interface OrgGoalReport {
+  verdict: OrgGoalVerdict;
+  summary: string;
+  criteria: { criterion: string; status: "met" | "partial" | "open"; evidence: string }[];
+  off_goal: string[];
+  at_ms: number;
+  by: string;
 }
 
 export interface OrgLimits {
@@ -1021,6 +1055,10 @@ export interface TaskMethods {
   "tasks.complete": { params: TaskDecision; result: TaskResult };
   "tasks.fail": { params: TaskDecision; result: TaskResult };
   "tasks.cancel": { params: TaskDecision; result: TaskResult };
+  "tasks.start_again": {
+    params: { task_id: Uuid; keep_work?: boolean; definition?: string; lead?: { provider: AgentProvider; model: string | null } };
+    result: { task: Task; workflow: WorkflowInfo | null; start_error: string | null };
+  };
   "tasks.retry": { params: TaskDecision; result: TaskResult };
   "tasks.decide_proposal": {
     params: { proposal_id: Uuid; approve: boolean; note?: string };
@@ -1297,6 +1335,10 @@ export interface IntegrationMethods {
   "workflows.cancel": { params: { task_id: Uuid; reason?: string }; result: { workflow: WorkflowInfo } };
   "workflows.request_correction": { params: { task_id: Uuid; note?: string }; result: { workflow: WorkflowInfo } };
   "organizations.get": { params: { task_id: Uuid }; result: { organization: OrganizationInfo | null } };
+  "organizations.decide_scope": {
+    params: { task_id: Uuid; key: string; approve: boolean };
+    result: { organization: OrganizationInfo | null };
+  };
   "organizations.answer": { params: { task_id: Uuid; text: string }; result: { organization: OrganizationInfo | null } };
   "organizations.settings": { params: { project_id: Uuid }; result: OrgSettingsInfo };
   "organizations.set_settings": {

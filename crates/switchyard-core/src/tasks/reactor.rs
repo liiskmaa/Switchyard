@@ -220,6 +220,26 @@ impl TaskService {
     ) -> Result<Applied, ProtocolError> {
         let (text, truncated) = self.turn_text(a, session_id, event.seq, result).await?;
         let parsed = parse_report(&text, a.role);
+        // A workflow or team step whose turn failed without a report (a usage
+        // limit, an API error) ends like a session that ended early: nobody
+        // sends a workflow step a follow-up, so waiting would wait forever.
+        // The workflow or team decides what next (retry, or its supervisor).
+        // An operator's own assignment keeps waiting for their next message.
+        if a.origin == "workflow" && !success && !interrupted && parsed.is_err() {
+            let why = format!(
+                "the turn failed before the assignment reported: {}",
+                reason.as_deref().map(|r| r.trim_start_matches("failed: ")).unwrap_or("no reason given")
+            );
+            self.stopping().insert(session_id, a.workspace_id);
+            let ended = self.on_session_ended(a, event.seq, why).await;
+            return match ended {
+                Ok(_) => Ok(Applied::Ended(session_id)),
+                Err(e) => {
+                    self.stopping().remove(&session_id);
+                    Err(e)
+                }
+            };
+        }
         // A review is checked against the workspace as it was when it began.
         let workspace_changed = match (&parsed, a.role, &a.review_fingerprint) {
             // Every final report of a review (a verdict or a blocker) is checked.

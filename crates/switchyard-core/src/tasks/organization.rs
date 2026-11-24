@@ -414,6 +414,8 @@ impl TaskService {
                 state: TaskState::Planning,
                 corrections: 0,
                 attempts: 0,
+                turns: 0,
+                late: false,
                 instructions: Vec::new(),
                 current_instructions: Vec::new(),
                 summary: None,
@@ -437,6 +439,11 @@ impl TaskService {
                 sessions: BTreeMap::new(),
                 turn_after_seq: 0,
                 dead_ends_reported: Vec::new(),
+                scope_agreed: false,
+                turns_since_progress: 0,
+                goal: None,
+                goal_due: false,
+                last_goal_check_ms: 0,
             };
             let workflow = WorkflowRecord {
                 task_id,
@@ -1358,6 +1365,17 @@ impl TaskService {
         Ok(any)
     }
 
+    /// The user approves or declines work the lead proposed outside the agreed scope.
+    pub async fn decide_scope(
+        &self,
+        task_id: Uuid,
+        key: String,
+        approve: bool,
+    ) -> Result<Option<OrganizationInfo>, ProtocolError> {
+        self.org_operator(task_id, Input::ScopeDecision { key, approve, now_ms: now_ms() }).await?;
+        self.organization(task_id).await
+    }
+
     pub async fn answer_organization(
         &self,
         task_id: Uuid,
@@ -1372,17 +1390,21 @@ impl TaskService {
     }
 
     pub async fn organization(&self, task_id: Uuid) -> Result<Option<OrganizationInfo>, ProtocolError> {
-        self.storage
+        let found = self
+            .storage
             .call(move |c| {
                 let Some(rec) = org_store::find(c, task_id)? else { return Ok(None) };
                 let state = state_of(&rec)?;
                 let entries = org::current(&entries_of(c, task_id)?);
                 let created: BTreeMap<i64, i64> =
                     org_store::context(c, task_id)?.into_iter().map(|r| (r.seq, r.created_at_ms)).collect();
-                Ok(Some(info(&rec, &state, &entries, &created)))
+                Ok(Some((info(&rec, &state, &entries, &created), state)))
             })
             .await
-            .map_err(errors::storage)
+            .map_err(errors::storage)?;
+        let Some((mut info, state)) = found else { return Ok(None) };
+        info.goal_keeper = Some(self.goal_keeper(task_id, &state).await);
+        Ok(Some(info))
     }
 }
 
@@ -1481,6 +1503,9 @@ fn info(
             })
             .collect(),
         final_summary: s.final_summary.clone(),
+        goal: s.goal.as_ref().and_then(|g| serde_json::to_value(g).ok()),
+        turns_since_progress: s.turns_since_progress,
+        goal_keeper: None,
         created_at_ms: rec.created_at_ms,
         updated_at_ms: rec.updated_at_ms,
     }
@@ -1737,6 +1762,14 @@ fn decide_in_tx(
             Change::DirectiveRejected { by, error } => {
                 DomainEvent::OrganizationDirectiveRejected { by: by.clone(), error: error.clone() }
             }
+            Change::GoalChecked { verdict, summary } => DomainEvent::OrganizationGoalChecked {
+                verdict: verdict.as_str().into(),
+                summary: summary.clone(),
+            },
+            Change::ScopeProposed { key } => DomainEvent::OrganizationScopeProposed {
+                key: key.clone(),
+                title: d.state.task(key).map(|t| t.title.clone()).unwrap_or_default(),
+            },
             Change::Waiting { reason } => DomainEvent::OrganizationStatusChanged {
                 status: "waiting".into(),
                 reason: Some(reason.clone()),

@@ -34,6 +34,7 @@ import { WorkBoard } from "./WorkBoard";
 import { roleLanes } from "./board";
 import { buildFlow } from "./flow";
 import { TestResults } from "./TestResults";
+import { StartAgain } from "./StartAgain";
 import { OrganizationPanel } from "./OrganizationPanel";
 import { RoleBindingsEditor } from "./RoleBindingsEditor";
 
@@ -235,11 +236,18 @@ export function WorkflowPanel({ detail, onChanged }: { detail: TaskDetail; onCha
     );
   }
   if (w.definition === "organization") {
-    return <OrganizationPanel detail={detail} onChanged={onChanged} />;
+    return (
+      <>
+        <StartAgain detail={detail} />
+        <OrganizationPanel detail={detail} onChanged={onChanged} />
+      </>
+    );
   }
   const steps = detail.assignments.filter((a) => a.step_key !== null);
   const final = w.status === "completed" || w.status === "delivered" || w.status === "cancelled" || w.status === "failed";
   return (
+    <>
+    <StartAgain detail={detail} />
     <Panel
       title="Progress"
       actions={<Badge tone={workflowTone(w.status)}>{WORKFLOW_STATUS_LABEL[w.status]}</Badge>}
@@ -348,5 +356,6 @@ export function WorkflowPanel({ detail, onChanged }: { detail: TaskDetail; onCha
         </p>
       </details>
     </Panel>
+    </>
   );
 }

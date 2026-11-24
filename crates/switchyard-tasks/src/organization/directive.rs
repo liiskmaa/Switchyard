@@ -67,6 +67,11 @@ pub struct TaskRequest {
     /// The coordination task this belongs to; defaults to the one under review.
     #[serde(default)]
     pub parent: Option<String>,
+    /// The existing task this one finishes or fixes. After the first plan,
+    /// work that continues nothing is new scope: it waits for the user's
+    /// approval (ADR 0046).
+    #[serde(default)]
+    pub continues: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

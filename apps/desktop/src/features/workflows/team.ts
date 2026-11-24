@@ -31,8 +31,32 @@ export interface Handoff {
   label: string;
 }
 
+/**
+ * The goal keeper (ADR 0046): the independent check that the team is still
+ * finishing its objective. Not an agent of the team (it never works on a
+ * task), so it stands beside you and watches the lead.
+ */
+export type KeeperState = "checking" | "needs_you" | "idle" | "off" | "done";
+
+export interface Keeper {
+  x: number;
+  y: number;
+  state: KeeperState;
+  /** Who judges, e.g. "Codex"; null when no agent is available. */
+  referee: string | null;
+  /** One short status line: "Checking now", "On track · 4m ago", "Next check in 12m". */
+  line: string;
+  /** The last verdict as a label for the line to the lead, if any. */
+  verdict: string | null;
+  /** The node it watches (the lead). */
+  watches: string | null;
+}
+
+export const KEEPER = "goal-keeper";
+
 export interface Team {
   nodes: TeamNode[];
+  keeper: Keeper;
   handoffs: Handoff[];
   /** The hand-off in progress, if any. */
   active: Handoff | null;
@@ -220,5 +244,60 @@ export function buildTeam(o: OrganizationInfo, events: EventEnvelope[], nowMs: n
     if (t.state === "accepted") l[1] += 1;
     else if (t.state !== "cancelled") l[0] += 1;
   }
-  return { nodes, handoffs, active, times, load, width, height };
+  return { nodes, keeper: keeperOf(o, nodes, nowMs), handoffs, active, times, load, width, height };
+}
+
+const VERDICT_LABEL: Record<string, string> = {
+  done: "Objective met",
+  on_track: "On track",
+  drifting: "Drifting",
+  looping: "Going in circles",
+};
+
+const ago = (ms: number) => {
+  const m = Math.round(ms / 60_000);
+  return m < 1 ? "just now" : m < 60 ? `${m}m ago` : `${Math.round(m / 60)}h ago`;
+};
+
+/** The goal keeper beside you, from Core's live state and the last verdict. */
+export function keeperOf(o: OrganizationInfo, nodes: TeamNode[], nowMs: number): Keeper {
+  const you = nodes.find((n) => n.key === YOU);
+  const lead = nodes.find((n) => n.parent === YOU) ?? null;
+  const k = o.goal_keeper ?? null;
+  const g = o.goal ?? null;
+  const verdict = g ? (VERDICT_LABEL[g.verdict] ?? g.verdict) : null;
+  const ended = o.status === "done" || o.status === "cancelled";
+  let state: KeeperState = "idle";
+  let line: string;
+  if (!k) {
+    state = "off";
+    line = "Unknown: restart Core";
+  } else if (!k.referee) {
+    state = "off";
+    line = "Off: no agent available";
+  } else if (k.checking) {
+    state = "checking";
+    line = "Checking now";
+  } else {
+    if (g && (g.verdict === "drifting" || g.verdict === "looping")) state = "needs_you";
+    if (ended) state = "done";
+    const failed = k.last_error_ms !== null && (!g || k.last_error_ms > g.at_ms);
+    if (failed) line = `Last check failed ${ago(nowMs - (k.last_error_ms ?? nowMs))}`;
+    else if (g) line = `${verdict} · ${ago(nowMs - g.at_ms)}`;
+    else if (ended) line = "Never checked";
+    else if (k.due) line = "Check due now";
+    else if (k.next_check_ms !== null) {
+      const m = Math.max(1, Math.round((k.next_check_ms - nowMs) / 60_000));
+      line = `First check in ${m}m`;
+    } else line = "Not checked yet";
+  }
+  return {
+    x: (you?.x ?? 0) + 170,
+    y: you?.y ?? 60,
+    state,
+    referee: k?.referee ?? null,
+    line,
+    verdict,
+    watches: lead?.key ?? null,
+  };
 }

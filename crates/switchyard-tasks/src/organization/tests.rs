@@ -38,6 +38,8 @@ fn objective() -> OrgTask {
         state: TaskState::Planning,
         corrections: 0,
         attempts: 0,
+        turns: 0,
+        late: false,
         instructions: vec![],
         current_instructions: vec![],
         summary: None,
@@ -64,6 +66,11 @@ fn empty() -> OrgState {
         sessions: BTreeMap::new(),
         turn_after_seq: 0,
         dead_ends_reported: vec![],
+        scope_agreed: false,
+        turns_since_progress: 0,
+        goal: None,
+        goal_due: false,
+        last_goal_check_ms: 0,
     }
 }
 
@@ -590,4 +597,231 @@ fn the_watchdog_hands_a_stuck_team_to_its_lead() {
     // Not while the team waits for the user's answer.
     s.question_from = Some(LEAD.into());
     assert_eq!(decide(&s, &Input::Nudge { text: "x".into(), now_ms: T0 }).unwrap().state, s);
+}
+
+#[test]
+fn after_the_first_plan_new_work_must_continue_a_task_or_wait_for_the_user() {
+    let s = supervise(&started(), LEAD, PLAN).state;
+    assert!(s.scope_agreed);
+    assert_eq!(s.task("greet").unwrap().state, TaskState::Working, "the first plan is agreed");
+    let s = worked(&s, "greet", delivered("done"), Evidence::default()).state;
+    let d = supervise(
+        &s,
+        LEAD,
+        r#"{"summary": "More", "assessments": [{"task": "greet", "verdict": "accept"}],
+            "tasks": [{"key": "farewell", "title": "Also say goodbye", "work": "implementation", "owner": "impl"},
+                      {"key": "polish", "title": "Polish the greeting", "work": "implementation", "owner": "impl", "continues": "greet"},
+                      {"key": "check", "title": "Review it", "work": "review", "owner": "impl"},
+                      {"key": "doc", "title": "Document it", "work": "documentation", "owner": "impl", "scope": ["src"]}]}"#,
+    );
+    assert_eq!(d.state.task("farewell").unwrap().state, TaskState::Proposed, "new scope waits");
+    assert_ne!(
+        d.state.task("polish").unwrap().state,
+        TaskState::Proposed,
+        "continuing an agreed task is in scope"
+    );
+    assert_ne!(d.state.task("check").unwrap().state, TaskState::Proposed, "reviews are exempt");
+    assert_ne!(
+        d.state.task("doc").unwrap().state,
+        TaskState::Proposed,
+        "documentation does not widen the product"
+    );
+    assert!(d.changes.contains(&Change::ScopeProposed { key: "farewell".into() }));
+    assert!(
+        !matches!(&d.action, Action::Work { task, .. } if task == "farewell"),
+        "proposed work never starts"
+    );
+
+    // Declined: cancelled, and the lead hears it.
+    let declined =
+        decide(&d.state, &Input::ScopeDecision { key: "farewell".into(), approve: false, now_ms: T0 + 9 })
+            .unwrap();
+    assert_eq!(declined.state.task("farewell").unwrap().state, TaskState::Cancelled);
+    assert!(declined.context.iter().any(|c| c.text.contains("declined")));
+    // Approved: part of the plan.
+    let approved =
+        decide(&d.state, &Input::ScopeDecision { key: "farewell".into(), approve: true, now_ms: T0 + 9 })
+            .unwrap();
+    assert!(matches!(
+        approved.state.task("farewell").unwrap().state,
+        TaskState::Waiting | TaskState::Ready | TaskState::Working
+    ));
+    assert!(
+        decide(&approved.state, &Input::ScopeDecision { key: "farewell".into(), approve: true, now_ms: T0 })
+            .is_err()
+    );
+}
+
+#[test]
+fn a_task_worked_on_too_often_waits_and_resume_allows_one_more_attempt() {
+    let mut s = supervise(&started(), LEAD, PLAN).state;
+    // Back to ready after 3 turns that were not accepted.
+    let t = s.tasks.iter_mut().find(|t| t.key == "greet").unwrap();
+    t.state = TaskState::Ready;
+    t.turns = 3;
+    t.summary = Some("no usable report".into());
+    s.activity = Activity::Idle;
+    s.status = OrgStatus::Waiting;
+    let d = decide(&s, &Input::Resume { now_ms: T0 + 5 }).unwrap();
+    // Resume grants exactly one more attempt.
+    assert!(matches!(&d.action, Action::Work { task, .. } if task == "greet"), "{:?}", d.action);
+    assert_eq!(d.state.task("greet").unwrap().turns, 3);
+    // The next time it would start a fourth turn, it waits instead.
+    let mut again = d.state.clone();
+    let t = again.tasks.iter_mut().find(|t| t.key == "greet").unwrap();
+    t.state = TaskState::Ready;
+    again.activity = Activity::Idle;
+    let held = decide(&again, &Input::Tick { now_ms: T0 + 6 }).unwrap();
+    assert_eq!(held.state.status, OrgStatus::Waiting);
+    assert!(held.state.reason.unwrap().contains("worked on 3 times"));
+}
+
+#[test]
+fn supervision_turns_without_progress_wait_for_the_user() {
+    let mut s = supervise(&started(), LEAD, PLAN).state;
+    s.turns_since_progress = 8;
+    s.activity = Activity::Idle;
+    s.enqueue(LEAD, ROOT, CheckpointItem::Plan);
+    let d = decide(&s, &Input::Tick { now_ms: T0 + 5 }).unwrap();
+    assert_eq!(d.state.status, OrgStatus::Waiting);
+    assert!(d.state.reason.unwrap().contains("going in circles"));
+}
+
+/// A started organization with these extra implementation tasks (for other modules' tests).
+pub(crate) fn state_with_tasks(keys: &[&str]) -> OrgState {
+    let mut s = started();
+    for k in keys {
+        let mut t = objective();
+        t.key = (*k).into();
+        t.title = format!("Task {k}");
+        t.work = WorkKind::Implementation;
+        t.parent = Some(ROOT.into());
+        t.state = TaskState::Waiting;
+        s.tasks.push(t);
+    }
+    s
+}
+
+fn report(
+    verdict: crate::organization::goal::Verdict,
+    off: &[&str],
+) -> crate::organization::goal::GoalReport {
+    crate::organization::goal::GoalReport {
+        verdict,
+        summary: "judged".into(),
+        criteria: vec![],
+        off_goal: off.iter().map(|s| (*s).to_owned()).collect(),
+        at_ms: 0,
+        by: "gemini".into(),
+    }
+}
+
+#[test]
+fn goal_check_verdicts_steer_the_team_and_never_approve_anything() {
+    use crate::organization::goal::Verdict;
+    let s = supervise(&started(), LEAD, PLAN).state;
+    // Accepting work makes a check due; a check clears it.
+    let mut accepted = s.clone();
+    accepted.goal_due = true;
+    assert!(goal_check_due(&accepted, T0 + 1, 30 * 60_000));
+    let on = decide(&accepted, &Input::GoalChecked { report: report(Verdict::OnTrack, &[]), now_ms: T0 + 2 })
+        .unwrap();
+    assert!(!on.state.goal_due && on.state.goal.is_some());
+    assert_eq!(on.state.status, OrgStatus::Running, "on track changes nothing");
+    assert!(!goal_check_due(&on.state, T0 + 3, 30 * 60_000));
+    assert!(
+        goal_check_due(&on.state, T0 + 2 + 30 * 60_000, 30 * 60_000),
+        "and again after 30 minutes of work"
+    );
+    // Drifting: the team waits for the user, naming what is off the objective.
+    let drift =
+        decide(&s, &Input::GoalChecked { report: report(Verdict::Drifting, &["greet"]), now_ms: T0 + 2 })
+            .unwrap();
+    assert_eq!(drift.state.status, OrgStatus::Waiting);
+    let why = drift.state.reason.unwrap();
+    assert!(why.contains("drifting") && why.contains("Implement the greeting"), "{why}");
+    // Done: the lead is told to wrap up; nothing is completed from the verdict.
+    let mut idle = s.clone();
+    idle.activity = Activity::Idle;
+    let done =
+        decide(&idle, &Input::GoalChecked { report: report(Verdict::Done, &[]), now_ms: T0 + 2 }).unwrap();
+    assert_ne!(done.state.task(ROOT).unwrap().state, TaskState::Accepted);
+    let Action::Supervise { checkpoint } = &done.action else { panic!("{:?}", done.action) };
+    assert!(
+        checkpoint
+            .items
+            .iter()
+            .any(|i| matches!(i, CheckpointItem::Observed { text, .. } if text.contains("finish now")))
+    );
+}
+
+#[test]
+fn a_directive_that_repeats_existing_keys_is_told_every_repeat_and_what_to_do_instead() {
+    let s = state_with_tasks(&["review"]);
+    let d = supervise(
+        &s,
+        LEAD,
+        r#"{"summary": "fix, then review again",
+            "agents": [{"key": "lead", "title": "Lead", "kind": "specialist", "responsibility": "r", "scope": ["src"]}],
+            "tasks": [{"key": "review", "title": "Review again", "work": "review", "owner": "lead"},
+                      {"key": "fix", "title": "Fix", "work": "implementation", "owner": "lead",
+                       "continues": "01a206bd-20ed-7623-94c1-3e078ac95b8c"}]}"#,
+    );
+    let err = d
+        .changes
+        .iter()
+        .find_map(|c| match c {
+            Change::DirectiveRejected { error, .. } => Some(error.clone()),
+            _ => None,
+        })
+        .unwrap();
+    for want in [
+        "agent lead already exists",
+        "a task with key review already exists (waiting)",
+        "new key such as review-2",
+        "verdict \"correct\"",
+        "\"continues\" names 01a206bd",
+    ] {
+        assert!(err.contains(want), "{want}: {err}");
+    }
+    assert_eq!(d.state.tasks.len(), s.tasks.len());
+}
+
+#[test]
+fn a_review_waits_for_the_other_open_work_in_its_area() {
+    // The lead added a fix after the first review and sent the review back:
+    // the review is first in the list, but the fix runs first.
+    let mut s = state_with_tasks(&["review", "fix"]);
+    s.task_mut(ROOT).unwrap().state = TaskState::Delegated;
+    s.activity = Activity::Idle;
+    s.queue.clear();
+    for (k, work) in [("review", WorkKind::Review), ("fix", WorkKind::Implementation)] {
+        let t = s.task_mut(k).unwrap();
+        t.work = work;
+        t.state = TaskState::Ready;
+        t.task_id = Some(Uuid::now_v7());
+        t.owner = LEAD.into();
+    }
+    let mut d = Decision {
+        state: s.clone(),
+        action: Action::None,
+        changes: vec![],
+        context: vec![],
+        created_tasks: vec![],
+        closed_tasks: vec![],
+    };
+    schedule(&mut d, T0 + 1);
+    assert!(matches!(&d.action, Action::Work { task, .. } if task == "fix"), "{:?}", d.action);
+
+    // Once the fix is accepted (or if it waits for the review), the review runs.
+    let mut done = s.clone();
+    done.task_mut("fix").unwrap().state = TaskState::Accepted;
+    assert!(!review_waits(&done, done.task("review").unwrap()));
+    let mut after = s.clone();
+    after.task_mut("fix").unwrap().depends_on = vec!["review".into()];
+    after.task_mut("fix").unwrap().state = TaskState::Waiting;
+    assert!(!review_waits(&after, after.task("review").unwrap()));
+    let mut proposed = s;
+    proposed.task_mut("fix").unwrap().state = TaskState::Proposed;
+    assert!(!review_waits(&proposed, proposed.task("review").unwrap()));
 }

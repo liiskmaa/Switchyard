@@ -7,7 +7,15 @@ import type { TaskDetail } from "../../types/protocol";
 import { isApprovalEvent } from "../agents/api";
 import { sendNote } from "../tasks/api";
 import { ApprovalCard } from "../approvals/ApprovalCard";
-import { answerOrganization, cancelWorkflow, getOrganization, isOrganizationEvent, pendingApprovals, resumeWorkflow } from "./api";
+import {
+  answerOrganization,
+  cancelWorkflow,
+  decideScope,
+  getOrganization,
+  isOrganizationEvent,
+  pendingApprovals,
+  resumeWorkflow,
+} from "./api";
 import { DeliveryPanel } from "./DeliveryPanel";
 import { NextStepPreview } from "./NextStepPreview";
 import { StuckCard, useStuck } from "./StuckCard";
@@ -44,7 +52,8 @@ export function TaskNeedsYou({ detail, onChanged }: { detail: TaskDetail; onChan
   const pending = approvals.data ?? [];
   const delivery = deliveryNeedsYou(detail);
   const stopped = w?.status === "waiting" && !delivery;
-  if (pending.length === 0 && !stopped && !delivery && !stuck) return null;
+  const proposed = (org.data?.tasks ?? []).filter((t) => t.state === "proposed");
+  if (pending.length === 0 && !stopped && !delivery && !stuck && proposed.length === 0) return null;
   const act = (f: () => Promise<unknown>) =>
     void (async () => {
       setBusy(true);
@@ -64,6 +73,42 @@ export function TaskNeedsYou({ detail, onChanged }: { detail: TaskDetail; onChan
         Needs you
       </h2>
       {stuck ? <StuckCard item={stuck} onChanged={onChanged} /> : null}
+      {proposed.map((t) => (
+        <div key={t.key} className="needs-card">
+          <p>
+            <strong>The lead wants to add work outside the agreed plan:</strong> {t.title}
+          </p>
+          {t.description ? <p className="small">{t.description}</p> : null}
+          <p className="small muted">
+            Nothing of it starts unless you approve. Decline to keep the team on the objective; the lead is told either way.
+          </p>
+          <div className="form-actions start">
+            <Button
+              variant="primary"
+              disabled={busy}
+              onClick={() =>
+                act(async () => {
+                  await decideScope(detail.task.id, t.key, true);
+                  org.refresh();
+                })
+              }
+            >
+              Approve
+            </Button>
+            <Button
+              disabled={busy}
+              onClick={() =>
+                act(async () => {
+                  await decideScope(detail.task.id, t.key, false);
+                  org.refresh();
+                })
+              }
+            >
+              Decline
+            </Button>
+          </div>
+        </div>
+      ))}
       {pending.map((a) => (
         <ApprovalCard
           key={a.id}

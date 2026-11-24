@@ -1121,3 +1121,88 @@ async fn a_failed_workflow_can_be_continued() {
     let d = wait_delivery(&f, task).await;
     assert_eq!(keys(&d), ["investigate#1", "implement#1", "implement#1@2", "review#1"]);
 }
+
+/// A cancelled task started again keeps its work: the new task continues in
+/// the same workspace (the files are there), both tasks show the link, and
+/// the work cannot be taken over twice.
+#[tokio::test]
+async fn a_cancelled_task_starts_again_with_its_work() {
+    let f = fixture().await;
+    let spec = json!({
+        "investigate": { "report": report("findings", "found") },
+        "implement": { "tools": ["write:feature.txt", "write:second.txt"], "report": report("implementation", "done") },
+        "review": { "report": review("approved") }
+    });
+    let old = create_task(&f, &spec).await;
+    let wf = start(&f, old, claude_everywhere()).await.unwrap();
+    let ws = wf.workspace_id.unwrap();
+    // The first write is approved; cancel while the second one waits.
+    approve_step(&f, old, "implement#1").await;
+    let dir = workspace_dir(&f, ws).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    while !dir.join("feature.txt").exists() {
+        assert!(tokio::time::Instant::now() < deadline, "feature.txt was never written");
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+    // A running task does not start again.
+    let running = f
+        .client
+        .call::<switchyard_protocol::methods::TasksStartAgain>(
+            switchyard_protocol::methods::TasksStartAgainParams {
+                task_id: old,
+                keep_work: true,
+                definition: None,
+                lead: None,
+            },
+        )
+        .await
+        .map_err(remote)
+        .unwrap_err();
+    assert_eq!(running.code, ErrorCode::InvalidState);
+    f.client
+        .call::<WorkflowsCancel>(WorkflowsCancelParams { task_id: old, reason: Some("start over".into()) })
+        .await
+        .unwrap();
+    wait_for(&f, old, "the cancelled task", |d| d.task.status.to_string() == "cancelled").await;
+    let again = f
+        .client
+        .call::<switchyard_protocol::methods::TasksStartAgain>(
+            switchyard_protocol::methods::TasksStartAgainParams {
+                task_id: old,
+                keep_work: true,
+                definition: None,
+                lead: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(again.start_error, None);
+    let new = again.task.id;
+    assert_ne!(new, old);
+    assert_eq!(again.task.title, "Add the feature");
+    assert_eq!(again.task.acceptance_criteria, vec!["feature.txt exists".to_owned()]);
+    let description = again.task.description.clone().unwrap();
+    assert!(description.contains("Started again from the cancelled task"), "{description}");
+    assert!(description.contains("already contains that task's work"), "{description}");
+    let new_wf = again.workflow.unwrap();
+    assert_eq!(new_wf.workspace_id, Some(ws), "the new task continues in the same workspace");
+    assert!(dir.join("feature.txt").exists(), "the earlier work is still there");
+    assert_eq!(new_wf.continues_task_id, Some(old));
+    assert_eq!(detail(&f, old).await.workflow.unwrap().continued_by_task_id, Some(new));
+    // The work has an owner now: it is not taken over a second time.
+    let twice = f
+        .client
+        .call::<switchyard_protocol::methods::TasksStartAgain>(
+            switchyard_protocol::methods::TasksStartAgainParams {
+                task_id: old,
+                keep_work: true,
+                definition: None,
+                lead: None,
+            },
+        )
+        .await
+        .map_err(remote)
+        .unwrap_err();
+    assert_eq!(twice.code, ErrorCode::Conflict);
+    f.client.call::<WorkflowsCancel>(WorkflowsCancelParams { task_id: new, reason: None }).await.unwrap();
+}

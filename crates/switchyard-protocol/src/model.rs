@@ -832,8 +832,38 @@ pub struct OrganizationInfo {
     pub question_from: Option<String>,
     pub context: Vec<OrgContextEntry>,
     pub final_summary: Option<String>,
+    /// The last independent goal check (ADR 0046): `{verdict, summary,
+    /// criteria: [{criterion, status, evidence}], off_goal, at_ms, by}`.
+    #[serde(default)]
+    pub goal: Option<Value>,
+    /// Supervision turns since work was last accepted (the loop guard).
+    #[serde(default)]
+    pub turns_since_progress: u32,
+    /// The goal keeper's live state (ADR 0046): who checks, whether it checks
+    /// now, when next. `None` from a Core that predates it.
+    #[serde(default)]
+    pub goal_keeper: Option<GoalKeeperInfo>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+}
+
+/// The independent goal check of a team, as it stands now (ADR 0046).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GoalKeeperInfo {
+    /// The agent that judges (provider name, with a note when it is the
+    /// lead's own); `None`: no agent CLI is available, so nothing is checked.
+    pub referee: Option<String>,
+    /// A check runs now.
+    pub checking: bool,
+    /// The next check is due once Core's loop next looks (after accepted work,
+    /// or the interval passed); only while the team runs.
+    pub due: bool,
+    /// When the next check is due at the latest (interval, or the retry after
+    /// a failed check); `None` once the team has ended.
+    pub next_check_ms: Option<i64>,
+    /// Why the last check gave no verdict, and when; cleared by a verdict.
+    pub last_error: Option<String>,
+    pub last_error_ms: Option<i64>,
 }
 
 /// What Core knows about one provider/model.
@@ -950,6 +980,12 @@ pub struct WorkflowInfo {
     /// The step that starts when the operator continues, while waiting to start one.
     #[serde(default)]
     pub next_step: Option<String>,
+    /// The task whose workspace (and work) this one continues (`tasks.start_again`).
+    #[serde(default)]
+    pub continues_task_id: Option<Uuid>,
+    /// The task that took over this workspace and its work after this one ended.
+    #[serde(default)]
+    pub continued_by_task_id: Option<Uuid>,
 }
 
 /// Work the watchdog finds stuck (ADR 0045).
