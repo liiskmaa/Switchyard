@@ -73,7 +73,23 @@ work, then lower cost. Without estimates the choice says so ("no skill estimates
 | cost / tokens | off; enforced where the provider reports them |
 
 A directive that exceeds a limit changes nothing; the supervisor sees why and may escalate. Two rejected
-directives in a row are retried, the third makes the organization wait.
+directives in a row are retried, the third makes the organization wait. A supervision turn that fails
+before it decides anything (a usage limit, an API error) is not a rejected directive
+(`Input::SupervisionFailed`): the same checkpoint is retried within the retry limit, then the
+organization waits and names the cause. A directive may cancel a task and add its replacement under the
+same title in one go.
+
+## The failure matrix
+
+`crates/switchyard-core/tests/team_faults.rs` runs a small team through the real Core and the fake CLIs
+with one fault at one step: every step (plan, implement, assess, review, assess) × every fault (a failed
+turn, a crash, no report or directive, a restart, the user cancelling or stopping the step, a slow exit,
+two restarts, a provider that fails every turn). The lead is adaptive
+(`src/bin/fake_support/auto_lead.rs`): it reacts to its checkpoint as a reasonable lead would. A case
+passes when the team finishes with at most three actions of a simple user policy (approve a tool
+request, approve proposed work, answer, resume), or, for a provider that keeps failing, when it waits
+naming the cause. It fails on a stall (no change while running), a resume that leads back to the same
+wait, or more user actions. Add a case for every new failure seen in real use.
 
 ## Guarantees
 

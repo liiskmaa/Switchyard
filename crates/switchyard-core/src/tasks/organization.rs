@@ -444,6 +444,7 @@ impl TaskService {
                 goal: None,
                 goal_due: false,
                 last_goal_check_ms: 0,
+                supervision_failures: 0,
             };
             let workflow = WorkflowRecord {
                 task_id,
@@ -979,6 +980,25 @@ impl TaskService {
                     return;
                 }
                 let input = match &event {
+                    DomainEvent::AgentTurnCompleted {
+                        interrupted: false, success: false, reason, ..
+                    } if !self
+                        .supervision_text(session, state.turn_after_seq, seq, result.clone())
+                        .await
+                        .is_ok_and(|t| t.contains(org::FENCE)) =>
+                    {
+                        // The turn failed before it decided anything (a usage limit, an
+                        // API error): not a badly written directive.
+                        let why = reason
+                            .as_deref()
+                            .map(|r| r.trim_start_matches("failed: ").to_owned())
+                            .unwrap_or_else(|| "no reason given".into());
+                        Input::SupervisionFailed {
+                            agent: checkpoint.supervisor.clone(),
+                            reason: why,
+                            now_ms: now_ms(),
+                        }
+                    }
                     DomainEvent::AgentTurnCompleted { interrupted: false, .. } => {
                         let text =
                             match self.supervision_text(session, state.turn_after_seq, seq, result).await {

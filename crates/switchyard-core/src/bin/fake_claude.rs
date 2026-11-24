@@ -487,10 +487,16 @@ impl Fake {
             tools: Vec::new(),
             text: "Nothing more to do.".into(),
             fail: None,
+            crash: false,
         });
         if let Some(reason) = &step.fail {
             self.result(false, reason, "");
             return true;
+        }
+        if step.crash {
+            self.stream(json!({"type": "message_start", "message": {"id": "msg_fake", "content": []}}));
+            eprintln!("fake claude: simulated fatal error in a task turn");
+            std::process::exit(3);
         }
         for tool in &step.tools {
             let (name, arg) = tool.split_once(':').unwrap_or((tool.as_str(), ""));

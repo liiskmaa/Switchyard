@@ -307,6 +307,7 @@ impl Fake {
                 tools: Vec::new(),
                 text: "Nothing more to do.".into(),
                 fail: None,
+                crash: false,
             });
             for tool in &step.tools {
                 let (name, arg) = tool.split_once(':').unwrap_or((tool.as_str(), ""));

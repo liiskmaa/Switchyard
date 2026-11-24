@@ -71,6 +71,7 @@ fn empty() -> OrgState {
         goal: None,
         goal_due: false,
         last_goal_check_ms: 0,
+        supervision_failures: 0,
     }
 }
 
@@ -824,4 +825,72 @@ fn a_review_waits_for_the_other_open_work_in_its_area() {
     let mut proposed = s;
     proposed.task_mut("fix").unwrap().state = TaskState::Proposed;
     assert!(!review_waits(&proposed, proposed.task("review").unwrap()));
+}
+
+#[test]
+fn a_directive_can_cancel_a_task_and_replace_it_under_the_same_title() {
+    // The lead's usual repair: drop work that can no longer run and add it
+    // again (the team failure matrix found this rejected as a duplicate title).
+    let s = state_with_tasks(&["review"]);
+    let d = supervise(
+        &s,
+        LEAD,
+        r#"{"summary": "the review starts again",
+            "agents": [{"key": "rev", "title": "Reviewer", "kind": "specialist", "responsibility": "r"}],
+            "tasks": [{"key": "review-again", "title": "Task review", "work": "review", "owner": "rev"}],
+            "assessments": [{"task": "review", "verdict": "cancel", "instructions": "replaced"}]}"#,
+    );
+    assert!(!d.changes.iter().any(|c| matches!(c, Change::DirectiveRejected { .. })), "{:?}", d.changes);
+    assert_eq!(d.state.task("review").unwrap().state, TaskState::Cancelled);
+    assert!(d.state.task("review-again").is_some());
+    // A live task of the same title, not cancelled by the directive, still blocks.
+    let d = supervise(
+        &s,
+        LEAD,
+        r#"{"summary": "dup",
+            "agents": [{"key": "rev", "title": "Reviewer", "kind": "specialist", "responsibility": "r"}],
+            "tasks": [{"key": "review-2", "title": "Task review", "work": "review", "owner": "rev"}]}"#,
+    );
+    assert!(d.changes.iter().any(|c| matches!(c, Change::DirectiveRejected { .. })));
+}
+
+#[test]
+fn a_failed_supervision_turn_is_retried_then_names_its_cause() {
+    // The lead's provider fails (a usage limit): not a rejected directive.
+    let s = started();
+    let fail = |s: &OrgState| {
+        decide(
+            s,
+            &Input::SupervisionFailed {
+                agent: LEAD.into(),
+                reason: "usage limit reached".into(),
+                now_ms: T0 + 1,
+            },
+        )
+        .unwrap()
+    };
+    let d = fail(&s);
+    assert_eq!(d.state.status, OrgStatus::Running, "the first failure is retried");
+    assert!(
+        matches!(&d.action, Action::Supervise { checkpoint } if checkpoint.items == vec![CheckpointItem::Plan]),
+        "the same checkpoint is asked again: {:?}",
+        d.action
+    );
+    assert!(!d.changes.iter().any(|c| matches!(c, Change::DirectiveRejected { .. })));
+    let d = fail(&d.state);
+    assert_eq!(d.state.status, OrgStatus::Waiting);
+    let reason = d.state.reason.clone().unwrap();
+    assert!(reason.contains("usage limit reached") && reason.contains("provider"), "{reason}");
+    // Resuming asks the lead again, with the plan still to do.
+    let d = decide(&d.state, &Input::Resume { now_ms: T0 + 2 }).unwrap();
+    assert!(
+        matches!(&d.action, Action::Supervise { checkpoint } if checkpoint.items == vec![CheckpointItem::Plan])
+    );
+    // A stale failure (another supervisor, or nothing supervising) changes nothing.
+    let other = decide(
+        &d.state,
+        &Input::SupervisionFailed { agent: "someone".into(), reason: "x".into(), now_ms: T0 + 3 },
+    )
+    .unwrap();
+    assert_eq!(other.state, d.state);
 }

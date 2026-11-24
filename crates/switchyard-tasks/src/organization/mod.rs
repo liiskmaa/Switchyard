@@ -494,6 +494,9 @@ pub struct OrgState {
     pub goal_due: bool,
     #[serde(default)]
     pub last_goal_check_ms: i64,
+    /// Supervision turns in a row that failed without a directive.
+    #[serde(default)]
+    pub supervision_failures: u32,
 }
 
 /// An entry for the shared context, written by Core with the decision.
@@ -525,6 +528,14 @@ pub enum Input {
         directive: Result<Directive, String>,
         selections: BTreeMap<String, Result<Selected, String>>,
         new_ids: BTreeMap<String, Uuid>,
+        now_ms: i64,
+    },
+    /// A supervision turn failed without a directive (its provider's usage
+    /// limit, an API error): not a badly written directive. Retried within
+    /// `max_retries`, then the user is told the cause.
+    SupervisionFailed {
+        agent: String,
+        reason: String,
         now_ms: i64,
     },
     /// A work turn ended.
@@ -887,6 +898,7 @@ pub fn decide(state: &OrgState, input: &Input) -> Result<Decision, OrgError> {
                 Ok(dir) => apply_directive(&mut d, &checkpoint, dir, selections, new_ids),
                 Err(e) => Err(e.clone()),
             };
+            d.state.supervision_failures = 0;
             match applied {
                 Ok(()) => d.state.repairs = 0,
                 Err(error) => {
@@ -908,6 +920,40 @@ pub fn decide(state: &OrgState, input: &Input) -> Result<Decision, OrgError> {
                         d.state.repairs = 0;
                     }
                 }
+            }
+            schedule(&mut d, *now_ms);
+        }
+        Input::SupervisionFailed { agent, reason, now_ms } => {
+            let Activity::Supervising { checkpoint } = &state.activity else { return Ok(d) };
+            if checkpoint.supervisor != *agent {
+                return Ok(d);
+            }
+            let checkpoint = checkpoint.clone();
+            d.state.activity = Activity::Idle;
+            if let Some(a) = d.state.agent_mut(agent) {
+                a.status = AgentStatus::Idle;
+            }
+            // The same checkpoint is asked again: nothing in it was handled.
+            d.state.queue.insert(0, checkpoint);
+            d.state.supervision_failures += 1;
+            let text = format!("{}'s turn failed: {reason}", title_of(state, agent));
+            d.changes.push(Change::Observed { task: ROOT.into(), text: text.clone() });
+            d.context.push(ctx(
+                ContextKind::Observation,
+                ContextStatus::Verified,
+                text.clone(),
+                None,
+                "core",
+            ));
+            if d.state.supervision_failures > d.state.limits.max_retries {
+                d.state.supervision_failures = 0;
+                wait(
+                    &mut d,
+                    format!(
+                        "{text}. Its provider may be unavailable (a usage limit, an outage). Resume to try again, or \
+                         change the lead's provider and start the team again."
+                    ),
+                );
             }
             schedule(&mut d, *now_ms);
         }
@@ -1501,8 +1547,13 @@ fn apply_directive_inner(
         if t.work.changes_files() && t.scope.is_empty() && owner.scope.is_empty() {
             return Err(format!("task {}: work that changes files needs a scope", t.key));
         }
+        // A task this directive cancels can be replaced by one of the same
+        // title in the same directive (assessments apply after new tasks).
         let title = norm_title(&t.title);
-        if d.state.children(&parent).any(|s| s.state != TaskState::Cancelled && norm_title(&s.title) == title)
+        let replaced = |k: &str| dir.assessments.iter().any(|a| a.task == k && a.verdict == Verdict::Cancel);
+        if d.state
+            .children(&parent)
+            .any(|s| s.state != TaskState::Cancelled && !replaced(&s.key) && norm_title(&s.title) == title)
         {
             return Err(format!("a task titled {:?} already exists under {parent}", t.title));
         }

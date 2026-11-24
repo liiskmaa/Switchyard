@@ -97,6 +97,7 @@ cargo test -p switchyard-core --test delivery           # M8.2: workflow → M7 
 cargo test -p switchyard-core --test organizations      # M8.3: dynamic organization via both fakes (supervision, interruption, limits, restart)
 cargo test -p switchyard-core --test supervisor         # ADR 0041: task supervisor answers, routes, follow-ups via the fakes
 cargo test -p switchyard-core --test watchdog           # ADR 0045: stuck-work watchdog with short limits
+cargo test -p switchyard-core --test team_faults -- --test-threads=4   # team failure matrix: every step × every fault
 cargo test -p switchyard-core --test gemini             # ADR 0044: Gemini over ACP via the fake (asks, answers, cancel, resume)
 SWITCHYARD_REAL_GEMINI=1 cargo test -p switchyard-core --test real_gemini -- --ignored   # real Gemini CLI 0.70.0, API key
 cargo test -p switchyard-git --test integrate           # Git integration primitives on temp repos
@@ -284,6 +285,9 @@ When running Core or the app manually, set `SWITCHYARD_DATA_DIR` (and, if that p
     interrupt a turn that leaves its scope; it never answers a permission request on that path.
   - No built-in skill estimates: selection uses verified capabilities and the user's estimates only.
   - The objective completes only through M7 delivery; the lead's "done" passes the review gate first.
+  - A failed supervision turn (no directive) is `Input::SupervisionFailed`, never a rejected directive.
+  - Every stall seen in real use gets a case in `tests/team_faults.rs` (step × fault, adaptive fake lead
+    `fake_support/auto_lead.rs`) before it is fixed.
 - Text edits made with ad-hoc scripts can silently no-op after `cargo fmt` reflows code. Verify
   behaviour-only edits (guards, checks) with a test.
 
